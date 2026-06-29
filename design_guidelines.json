@@ -1,0 +1,69 @@
+{
+  "theme": "LIGHT",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "color_palette": {
+    "background_light": "#FFFFFF",
+    "background_light_secondary": "#F9FAFB",
+    "background_dark": "#0A0A0A",
+    "background_dark_secondary": "#121212",
+    "primary_brand": "#1D4ED8",
+    "primary_hover": "#1E40AF",
+    "accent_success": "#10B981",
+    "accent_error": "#EF4444",
+    "accent_warning": "#F59E0B",
+    "text_primary_light": "#111827",
+    "text_secondary_light": "#4B5563",
+    "text_primary_dark": "#F9FAFB",
+    "text_secondary_dark": "#9CA3AF",
+    "border_light": "#E5E7EB",
+    "border_dark": "#27272A"
+  },
+  "typography": {
+    "headings": {
+      "family": "Outfit, sans-serif",
+      "weights": ["500", "600", "700"],
+      "tracking": "tracking-tight"
+    },
+    "body": {
+      "family": "Plus Jakarta Sans, sans-serif",
+      "weights": ["400", "500"]
+    },
+    "numbers": {
+      "family": "JetBrains Mono, monospace",
+      "usage": "Use for all financial figures, invoice numbers, amounts, and GST totals."
+    }
+  },
+  "layout_and_spacing": {
+    "spacing_system": "Use generous but structured spacing. Implement bento grid (CONTROL ROOM MODE) for the dashboard. Use gap-4 or gap-6 for tight widget spacing.",
+    "container": "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
+    "borders": "1px solid borders (border-border) with subtle or no shadow to maintain a flat, crisp 'tech' look. Avoid heavy box shadows.",
+    "radius": "rounded-lg for outer cards, rounded-md for inner elements like buttons and inputs."
+  },
+  "components": {
+    "cards": "Flat background, 1px subtle border, no shadow by default. Hover: slight lift (-translate-y-1) and subtle shadow. Add p-6 inside card containers.",
+    "buttons": "Primary: bg-blue-700 text-white. Sharp corners (rounded-md max) to match the Swiss aesthetic.",
+    "inputs": "Use Shadcn UI standard inputs, select, and date pickers. No native HTML inputs.",
+    "tables": "Dense, crisp tables. Use 1px bottom border on rows. Numbers must be right-aligned and use monospace font.",
+    "navigation": "Sidebar navigation for modules (Authentication, Party, Product, Sales, Purchase, Payments, GST, Accounting, TDS, Settings). Dark mode toggle in header/sidebar."
+  },
+  "motion_and_interactions": {
+    "hover": "Explicitly set text color on hover. Button hover state must be lighter/darker hue of active state.",
+    "transitions": "transition-all duration-200 ease-in-out",
+    "loading": "Use skeleton loaders for tables and dashboard metric cards. Do not use generic spinners."
+  },
+  "accessibility": {
+    "contrast": "Ensure text meets APCA/WCAG standards.",
+    "testing": "All interactive and key informational elements MUST include data-testid attribute in kebab-case (e.g., data-testid='sales-invoice-submit-button')."
+  },
+  "media": {
+    "logo": "https://images.pexels.com/photos/15342412/pexels-photo-15342412.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+    "user_avatar": "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzF8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBjb3Jwb3JhdGUlMjBwb3J0cmFpdCUyMHNtaWxpbmd8ZW58MHx8fHwxNzgwNTQ3MDcyfDA&ixlib=rb-4.1.0&q=85"
+  },
+  "specific_requirements": {
+    "currency_format": "Indian Rupee (₹) with lakhs/crores formatting (locale: en-IN).",
+    "date_format": "DD/MM/YYYY",
+    "icons": "lucide-react for sharp, clean interface icons.",
+    "charts": "Recharts for the sales chart. Use minimalist axes and tooltips."
+  },
+  "instructions_to_main_agent": "1. Import Outfit, Plus Jakarta Sans, and JetBrains Mono from Google Fonts in index.css. 2. Configure Tailwind with these fonts. 3. Follow the specified design guidelines rigorously. Apply Archetype 4 (Swiss & High-Contrast) aesthetic. Use Outfit for headings, Plus Jakarta Sans for body, and JetBrains Mono for all numeric financial data. 4. Ensure the dashboard utilizes progressive disclosure and a structured bento grid layout. 5. Include data-testid attributes on all interactive elements. 6. Build the BillEasy Indian business billing/accounting full-stack dashboard."
+}

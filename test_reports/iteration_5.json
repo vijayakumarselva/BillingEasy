@@ -1,0 +1,33 @@
+{
+  "summary": "Iteration 5 — full backend + frontend regression of pricing overhaul (4-tier), launch offer admin, /api/public/pricing, legacy-plan detection, billing UI, and SEO. 11/11 backend pytests pass; landing + /billing + /super UI flows verified end-to-end. No defects found. State (launch offer disabled, Vijay Traders org.plan_code restored to BUSINESS_2499) restored after tests.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pricing_overhaul.py",
+    "/app/test_reports/pytest/iter5_pricing.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 1951 lines — consider splitting into routers (billing, super, invoices, auth) for maintainability.",
+    "/api/billing/launch-offer is auth-protected by the client side only (route does not depend on auth); naming says 'Public-ish' — consider explicit no-auth or auth dependency for clarity.",
+    "subscription_status_summary marks status='expired' purely by date math but also relies on stored status; legacy plan-code detection relies on string presence in PLANS dict — works correctly today.",
+    "save_offer accepts arbitrary plan codes when enabled=False (validation only runs when enabled); acceptable but worth noting."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pricing_overhaul.py (new)"
+  ],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100% (all flows verified)"},
+  "test_credentials": "super@billeasy.in/super123, owner@vijaytraders.in/admin123 (rate-limited at 8/15min — be mindful when re-running)",
+  "seed_data_creation": "No new seed data persisted. Temporarily set Vijay Traders org.plan_code='MONTHLY_199' to verify needs_replan banner; restored to BUSINESS_2499 (pending_authorisation) after testing. Launch offer document was set then disabled.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression suite for this iteration is /app/backend/tests/test_pricing_overhaul.py. Run with: pytest /app/backend/tests/test_pricing_overhaul.py -v. It auto-backs up the launch offer + org.plan_code via a session fixture and restores at teardown. Owner login rate-limit (8/15min) can bite if you re-run repeatedly — wait or use a different IP/account. Verified items: public/pricing (no auth, 4 tiers + 6 addons + launch_offer block), billing/plans (auth, returns tiers+addons+flat plans list incl. ENTERPRISE_CUSTOM), GROWTH_999 subscribe returns mock auth_link in mock mode, ENTERPRISE_CUSTOM subscribe returns 400 with 'sales/custom' message, super-only 403 for owner on launch-offer endpoints, enabling without plan_codes returns 400, audit_logs entry 'super.launch_offer.updated' is written, needs_replan=true when org.plan_code='MONTHLY_199' (legacy) and status is trialing, needs_replan=false on GROWTH_999, SEO meta+JSON-LD updated (offers 499/999/2499), /billing renders amber needs_replan banner + Launch Offer banner + 4-card layout + yearly toggle correctly (₹4,990 / ₹9,999 / ₹24,990), logged-in user hitting / redirects to /dashboard, super-tab-offer + all offer-* data-testids present in Super Admin. Enterprise 'Contact Sales' triggers window.location.href=mailto: via onClick (not an <a> tag, hence mailto link count was 0 — implementation correct).",
+  "rca of the issue": "N/A — no bugs found in this iteration."
+}

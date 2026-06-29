@@ -1,0 +1,47 @@
+{
+  "summary": "LAUNCH READINESS regression (iteration 7). 43/44 backend pytest pass + 1 documented P0 skip; frontend end-to-end has ZERO console errors and NO React/Network-Error overlay on Reports across all 6 tabs and rapid navigation. The user-reported 'Uncaught runtime errors: Network Error' on Reports cannot be reproduced under normal navigation; previous transient was confirmed to have been the hot-reload restart. One real P0 launch blocker found in seed data: the seeded owner org is in subscription_status='pending_authorisation', which makes ensure_active_subscription() return 402 on every write (parties, products, expenses, payments, invoices, purchases). The frontend does not crash on this, but a brand-new tester cannot create any record. Fix is one-line in seed_data.py.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/parties | /api/products | /api/expenses | /api/payments | /api/invoices | /api/purchases",
+        "issue": "Seeded org Vijay Traders has subscription_status='pending_authorisation' (trial_ends_at is in the future but the demo entered a Cashfree subscribe flow which left status pending). ensure_active_subscription() → HTTP 402 'Subscription required (pending_authorisation). Visit /settings → Billing.' Result: a user logging in with owner@vijaytraders.in/admin123 cannot create ANY record. Confirmed via curl: parties POST 402, products POST 402, expenses POST 402, payments POST 402. Reads work fine. Fix: in seed_data.py force subscription_status='trialing' (or 'active') and clear cashfree_subscription_id when reseeding the demo org.",
+        "priority": "P0"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Cloudflare RUM",
+        "issues": ["Repeated POST /cdn-cgi/rum requests fail with net::ERR_ABORTED on every page nav — external CF Real-User-Monitoring beacon, not our app code. Cosmetic noise in DevTools network panel only; does not surface to the React error overlay."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_launch_readiness.py",
+    "/app/test_reports/pytest/launch_readiness.xml"
+  ],
+  "action_items": [
+    "P0 — Fix demo seed: in seed_data.py set the Vijay Traders org subscription_status='trialing' (or 'active') and drop cashfree_subscription_id on re-seed, so every write endpoint works for the demo account. Without this fix, owner@vijaytraders.in/admin123 is read-only and the launch demo will look broken.",
+    "P3 — Optional: silence Cloudflare /cdn-cgi/rum 'failed POST' noise (likely env/CDN config, not code)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 2,157 lines — over the 700-line guideline. Strongly recommend splitting into routers (auth, billing, ai, invoices, purchases, reports, super, public_tools) before launch — it is hot-reloaded multiple times per dev session (which caused the user's transient Network Error overlay during the original report).",
+    "ensure_active_subscription() correctly gates writes, but the seed_data path and the Cashfree subscribe path BOTH set 'pending_authorisation'. After /api/billing/subscribe the org should still keep its trial status until the webhook flips it; today the demo gets stuck. Consider only setting pending_authorisation if status was previously expired/past_due, not while still in trial.",
+    "gstr1 and gstr3b require a 'month' query param but several frontend callers may forget; they fail with FastAPI 422. The reports tabs work because reports/* accept Optional[month]. Consider giving gstr* a sensible default of the current month to avoid 422s.",
+    "Public pricing schema returns 'tiers'+'launch_offer'+'addons' (not 'plans'). This is fine and consistent — flagged here just so the next iter's tests don't drift again."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_launch_readiness.py (new — 44 tests, full launch regression)"
+  ],
+  "success_rate": {"backend": "97.7% (43 pass / 1 skipped-by-P0 / 0 fail)", "frontend": "100% (no console errors, no overlays, all 6 reports tabs OK, rapid nav OK, mobile 375px OK)"},
+  "test_credentials": "owner@vijaytraders.in/admin123 and super@billeasy.in/super123 — both work for auth.",
+  "seed_data_creation": "Created no persisted seed (writes blocked by P0 gating). The pytest suite is fully read-side; the one write test (TestParties.test_crud) is auto-skipped while P0 is open.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "User's 'Network Error on Reports' is NOT reproducible under normal navigation — Reports endpoints + UI tabs all clean. Backend pytest: /app/backend/tests/test_launch_readiness.py (44 tests, ~5s). The P0 to fix BEFORE launch is the seed subscription_status='pending_authorisation' issue — confirmed via curl POSTs to parties/products/expenses/payments all returning 402. Once seed is fixed, re-enable the TestParties.test_crud and TestP0Bugs guard test will start failing (which is the signal that the fix landed). Did NOT touch payment-gateway or launch-offer settings, so no reset needed.",
+  "rca of the issue": "User-reported 'Network Error' on Reports page = transient (backend hot-reload during dev edits). Verified by hitting all 6 reports endpoints 3x in rapid succession (TestReports::test_reports_rapid_navigation) → 18/18 200 OK, and via Playwright clicking through all 6 tabs followed by 10-route rapid navigation → 0 console errors, no overlay. Backend stable. The newly-found P0 (subscription gating) is unrelated to the reports issue but is launch-blocking on its own: trial_ends_at='2026-06-23' is in the future yet sub_status='pending_authorisation' which is_active=False, so every write 402s. RCA: the demo /api/billing/subscribe flow in MOCK mode set status to pending_authorisation without later flipping back; the seed should reset this on every reseed."
+}

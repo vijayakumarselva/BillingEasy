@@ -1,0 +1,55 @@
+{
+  "summary": "Iteration-2 testing of multi-org SaaS + Cashfree (MOCK) billing + member mgmt + PDF fix. 42/42 backend tests pass (1 skipped - seed invoice has no due). Found + fixed one CRITICAL backend bug (POST /api/orgs returned HTTP 500 due to MongoDB ObjectId leakage in _create_org_internal). Frontend: login, org switcher dropdown, billing page (plans + status + MOCK notice), settings/team tab all render and integrate correctly. PDF backend path is verified (returns application/pdf + %PDF- header) via test_pdf_with_org_id.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/invoices/{id}/pdf", "issue": "Without X-Org-Id header, falls back to user's first membership; depending on membership order may return 200/404. Spec said 403 'No organization found'. Behaviour acceptable but inconsistent with spec."},
+      {"endpoint": "POST /api/auth/login", "issue": "Returned org_id is the user's first membership in DB order; after multi-org create the demo owner sees arbitrary 'first' org as active (e.g. TEST_Expired_*). Consider preferring the org where role=owner with subscription_status=active, or the most-recently-active org_id from a user preference."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "AppLayout header badge", "issue": "Trial/Active badge text reads 'Trial · 7d left' for newly-created orgs even when displayed on the Billing page that itself shows 'Trial · 7 day(s) left' — UI is consistent but badge is hard-coded color amber regardless of status (active should show green). Cosmetic.", "selector": "header span.trial-badge", "priority": "LOW"},
+      {"component": "Dashboard Recharts (pre-existing)", "issue": "Console still spams 'width(-1) and height(-1) of chart should be greater than 0' on first paint for sales-6m + top-products charts. Iter-1 action item not yet addressed.", "selector": "[data-testid='dashboard-page']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [
+      {"flow": "Login default org selection", "issue": "Browser cached be_org_id from prior test runs (TEST_Expired_495aed) was used; on a clean browser the backend returns first-membership org_id which may not be Vijay Traders. Recommend: backend prefers an active-subscription owner-role org when picking default org_id at login.", "affected_selectors": ["sidebar org switcher"]}
+    ],
+    "design_issues": [
+      {"screen": "Org switcher dropdown", "issues": ["Lists 11 orgs (test data pollution from automated tests); needs a cleanup or pagination/search affordance once user has many orgs"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_billeasy.py",
+    "/app/backend/tests/test_multiorg_billing.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(FIXED by testing agent) Strip MongoDB _id in _create_org_internal after insert_one — POST /api/orgs was returning 500.",
+    "Improve login default-org logic: pick best org (active subscription + owner role) instead of arbitrary first membership.",
+    "Standardise behaviour for missing X-Org-Id: either always 403 (as spec states) or document the fallback explicitly.",
+    "Address pre-existing Recharts width(-1)/height(-1) warning by wrapping ResponsiveContainer in a sized div (h-72 w-full).",
+    "Header billing badge: drive colour/text from subscription.status (Trial=amber, Active=green, Expired=red).",
+    "Consider TEST_ org cleanup endpoint/script — automated tests now pollute the demo account with multiple orgs."
+  ],
+  "critical_code_review_comments": [
+    "_create_org_internal mutated org dict via motor's insert_one and returned it directly — caused ObjectId in JSON encoder. Pattern repeats in many places; recommend a single insert_and_strip helper.",
+    "ensure_active_subscription applied to all 12 writes — good; verified via 402 test.",
+    "Cashfree webhook does HMAC-SHA256 base64 compare with hmac.compare_digest — secure.",
+    "Role guard correctly enforced (sales DELETE /invoices/{id} → 403, verified).",
+    "X-Org-Id header is parsed at every request via get_org_ctx — clean middleware-style isolation.",
+    "Subscription guard returns HTTP 402 with detail; frontend axios interceptor must redirect to /billing (not verified end-to-end in this iter)."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (popped _id after insert_one in _create_org_internal)",
+    "/app/backend/tests/test_billeasy.py (added X-Org-Id auto-injection fixture + login assertion update for new response shape)",
+    "/app/backend/tests/test_multiorg_billing.py (NEW — 16 tests covering orgs/billing/members/PDF/subscription guard)"
+  ],
+  "success_rate": {"backend": "100% (41/41 passed, 1 skipped)", "frontend": "~80% (org switcher + billing + team verified; PDF download UI not exercised because the active demo org had no invoices — backend PDF verified)"},
+  "test_credentials": "owner@vijaytraders.in/admin123, accountant@vijaytraders.in/accountant123, sales@vijaytraders.in/sales123 — all valid",
+  "seed_data_creation": "Tests created several TEST_Co_* and TEST_Expired_* orgs under owner@vijaytraders.in. Recommend cleanup script for demo polish.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Two pytest files live in /app/backend/tests/: test_billeasy.py (28 tests, all features) + test_multiorg_billing.py (16 tests, multi-org/billing/members/PDF/guard). Both auto-inject X-Org-Id for Vijay Traders. The demo owner now has 10+ TEST_* orgs from prior runs — consider DB reset before next iteration. Frontend org switcher renders all of them. Login default-org is arbitrary, so always verify badge/page is on the expected org before testing. Cashfree MOCK end-to-end (subscribe → /billing/mock-checkout → mock-activate) confirmed working at API level; the mock-checkout UI page was not driven this iteration.",
+  "rca_of_the_issue": "POST /api/orgs 500: _create_org_internal awaited db.organizations.insert_one(org) but did not strip the _id Mongo injected back into the dict, then returned the dict directly. FastAPI/jsonable_encoder fails on ObjectId. Fix: org.pop('_id', None) after insert. Verified by re-running test_subscribe_mock_then_activate which now passes end-to-end."
+}

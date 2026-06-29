@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 210 40% 96%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 221 83% 53%;
+    --chart-1: 221 83% 53%;
+    --chart-2: 160 84% 39%;
+    --chart-3: 38 92% 50%;
+    --chart-4: 271 81% 56%;
+    --chart-5: 12 76% 61%;
+    --radius: 0.5rem;
+    --sidebar-bg: 222 47% 11%;
+    --sidebar-fg: 210 40% 98%;
+  }
+  .dark {
+    --background: 222 47% 6%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 8%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 217 91% 60%;
+    --sidebar-bg: 222 47% 4%;
+    --sidebar-fg: 210 40% 98%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  html, body { @apply bg-background text-foreground; font-family: 'Plus Jakarta Sans', sans-serif; }
+  h1, h2, h3, h4, h5, h6 { font-family: 'Outfit', sans-serif; letter-spacing: -0.02em; }
+  .font-mono-fin { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum'; }
+}
+
+@layer base {
+  [data-debug-wrapper="true"] { display: contents !important; }
+  [data-debug-wrapper="true"] > * {
+    margin-left: inherit; margin-right: inherit; margin-top: inherit; margin-bottom: inherit;
+    padding-left: inherit; padding-right: inherit; padding-top: inherit; padding-bottom: inherit;
+    column-gap: inherit; row-gap: inherit; gap: inherit;
+    border-left-width: inherit; border-right-width: inherit;
+    border-top-width: inherit; border-bottom-width: inherit;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.4); }
+
+/* Sidebar */
+.sidebar-shell {
+  background: hsl(var(--sidebar-bg));
+  color: hsl(var(--sidebar-fg));
+}
+.sidebar-link {
+  display: flex; align-items: center; gap: 0.625rem;
+  padding: 0.55rem 0.9rem; border-radius: 0.5rem;
+  color: hsl(210 40% 80%); font-size: 0.875rem; font-weight: 500;
+  transition: all 200ms ease;
+  border-left: 2px solid transparent;
+}
+.sidebar-link:hover { background: hsl(217 33% 14%); color: white; }
+.sidebar-link.active { background: hsl(221 83% 53% / 0.15); color: white; border-left-color: hsl(221 83% 60%); }
+
+/* Cards / tables */
+.metric-card {
+  background: hsl(var(--card)); border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem; padding: 1.25rem;
+  transition: all 200ms ease;
+}
+.metric-card:hover { transform: translateY(-2px); border-color: hsl(var(--primary) / 0.4); }
+
+.app-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.app-table th { text-align: left; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: hsl(var(--muted-foreground));
+  padding: 0.75rem 1rem; border-bottom: 1px solid hsl(var(--border)); background: hsl(var(--muted) / 0.4); }
+.app-table td { padding: 0.85rem 1rem; border-bottom: 1px solid hsl(var(--border)); font-size: 0.875rem; }
+.app-table tr:hover td { background: hsl(var(--muted) / 0.4); }
+.app-table .num { text-align: right; font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum'; }

@@ -1,0 +1,41 @@
+{
+  "summary": "Tested Super-admin Payment Gateway settings end-to-end (backend pytest + UI Playwright). All 14 backend tests pass/skip (13 passed, 1 skipped because there is no super-admin audit-logs endpoint — verified the audit row exists directly in Mongo: super.payment_settings.updated present). All frontend flows verified through the UI: tab visible, secrets masked, eye toggle, save/preserve/reset, MOCK test short-circuit. Billing subscribe regression in mock mode passes. Settings reset to MOCK + enabled=false at the end.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/super/audit-logs", "issue": "No dedicated super-admin audit-logs endpoint, so the audit entry created by /api/super/settings/payment is not observable through any API (only via DB). The /api/audit-logs route requires an org context which super admin lacks. Consider exposing a super audit endpoint for visibility."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SuperAdmin route guard", "issue": "Non-super-admin (owner@vijaytraders.in) can navigate to /super in the browser. The page mounts and triggers super API calls which return 403; the result is an in-page React error overlay 'Uncaught runtime errors: Request failed with status code 403'. Backend authz is correct (403 enforced), but frontend should (a) redirect non-super users away from /super and (b) catch axios errors in SuperAdmin.jsx initial loaders so a 403 is shown as a friendly message instead of an unhandled exception.", "selector": "route /super", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_payment_gateway_settings.py",
+    "/app/test_reports/pytest/iter4_payment.xml"
+  ],
+  "action_items": [
+    "Add a frontend route guard on /super in App.jsx (redirect non-super users to /dashboard with a toast) and wrap initial loaders in SuperAdmin.jsx + PaymentGatewaySettings.load() with try/catch so 403s don't surface as uncaught runtime errors.",
+    "Optional: expose GET /api/super/audit-logs (super-only) so super.payment_settings.updated entries are visible in the UI/console."
+  ],
+  "critical_code_review_comments": [
+    "payment_settings.py: Fernet key derivation from JWT_SECRET is reasonable but rotating JWT_SECRET will permanently lock previously-encrypted secrets (decrypt_secret returns '' silently). Consider logging a warning when a stored secret fails to decrypt so admins know to re-enter the key after a JWT rotation.",
+    "get_cashfree_credentials falls back to env vars when DB client_id is empty — fine for backward compat, but the GET /super/settings/payment response always reflects the DB doc (not the env fallback). UI 'Current status' may therefore say 'not configured' while billing is actually live via .env. Minor UX inconsistency.",
+    "server.py: super_save_payment_settings does not validate non-empty client_id for MOCK env, which is fine, but treats body.client_id as required string in the Pydantic model with default ''. Adequate, just noting.",
+    "SuperAdmin.jsx PaymentGatewaySettings.load(): no error toast/catch — a 403 here crashes into the React error overlay (root cause of the route-guard issue above)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_payment_gateway_settings.py"
+  ],
+  "success_rate": {"backend": "100% (13/13 ran, 1 skipped due to missing endpoint)", "frontend": "100% on super-admin flow; non-super route guard issue noted"},
+  "test_credentials": "super@billeasy.in / super123 (super admin); owner@vijaytraders.in / admin123 (owner)",
+  "seed_data_creation": "Temporarily wrote SANDBOX creds with client_id UI_TEST_CID_001/002 + secret 'UI_TEST_SECRET_LONGZZ9999' during UI tests, then reset back to MOCK + enabled=false. Final state: environment=MOCK, enabled=false, client_id='', has_client_secret=true (residual encrypted secret remains — by design since null secret preserves). If a clean wipe is needed, delete the system_settings doc id='payment_gateway' in Mongo.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest suite at /app/backend/tests/test_payment_gateway_settings.py is the regression file for super-admin payment settings. Test ordering matters: SANDBOX save creates the residual secret used by 'null preserves' test. /api/super/audit-logs is not implemented — DB-level check confirmed the audit row exists (verified manually via Mongo). After running, the suite resets to MOCK+disabled. Frontend: super route protection is the main open item.",
+  "rca of the issue": "Owner navigating to /super: SuperAdmin.jsx mounts immediately on the matched route in App.jsx without checking user.role==='super_admin' before calling the super-only APIs. Backend correctly returns 403, but the loader (e.g. PaymentGatewaySettings.load and other super-only fetches) does not catch the rejected promise, so React's runtime overlay surfaces the AxiosError to the end user. Fix: add a <RequireRole role='super_admin'> wrapper on the /super route, and wrap all initial loaders in try/catch with a graceful empty/error state."
+}

@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 8 RETEST — P0 subscription-gating fix VERIFIED. Backend pytest 22/22 PASS on new iter8 suite + 44/44 PASS on the existing launch-readiness suite (including the previously-skipped TestParties.test_crud, which now succeeds and the TestP0Bugs guard has been removed). Frontend rapid-navigation across Dashboard ↔ Sales ↔ Reports ↔ Parties ↔ AI Tools (10 hops) produces ZERO console errors and NO React error overlay. All 6 Reports tabs (P&L, Balance Sheet, Cash Flow, Trial Balance, Day Book, Stock) clickable and clean. Super admin (super@billeasy.in) loads /super console with all 4 tabs (Organizations, All users, Payment Gateway, Launch Offer) visible. Confirmed: (1) POST /api/billing/subscribe in MOCK mode no longer flips status away from 'trialing' — status preserved before/after, is_active=true; (2) GET /api/gst/gstr1 and /api/gst/gstr3b with NO month query param now return 200 (default to current YYYY-MM); (3) all writes (parties, products, expenses, payments, invoices, purchases) return 2xx for owner@vijaytraders.in; (4) AI hsn-finder + categorize-expense responding correctly; (5) E-invoice JSON envelope for sale invoice returns ok-shaped payload. No regressions detected. Test data and DB state reset (Vijay Traders restored to plan_code=BUSINESS_2499, subscription_status=trialing; all TEST_-prefixed parties/products purged).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter8_retest.py",
+    "/app/backend/tests/test_launch_readiness.py",
+    "/app/test_reports/pytest/iter8.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~2,170 lines — still exceeds the 700-line guideline. Pre-launch refactor into routers (auth, billing, ai, invoices, purchases, reports, super, public_tools) is strongly recommended; iter7's RCA tied a transient Network Error overlay to backend hot-reload restarts on this monolith.",
+    "billing/subscribe MOCK path now correctly preserves trialing/active (lines ~927 and ~985 in server.py). Suggest extracting the duplicated 'next_status' computation into a single helper so the mock and live Cashfree paths cannot drift apart in future.",
+    "PaymentIn/ExpenseIn/InvoiceIn use inconsistent date field names ('date' vs 'invoice_date' vs 'purchase_date'). Not a bug, but normalising to one convention would reduce client-side coupling and prevent 422 noise from frontend forms."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter8_retest.py (new — 22 retest cases for iter7 P0 fix)",
+    "/app/backend/tests/test_launch_readiness.py (removed TestP0Bugs guard, un-skipped TestParties.test_crud)"
+  ],
+  "success_rate": {"backend": "100% (66/66 — 22 iter8 + 44 launch_readiness)", "frontend": "100% (0 console errors, 0 overlays, all reports tabs + rapid nav clean)"},
+  "test_credentials": "owner@vijaytraders.in/admin123 and super@billeasy.in/super123 — both verified.",
+  "seed_data_creation": "All test data created during writes was cleaned up via DELETE endpoints + a final cleanup script removed any TEST_-prefixed parties/products. Reverted Vijay Traders org back to plan_code=BUSINESS_2499 + subscription_status=trialing (subscribe-test had switched plan_code to GROWTH_999 while keeping status trialing — fix proven, but plan was reverted to original).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter7 P0 (subscription_status stuck on pending_authorisation) is FIXED and verified. The retest suite is at /app/backend/tests/test_iter8_retest.py and runs in ~10s. The legacy launch_readiness suite was updated: TestParties.test_crud is now an active test (no longer auto-skipped) and TestP0Bugs guard test was removed. If a future agent needs to re-verify P0, the most direct signal is iter8's TestBillingStatus::test_subscribe_preserves_trialing — it captures status before/after a mock subscribe call and asserts no flip to pending_authorisation. Mocked: Cashfree (MOCK mode) — backend returns auth_link without actually contacting Cashfree.",
+  "rca of the issue": "Iter7's P0 was a state-machine bug: /api/billing/subscribe unconditionally set subscription_status='pending_authorisation' regardless of prior state, which caused even a 'trialing' org to lose its write privileges (ensure_active_subscription only allows trialing/active). Fix landed in server.py at lines 945 and 985: next_status = current_status if current_status in ('trialing','active') else 'pending_authorisation'. Verified by capturing /api/billing/status before and after a mock subscribe — status remains 'trialing', is_active=true. Companion fix on /api/gst/gstr1 and /api/gst/gstr3b made the month query param Optional with current-month default, eliminating the 422 those endpoints used to return when the frontend forgot the param."
+}
