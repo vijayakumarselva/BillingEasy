@@ -2159,6 +2159,11 @@ async def on_shutdown():
     client.close()
 
 
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
