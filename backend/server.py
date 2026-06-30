@@ -13,6 +13,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import os
+import certifi
 import uuid
 import logging
 import hmac
@@ -69,7 +70,7 @@ PLANS = PLAN_CATALOG
 client = AsyncIOMotorClient(
     MONGO_URL,
     tls=True,
-    tlsAllowInvalidCertificates=True,
+    tlsCAFile=certifi.where(),
     serverSelectionTimeoutMS=30000,
 )
 db = client[DB_NAME]
