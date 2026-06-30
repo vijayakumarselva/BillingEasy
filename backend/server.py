@@ -573,6 +573,185 @@ async def me(user=Depends(get_current_user)):
     return user
 
 
+# ──────────────── OTP LOGIN ────────────────
+class OtpRequestIn(BaseModel):
+    email: EmailStr
+
+class OtpVerifyIn(BaseModel):
+    email: EmailStr
+    otp: str
+
+@api.post("/auth/otp/request")
+async def otp_request(body: OtpRequestIn, request: Request, response: Response):
+    ip = client_ip(request)
+    if not limiter.hit(f"otp_req:{ip}", max_hits=5, window_seconds=900):
+        raise HTTPException(429, "Too many OTP requests. Try again in 15 minutes.")
+    email = body.email.lower()
+    u = await db.users.find_one({"email": email})
+    if not u:
+        uid = str(uuid.uuid4())
+        u = {"id": uid, "email": email, "name": email.split("@")[0].title(),
+             "password_hash": "", "created_at": now_iso(), "last_login": now_iso()}
+        await db.users.insert_one(u)
+        await _create_org_internal(f"{u['name']}'s Business", uid)
+    otp = str(secrets.randbelow(900000) + 100000)
+    expires_at = (now_dt() + timedelta(minutes=10)).isoformat()
+    await db.otp_codes.delete_many({"email": email})
+    await db.otp_codes.insert_one({"email": email, "otp": otp,
+                                   "expires_at": expires_at, "used": False})
+    logger.info("OTP for %s: %s", email, otp)
+    return {"ok": True, "dev_otp": otp,
+            "message": "OTP sent. Check server logs (SMTP/SMS not configured yet)."}
+
+@api.post("/auth/otp/verify")
+async def otp_verify(body: OtpVerifyIn, request: Request, response: Response):
+    ip = client_ip(request)
+    if not limiter.hit(f"otp_verify:{ip}", max_hits=10, window_seconds=900):
+        raise HTTPException(429, "Too many attempts. Try again later.")
+    email = body.email.lower()
+    rec = await db.otp_codes.find_one({"email": email, "used": False})
+    if not rec or rec["otp"] != body.otp.strip():
+        raise HTTPException(400, "Invalid OTP")
+    if datetime.fromisoformat(rec["expires_at"]) < now_dt():
+        raise HTTPException(400, "OTP has expired. Request a new one.")
+    await db.otp_codes.update_one({"_id": rec["_id"]}, {"$set": {"used": True}})
+    u = await db.users.find_one({"email": email})
+    await db.users.update_one({"id": u["id"]}, {"$set": {"last_login": now_iso()}})
+    token = create_access_token(u["id"], u["email"])
+    refresh = create_refresh_token(u["id"])
+    response.set_cookie("access_token", token, httponly=True, samesite="lax",
+                        secure=False, max_age=30*60, path="/")
+    return {"id": u["id"], "email": u["email"], "name": u["name"],
+            "token": token, "refresh_token": refresh}
+
+
+# ──────────────── WALLET / CREDITS ────────────────
+DEFAULT_CREDIT_COSTS = {
+    "invoice.create":        2,
+    "purchase.create":       1,
+    "payment.create":        1,
+    "expense.create":        1,
+    "ai.query":             10,
+    "bank_statement.upload": 5,
+    "report.export":         3,
+    "gst.export":            5,
+    "einvoice.generate":     3,
+}
+
+async def _get_credit_costs() -> dict:
+    override = await db.credit_config.find_one({"key": "costs"})
+    if override:
+        return {**DEFAULT_CREDIT_COSTS, **override.get("costs", {})}
+    return DEFAULT_CREDIT_COSTS
+
+async def _get_wallet(org_id: str) -> dict:
+    w = await db.wallets.find_one({"org_id": org_id})
+    if not w:
+        w = {"org_id": org_id, "balance": 100, "total_earned": 100,
+             "total_spent": 0, "created_at": now_iso()}
+        await db.wallets.insert_one(w)
+    return w
+
+async def deduct_credits(org_id: str, action: str, ref: str = "") -> dict:
+    costs = await _get_credit_costs()
+    cost = costs.get(action, 0)
+    if cost == 0:
+        return {"ok": True, "cost": 0}
+    w = await _get_wallet(org_id)
+    if w["balance"] < cost:
+        raise HTTPException(402, f"Insufficient credits. Need {cost}, have {w['balance']}. Top up your wallet.")
+    new_bal = w["balance"] - cost
+    await db.wallets.update_one(
+        {"org_id": org_id},
+        {"$inc": {"balance": -cost, "total_spent": cost}}
+    )
+    await db.wallet_txns.insert_one({
+        "id": str(uuid.uuid4()), "org_id": org_id, "action": action,
+        "cost": cost, "balance_after": new_bal, "ref": ref, "created_at": now_iso(),
+    })
+    return {"ok": True, "cost": cost, "balance": new_bal}
+
+@api.get("/wallet")
+async def get_wallet(user=Depends(get_current_user)):
+    org_id = user.get("active_org_id") or user.get("org_id")
+    if not org_id:
+        raise HTTPException(400, "No active org")
+    w = await _get_wallet(org_id)
+    costs = await _get_credit_costs()
+    txns = await db.wallet_txns.find(
+        {"org_id": org_id}, {"_id": 0}
+    ).sort("created_at", -1).limit(50).to_list(50)
+    return {"balance": w["balance"], "total_earned": w["total_earned"],
+            "total_spent": w["total_spent"], "costs": costs, "transactions": txns}
+
+class TopUpIn(BaseModel):
+    credits: int = Field(ge=10, le=100000)
+    note: str = ""
+
+@api.post("/wallet/topup")
+async def topup_wallet(body: TopUpIn, user=Depends(get_current_user)):
+    org_id = user.get("active_org_id") or user.get("org_id")
+    if not org_id:
+        raise HTTPException(400, "No active org")
+    await db.wallets.update_one(
+        {"org_id": org_id},
+        {"$inc": {"balance": body.credits, "total_earned": body.credits}},
+        upsert=True,
+    )
+    await db.wallet_txns.insert_one({
+        "id": str(uuid.uuid4()), "org_id": org_id, "action": "topup",
+        "cost": -body.credits, "ref": body.note or "Manual top-up", "created_at": now_iso(),
+    })
+    w = await _get_wallet(org_id)
+    return {"ok": True, "balance": w["balance"]}
+
+@api.get("/admin/credit-costs")
+async def admin_get_costs(user=Depends(get_current_user)):
+    if not user.get("is_super_admin"):
+        raise HTTPException(403, "Super admin only")
+    return await _get_credit_costs()
+
+class CreditCostsIn(BaseModel):
+    costs: Dict[str, int]
+
+@api.put("/admin/credit-costs")
+async def admin_set_costs(body: CreditCostsIn, user=Depends(get_current_user)):
+    if not user.get("is_super_admin"):
+        raise HTTPException(403, "Super admin only")
+    await db.credit_config.update_one(
+        {"key": "costs"}, {"$set": {"costs": body.costs}}, upsert=True
+    )
+    return {"ok": True, "costs": body.costs}
+
+class AdminTopUpIn(BaseModel):
+    org_id: str
+    credits: int = Field(ge=1)
+    note: str = ""
+
+@api.post("/admin/wallet/topup")
+async def admin_topup(body: AdminTopUpIn, user=Depends(get_current_user)):
+    if not user.get("is_super_admin"):
+        raise HTTPException(403, "Super admin only")
+    await db.wallets.update_one(
+        {"org_id": body.org_id},
+        {"$inc": {"balance": body.credits, "total_earned": body.credits}},
+        upsert=True,
+    )
+    await db.wallet_txns.insert_one({
+        "id": str(uuid.uuid4()), "org_id": body.org_id, "action": "topup",
+        "cost": -body.credits, "ref": body.note or f"Admin top-up by {user['email']}",
+        "created_at": now_iso(),
+    })
+    return {"ok": True}
+
+@api.get("/admin/wallets")
+async def admin_list_wallets(user=Depends(get_current_user)):
+    if not user.get("is_super_admin"):
+        raise HTTPException(403, "Super admin only")
+    wallets = await db.wallets.find({}, {"_id": 0}).sort("balance", 1).to_list(500)
+    return wallets
+
+
 # ---------------- ORGS ----------------
 async def _create_org_internal(name: str, owner_user_id: str, state: str = "Tamil Nadu", state_code: str = "33") -> dict:
     org_id = str(uuid.uuid4())

@@ -18,7 +18,7 @@ import api from "@/lib/api";
 import {
   LayoutDashboard, Users, Package, FileText, ShoppingCart, Wallet,
   Receipt, BookOpen, Landmark, Settings, LogOut, Moon, Sun, Building2,
-  FileBarChart, ChevronDown, Plus, CreditCard, Sparkles, Bot, Wrench, FileSpreadsheet,
+  FileBarChart, ChevronDown, Plus, CreditCard, Sparkles, Bot, Wrench, FileSpreadsheet, Coins,
 } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import { STATES } from "@/pages/Parties";
@@ -37,6 +37,7 @@ const NAV = [
   { to: "/gst", label: "GST Returns", subtitle: "GSTR-1 & GSTR-3B", icon: FileBarChart, tid: "nav-gst" },
   { to: "/reports", label: "Reports & Books", subtitle: "P&L, ledgers, stock", icon: BookOpen, tid: "nav-accounting" },
   { to: "/tds", label: "TDS", subtitle: "Tax deducted at source", icon: Landmark, tid: "nav-tds" },
+  { to: "/wallet", label: "Wallet & Credits", subtitle: "Credits balance & history", icon: Coins, tid: "nav-wallet" },
   { to: "/billing", label: "Billing & Plan", subtitle: "Your subscription", icon: CreditCard, tid: "nav-billing" },
   { to: "/settings", label: "Settings", subtitle: "Business, team, banks", icon: Settings, tid: "nav-settings" },
 ];
@@ -63,7 +64,7 @@ export default function AppLayout() {
             <LogoMark size={36} />
             <div>
               <div className="text-white font-semibold tracking-tight text-base" style={{ fontFamily: "Outfit, sans-serif" }}>
-                Bill<span className="text-blue-400">Easy</span>
+                Billing<span className="text-blue-400">Easy</span>
               </div>
               <div className="text-[10px] uppercase tracking-wider text-slate-400">GST · Billing · Books</div>
             </div>
@@ -141,7 +142,7 @@ export default function AppLayout() {
         <header className="h-14 border-b border-border flex items-center justify-between px-4 sm:px-6 sticky top-0 z-30 bg-background/80 backdrop-blur">
           <div className="md:hidden flex items-center gap-2">
             <LogoMark size={26} />
-            <span className="font-semibold" style={{ fontFamily: "Outfit, sans-serif" }}>BillEasy</span>
+            <span className="font-semibold" style={{ fontFamily: "Outfit, sans-serif" }}>BillingEasy</span>
           </div>
           <div className="hidden md:flex items-center gap-3">
             <span className="text-sm text-muted-foreground">
