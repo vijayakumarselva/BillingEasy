@@ -18,7 +18,7 @@ import api from "@/lib/api";
 import {
   LayoutDashboard, Users, Package, FileText, ShoppingCart, Wallet,
   Receipt, BookOpen, Landmark, Settings, LogOut, Moon, Sun, Building2,
-  FileBarChart, ChevronDown, Plus, CreditCard, Sparkles, Bot, Wrench, FileSpreadsheet, Coins,
+  FileBarChart, ChevronDown, Plus, CreditCard, Sparkles, Bot, Wrench, FileSpreadsheet, Coins, Zap,
 } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import { STATES } from "@/pages/Parties";
@@ -37,7 +37,8 @@ const NAV = [
   { to: "/gst", label: "GST Returns", subtitle: "GSTR-1 & GSTR-3B", icon: FileBarChart, tid: "nav-gst" },
   { to: "/reports", label: "Reports & Books", subtitle: "P&L, ledgers, stock", icon: BookOpen, tid: "nav-accounting" },
   { to: "/tds", label: "TDS", subtitle: "Tax deducted at source", icon: Landmark, tid: "nav-tds" },
-  { to: "/wallet", label: "Wallet & Credits", subtitle: "Credits balance & history", icon: Coins, tid: "nav-wallet" },
+  { to: "/credits", label: "Buy Credits", subtitle: "Credit packs & pricing", icon: Zap, tid: "nav-credits", badge: "New" },
+  { to: "/wallet", label: "Wallet & Credits", subtitle: "Balance & history", icon: Coins, tid: "nav-wallet" },
   { to: "/billing", label: "Billing & Plan", subtitle: "Your subscription", icon: CreditCard, tid: "nav-billing" },
   { to: "/settings", label: "Settings", subtitle: "Business, team, banks", icon: Settings, tid: "nav-settings" },
 ];

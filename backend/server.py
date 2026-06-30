@@ -627,16 +627,25 @@ async def otp_verify(body: OtpVerifyIn, request: Request, response: Response):
 
 # ──────────────── WALLET / CREDITS ────────────────
 DEFAULT_CREDIT_COSTS = {
-    "invoice.create":        2,
-    "purchase.create":       1,
+    "invoice.create":        3,
+    "purchase.create":       2,
     "payment.create":        1,
     "expense.create":        1,
     "ai.query":             10,
     "bank_statement.upload": 5,
     "report.export":         3,
     "gst.export":            5,
-    "einvoice.generate":     3,
+    "einvoice.generate":     4,
 }
+
+# Credit packs available for purchase
+CREDIT_PACKS = [
+    {"id": "PACK_100",   "name": "Try It",   "credits": 100,   "price": 149,   "per_credit": 1.49, "savings_pct": 0,  "badge": None,          "color": "slate"},
+    {"id": "PACK_500",   "name": "Starter",  "credits": 500,   "price": 649,   "per_credit": 1.30, "savings_pct": 13, "badge": None,          "color": "blue"},
+    {"id": "PACK_2000",  "name": "Growth",   "credits": 2000,  "price": 2299,  "per_credit": 1.15, "savings_pct": 23, "badge": "Most Popular","color": "blue"},
+    {"id": "PACK_7500",  "name": "Business", "credits": 7500,  "price": 7499,  "per_credit": 1.00, "savings_pct": 33, "badge": None,          "color": "violet"},
+    {"id": "PACK_25000", "name": "Enterprise","credits": 25000, "price": 19999, "per_credit": 0.80, "savings_pct": 46, "badge": "Best Value",  "color": "violet"},
+]
 
 async def _get_credit_costs() -> dict:
     override = await db.credit_config.find_one({"key": "costs"})
@@ -647,7 +656,7 @@ async def _get_credit_costs() -> dict:
 async def _get_wallet(org_id: str) -> dict:
     w = await db.wallets.find_one({"org_id": org_id})
     if not w:
-        w = {"org_id": org_id, "balance": 100, "total_earned": 100,
+        w = {"org_id": org_id, "balance": 50, "total_earned": 50,
              "total_spent": 0, "created_at": now_iso()}
         await db.wallets.insert_one(w)
     return w
@@ -670,6 +679,35 @@ async def deduct_credits(org_id: str, action: str, ref: str = "") -> dict:
         "cost": cost, "balance_after": new_bal, "ref": ref, "created_at": now_iso(),
     })
     return {"ok": True, "cost": cost, "balance": new_bal}
+
+@api.get("/wallet/packs")
+async def get_credit_packs():
+    return CREDIT_PACKS
+
+class PurchasePackIn(BaseModel):
+    pack_id: str
+
+@api.post("/wallet/purchase")
+async def purchase_pack(body: PurchasePackIn, user=Depends(get_current_user)):
+    pack = next((p for p in CREDIT_PACKS if p["id"] == body.pack_id), None)
+    if not pack:
+        raise HTTPException(400, "Invalid pack")
+    org_id = user.get("active_org_id") or user.get("org_id")
+    if not org_id:
+        raise HTTPException(400, "No active org")
+    await db.wallets.update_one(
+        {"org_id": org_id},
+        {"$inc": {"balance": pack["credits"], "total_earned": pack["credits"]}},
+        upsert=True,
+    )
+    await db.wallet_txns.insert_one({
+        "id": str(uuid.uuid4()), "org_id": org_id, "action": "topup",
+        "cost": -pack["credits"],
+        "ref": f"{pack['name']} Pack — ₹{pack['price']:,} ({pack['credits']} credits)",
+        "created_at": now_iso(),
+    })
+    w = await _get_wallet(org_id)
+    return {"ok": True, "pack": pack, "balance": w["balance"]}
 
 @api.get("/wallet")
 async def get_wallet(user=Depends(get_current_user)):

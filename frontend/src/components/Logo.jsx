@@ -1,8 +1,6 @@
-// BillingEasy logo — a stylized invoice card with an integrated ₹ rupee mark.
-// Designed to read as "B" + "₹" + "invoice lines" simultaneously.
-// Use <Logo /> for icon-only or <Logo withWordmark /> for icon + "BillingEasy".
 import React from "react";
 
+// Logo B — BE hexagon monogram
 export function LogoMark({ size = 36, className = "" }) {
   return (
     <svg
@@ -20,31 +18,24 @@ export function LogoMark({ size = 36, className = "" }) {
           <stop offset="100%" stopColor="#1D4ED8" />
         </linearGradient>
       </defs>
-      {/* Rounded invoice card */}
-      <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#be-grad)" />
-      {/* Ledger lines */}
-      <rect x="14" y="42" width="20" height="3" rx="1.5" fill="#ffffff" fillOpacity="0.35" />
-      <rect x="14" y="49" width="14" height="3" rx="1.5" fill="#ffffff" fillOpacity="0.22" />
-      {/* Stylized ₹ / B */}
-      <path
-        d="M22 16 H40 a8 8 0 0 1 0 16 H28
-           M22 24 H38
-           M22 32 L40 44"
-        fill="none"
-        stroke="#ffffff"
-        strokeWidth="4.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+      {/* Hexagon */}
+      <polygon
+        points="32,3 59,18 59,46 32,61 5,46 5,18"
+        fill="url(#be-grad)"
       />
-      {/* Tiny check-mark accent for 'Easy' */}
-      <path
-        d="M42 16 l3 3 l6 -6"
-        fill="none"
-        stroke="#22D3EE"
-        strokeWidth="3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
+      {/* BE monogram */}
+      <text
+        x="32"
+        y="42"
+        textAnchor="middle"
+        fontFamily="system-ui, -apple-system, sans-serif"
+        fontWeight="800"
+        fontSize="26"
+        fill="white"
+        letterSpacing="-1"
+      >
+        BE
+      </text>
     </svg>
   );
 }
