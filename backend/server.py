@@ -790,6 +790,25 @@ async def admin_list_wallets(user=Depends(get_current_user)):
     return wallets
 
 
+# One-time bootstrap: promote any email to super admin using BOOTSTRAP_SECRET env var
+# POST /api/bootstrap-admin  body: {"email": "you@example.com", "secret": "your-secret"}
+@api.post("/bootstrap-admin")
+async def bootstrap_admin(body: dict):
+    secret = os.getenv("BOOTSTRAP_SECRET", "")
+    if not secret or body.get("secret") != secret:
+        raise HTTPException(403, "Invalid bootstrap secret")
+    email = (body.get("email") or "").lower().strip()
+    if not email:
+        raise HTTPException(400, "email required")
+    result = await db.users.update_one(
+        {"email": email},
+        {"$set": {"is_super_admin": True}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(404, f"User {email} not found. Register first, then call this endpoint.")
+    return {"ok": True, "message": f"{email} is now super admin"}
+
+
 # ---------------- ORGS ----------------
 async def _create_org_internal(name: str, owner_user_id: str, state: str = "Tamil Nadu", state_code: str = "33") -> dict:
     org_id = str(uuid.uuid4())
@@ -2461,6 +2480,17 @@ async def on_startup():
         if await db.users.count_documents({}) == 0:
             await seed_demo_data(db, hash_password)
             logger.info("Seeded demo data")
+        # Auto-promote SUPER_ADMIN_EMAIL env var to super admin on every startup
+        super_email = os.getenv("SUPER_ADMIN_EMAIL", "").strip().lower()
+        if super_email:
+            result = await db.users.update_one(
+                {"email": super_email},
+                {"$set": {"is_super_admin": True}}
+            )
+            if result.modified_count:
+                logger.info(f"Promoted {super_email} to super admin")
+            elif result.matched_count == 0:
+                logger.warning(f"SUPER_ADMIN_EMAIL {super_email} not found in users — register first")
         logger.info("Database connected and ready")
     except Exception as e:
         logger.error(f"Startup error (non-fatal): {e}")
