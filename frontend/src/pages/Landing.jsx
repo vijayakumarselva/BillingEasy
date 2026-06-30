@@ -75,7 +75,7 @@ export default function Landing() {
       <section id="features" className="max-w-7xl mx-auto px-4 sm:px-6 py-16 md:py-20">
         <div className="text-center mb-10">
           <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight">Everything you need to run your books</h2>
-          <p className="text-sm text-muted-foreground mt-2 max-w-xl mx-auto">From your first invoice to your hundredth GSTR-1 filing — BillEasy grows with you.</p>
+          <p className="text-sm text-muted-foreground mt-2 max-w-xl mx-auto">From your first invoice to your hundredth GSTR-1 filing — BillingEasy grows with you.</p>
         </div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {FEATURES.map(f => (
@@ -97,7 +97,7 @@ export default function Landing() {
             <Badge className="bg-emerald-600 mb-3">100% Free · No signup</Badge>
             <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight">Free GST tools every Indian business should bookmark</h2>
             <p className="text-sm text-muted-foreground mt-2 max-w-2xl mx-auto">
-              Quick, public utilities — use them as much as you want, no login, no rate limits. Powered by the same engine that runs inside BillEasy.
+              Quick, public utilities — use them as much as you want, no login, no rate limits. Powered by the same engine that runs inside BillingEasy.
             </p>
           </div>
           <div className="grid md:grid-cols-3 gap-4">
@@ -147,7 +147,7 @@ export default function Landing() {
             pricing={pricing}
             billingCycle={billingCycle}
             setBillingCycle={setBillingCycle}
-            onChoose={(tier, code) => tier.is_custom ? window.location.href = "mailto:sales@billeasy.in?subject=Enterprise%20enquiry" : goSignup(code)}
+            onChoose={(tier, code) => tier.is_custom ? window.location.href = "mailto:sales@billingseasy.com?subject=Enterprise%20enquiry" : goSignup(code)}
           />
 
           <div className="mt-10">
@@ -188,7 +188,7 @@ export default function Landing() {
         <div className="rounded-3xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white p-10 md:p-14 text-center shadow-xl shadow-blue-600/20">
           <h2 className="text-3xl sm:text-4xl font-semibold">Ready to professionalise your books?</h2>
           <p className="mt-3 text-blue-100 max-w-xl mx-auto">
-            Join hundreds of Indian businesses already running on BillEasy. Free for 7 days, no card needed.
+            Join hundreds of Indian businesses already running on BillingEasy. Free for 7 days, no card needed.
           </p>
           <Button size="lg" className="mt-6 bg-white text-blue-700 hover:bg-blue-50 h-12 px-6 text-base shadow" onClick={() => goSignup()} data-testid="footer-cta-start">
             Start free trial <ArrowRight className="h-4 w-4 ml-2" />
@@ -200,13 +200,13 @@ export default function Landing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-wrap items-center justify-between gap-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
             <Logo size={24} />
-            <span>© {new Date().getFullYear()} BillEasy. Built for Indian businesses.</span>
+            <span>© {new Date().getFullYear()} BillingEasy. Built for Indian businesses.</span>
           </div>
           <div className="flex items-center gap-4">
             <a href="#features" className="hover:text-foreground">Features</a>
             <a href="#pricing" className="hover:text-foreground">Pricing</a>
             <a href="#trust" className="hover:text-foreground">Security</a>
-            <a href="mailto:hello@billeasy.in" className="hover:text-foreground">Contact</a>
+            <a href="mailto:hello@billingseasy.com" className="hover:text-foreground">Contact</a>
           </div>
         </div>
       </footer>

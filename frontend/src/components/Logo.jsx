@@ -1,6 +1,6 @@
-// BillEasy logo — a stylized invoice card with an integrated ₹ rupee mark.
+// BillingEasy logo — a stylized invoice card with an integrated ₹ rupee mark.
 // Designed to read as "B" + "₹" + "invoice lines" simultaneously.
-// Use <Logo /> for icon-only or <Logo withWordmark /> for icon + "BillEasy".
+// Use <Logo /> for icon-only or <Logo withWordmark /> for icon + "BillingEasy".
 import React from "react";
 
 export function LogoMark({ size = 36, className = "" }) {
@@ -11,7 +11,7 @@ export function LogoMark({ size = 36, className = "" }) {
       viewBox="0 0 64 64"
       xmlns="http://www.w3.org/2000/svg"
       role="img"
-      aria-label="BillEasy"
+      aria-label="BillingEasy"
       className={className}
     >
       <defs>

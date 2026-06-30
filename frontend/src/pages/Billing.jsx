@@ -148,7 +148,7 @@ export default function Billing() {
           currentCode={status.plan_code}
           ownerOnly={!isOwner}
           onChoose={(tier, code) => {
-            if (tier.is_custom) { window.location.href = "mailto:sales@billeasy.in?subject=Enterprise%20enquiry"; return; }
+            if (tier.is_custom) { window.location.href = "mailto:sales@billingseasy.com?subject=Enterprise%20enquiry"; return; }
             if (!isOwner) { toast.error("Only the owner can manage billing"); return; }
             startCheckout(code);
           }}

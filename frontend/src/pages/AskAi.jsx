@@ -1,4 +1,4 @@
-// Ask BillEasy — streaming AI bookkeeper chat (Claude Sonnet 4.5).
+// Ask BillingEasy — streaming AI bookkeeper chat (Claude Sonnet 4.5).
 import { useEffect, useRef, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -148,7 +148,7 @@ export default function AskAi() {
             <Bot className="h-5 w-5" />
           </div>
           <div className="flex-1">
-            <div className="font-semibold flex items-center gap-2">Ask BillEasy <Badge className="bg-violet-600 text-[10px]">AI</Badge></div>
+            <div className="font-semibold flex items-center gap-2">Ask BillingEasy <Badge className="bg-violet-600 text-[10px]">AI</Badge></div>
             <div className="text-[11px] text-muted-foreground">Your AI bookkeeper · Powered by Claude · English & हिन्दी</div>
           </div>
         </div>
