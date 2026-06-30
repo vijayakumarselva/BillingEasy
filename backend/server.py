@@ -69,7 +69,7 @@ PLANS = PLAN_CATALOG
 client = AsyncIOMotorClient(
     MONGO_URL,
     tls=True,
-    tlsAllowInvalidCertificates=False,
+    tlsAllowInvalidCertificates=True,
     serverSelectionTimeoutMS=30000,
 )
 db = client[DB_NAME]
