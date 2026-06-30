@@ -13,6 +13,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import os
+import ssl
 import certifi
 import uuid
 import logging
@@ -67,10 +68,16 @@ CASHFREE_API_VERSION = "2023-08-01"
 
 PLANS = PLAN_CATALOG
 
+_ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+_ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+_ssl_ctx.check_hostname = False
+_ssl_ctx.verify_mode = ssl.CERT_NONE
+
 client = AsyncIOMotorClient(
     MONGO_URL,
     tls=True,
-    tlsCAFile=certifi.where(),
+    tlsAllowInvalidCertificates=True,
+    tlsAllowInvalidHostnames=True,
     serverSelectionTimeoutMS=30000,
 )
 db = client[DB_NAME]
