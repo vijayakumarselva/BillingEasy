@@ -66,7 +66,12 @@ CASHFREE_API_VERSION = "2023-08-01"
 
 PLANS = PLAN_CATALOG
 
-client = AsyncIOMotorClient(MONGO_URL)
+client = AsyncIOMotorClient(
+    MONGO_URL,
+    tls=True,
+    tlsAllowInvalidCertificates=False,
+    serverSelectionTimeoutMS=30000,
+)
 db = client[DB_NAME]
 
 app = FastAPI(title="BillEasy API")
