@@ -72,6 +72,12 @@ db = client[DB_NAME]
 app = FastAPI(title="BillEasy API")
 api = APIRouter(prefix="/api")
 
+
+@app.get("/health")
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("billeasy")
 
@@ -2146,23 +2152,21 @@ async def seed(user=Depends(get_current_user)):
 # ---------------- Bootstrap ----------------
 @app.on_event("startup")
 async def on_startup():
-    await db.users.create_index("email", unique=True)
-    await db.memberships.create_index([("user_id", 1), ("org_id", 1)], unique=True)
-    await db.organizations.create_index("id", unique=True)
-    if await db.users.count_documents({}) == 0:
-        await seed_demo_data(db, hash_password)
-        logger.info("Seeded demo data")
+    try:
+        await db.users.create_index("email", unique=True)
+        await db.memberships.create_index([("user_id", 1), ("org_id", 1)], unique=True)
+        await db.organizations.create_index("id", unique=True)
+        if await db.users.count_documents({}) == 0:
+            await seed_demo_data(db, hash_password)
+            logger.info("Seeded demo data")
+        logger.info("Database connected and ready")
+    except Exception as e:
+        logger.error(f"Startup error (non-fatal): {e}")
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
     client.close()
-
-
-@app.get("/health")
-@app.get("/api/health")
-async def health():
-    return {"status": "ok"}
 
 
 app.include_router(api)
