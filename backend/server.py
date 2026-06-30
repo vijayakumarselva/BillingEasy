@@ -22,6 +22,9 @@ import hashlib
 import base64
 import json
 import secrets
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, List, Dict
 from io import BytesIO
@@ -82,6 +85,31 @@ async def health():
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("billeasy")
+
+
+def send_email(to: str, subject: str, html: str, text: str = "") -> bool:
+    """Send email via Gmail SMTP. Requires SMTP_EMAIL + SMTP_PASSWORD env vars.
+    Falls back to logging if not configured."""
+    smtp_email = os.getenv("SMTP_EMAIL", "")
+    smtp_password = os.getenv("SMTP_PASSWORD", "")
+    if not smtp_email or not smtp_password:
+        logger.info("[EMAIL FALLBACK] To: %s | Subject: %s | Body: %s", to, subject, text or html[:200])
+        return False
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"BillingEasy <{smtp_email}>"
+        msg["To"] = to
+        if text:
+            msg.attach(MIMEText(text, "plain"))
+        msg.attach(MIMEText(html, "html"))
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+            s.login(smtp_email, smtp_password)
+            s.sendmail(smtp_email, to, msg.as_string())
+        return True
+    except Exception as e:
+        logger.error("Email send failed: %s", e)
+        return False
 
 
 # ---------------- Helpers ----------------
@@ -531,11 +559,24 @@ async def forgot_password(body: ForgotPasswordIn, request: Request):
             "expires_at": (now_dt() + timedelta(hours=2)).isoformat(),
             "used": False, "created_at": now_iso(),
         })
-        # Without SMTP configured, surface token in server log (admins can read it)
-        logger.info("Password reset token for %s: %s", u["email"], token)
-        # Also return token in response when DEV/no SMTP — flag clearly
-        return {"ok": True, "dev_token": token,
-                "message": "Reset link generated. Check server logs (SMTP not configured)."}
+        app_url = os.getenv("APP_URL", "https://billingseasy.com")
+        reset_link = f"{app_url}/reset-password?token={token}"
+        html = f"""
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
+          <h2 style="color:#1D4ED8;">Reset your BillingEasy password</h2>
+          <p>Click the button below to set a new password. This link expires in 2 hours.</p>
+          <a href="{reset_link}" style="display:inline-block;background:#2563EB;color:#fff;
+             padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0;">
+            Reset Password
+          </a>
+          <p style="color:#6B7280;font-size:13px;">If you didn't request this, ignore this email.</p>
+          <hr style="border:none;border-top:1px solid #E5E7EB;margin:24px 0;"/>
+          <p style="color:#9CA3AF;font-size:12px;">BillingEasy · billingseasy.com</p>
+        </div>"""
+        sent = send_email(u["email"], "Reset your BillingEasy password", html,
+                          f"Reset your password: {reset_link}")
+        if not sent:
+            logger.info("Password reset link for %s: %s", u["email"], reset_link)
     return {"ok": True, "message": "If that email exists, a reset link has been sent."}
 
 
@@ -599,9 +640,21 @@ async def otp_request(body: OtpRequestIn, request: Request, response: Response):
     await db.otp_codes.delete_many({"email": email})
     await db.otp_codes.insert_one({"email": email, "otp": otp,
                                    "expires_at": expires_at, "used": False})
-    logger.info("OTP for %s: %s", email, otp)
-    return {"ok": True, "dev_otp": otp,
-            "message": "OTP sent. Check server logs (SMTP/SMS not configured yet)."}
+    html = f"""
+    <div style="font-family:sans-serif;max-width:400px;margin:0 auto;">
+      <h2 style="color:#1D4ED8;">Your BillingEasy OTP</h2>
+      <p>Use this code to sign in. It expires in 10 minutes.</p>
+      <div style="font-size:40px;font-weight:800;letter-spacing:10px;color:#1D4ED8;
+                  background:#EFF6FF;padding:20px;border-radius:12px;text-align:center;
+                  margin:16px 0;">{otp}</div>
+      <p style="color:#6B7280;font-size:13px;">If you didn't request this, ignore this email.</p>
+      <hr style="border:none;border-top:1px solid #E5E7EB;margin:24px 0;"/>
+      <p style="color:#9CA3AF;font-size:12px;">BillingEasy · billingseasy.com</p>
+    </div>"""
+    sent = send_email(email, f"{otp} is your BillingEasy OTP", html, f"Your OTP is: {otp}")
+    if not sent:
+        logger.info("OTP for %s: %s", email, otp)
+    return {"ok": True, "message": "OTP sent to your email. Valid for 10 minutes."}
 
 @api.post("/auth/otp/verify")
 async def otp_verify(body: OtpVerifyIn, request: Request, response: Response):
