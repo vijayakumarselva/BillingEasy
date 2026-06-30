@@ -1575,6 +1575,89 @@ async def delete_bank(bid: str, ctx=Depends(get_org_ctx)):
     return {"ok": True}
 
 
+# ---------------- Bank Statement Upload & Auto-Match ----------------
+
+class BankStatementRow(BaseModel):
+    date: str
+    description: str
+    debit: float = 0.0
+    credit: float = 0.0
+    balance: float = 0.0
+
+class BankStatementUpload(BaseModel):
+    bank_account_id: str
+    rows: List[BankStatementRow]
+
+@api.post("/bank-statement/upload")
+async def upload_bank_statement(body: BankStatementUpload, ctx=Depends(get_org_ctx)):
+    """Accept parsed bank statement rows and auto-match against invoices/purchases."""
+    results = []
+    for row in body.rows:
+        entry = {
+            "id": str(uuid.uuid4()),
+            "org_id": ctx["org_id"],
+            "bank_account_id": body.bank_account_id,
+            "date": row.date,
+            "description": row.description,
+            "debit": row.debit,
+            "credit": row.credit,
+            "balance": row.balance,
+            "matched": False,
+            "match_type": None,
+            "match_id": None,
+            "match_ref": None,
+            "created_at": now_iso(),
+        }
+        # Auto-match: credit → customer invoices, debit → vendor purchases
+        amount = row.credit if row.credit > 0 else row.debit
+        match_direction = "sales" if row.credit > 0 else "purchases"
+        if match_direction == "sales":
+            invoice = await db.invoices.find_one(
+                org_filter(ctx, {"total": {"$gte": amount * 0.99, "$lte": amount * 1.01}, "status": {"$ne": "paid"}}),
+                {"_id": 0}
+            )
+            if invoice:
+                entry["matched"] = True
+                entry["match_type"] = "invoice"
+                entry["match_id"] = invoice["id"]
+                entry["match_ref"] = invoice.get("invoice_number", invoice["id"])
+        else:
+            purchase = await db.purchases.find_one(
+                org_filter(ctx, {"total": {"$gte": amount * 0.99, "$lte": amount * 1.01}, "status": {"$ne": "paid"}}),
+                {"_id": 0}
+            )
+            if purchase:
+                entry["matched"] = True
+                entry["match_type"] = "purchase"
+                entry["match_id"] = purchase["id"]
+                entry["match_ref"] = purchase.get("bill_number", purchase["id"])
+        await db.bank_statement_rows.insert_one(entry)
+        results.append({k: v for k, v in entry.items() if k != "_id"})
+    matched = sum(1 for r in results if r["matched"])
+    return {"uploaded": len(results), "matched": matched, "rows": results}
+
+@api.get("/bank-statement")
+async def get_bank_statement(bank_account_id: str = Query(None), ctx=Depends(get_org_ctx)):
+    q = org_filter(ctx)
+    if bank_account_id:
+        q["bank_account_id"] = bank_account_id
+    rows = await db.bank_statement_rows.find(q, {"_id": 0}).sort("date", -1).to_list(1000)
+    return rows
+
+@api.patch("/bank-statement/{row_id}/match")
+async def manual_match(row_id: str, body: dict, ctx=Depends(get_org_ctx)):
+    await db.bank_statement_rows.update_one(
+        org_filter(ctx, {"id": row_id}),
+        {"$set": {"matched": True, "match_type": body.get("match_type"), "match_id": body.get("match_id"), "match_ref": body.get("match_ref")}}
+    )
+    return {"ok": True}
+
+@api.delete("/bank-statement/{row_id}")
+async def delete_statement_row(row_id: str, ctx=Depends(get_org_ctx)):
+    await db.bank_statement_rows.delete_one(org_filter(ctx, {"id": row_id}))
+    return {"ok": True}
+
+
 # ---------------- TDS ----------------
 @api.get("/tds")
 async def list_tds(ctx=Depends(get_org_ctx)):

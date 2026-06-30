@@ -18,20 +18,21 @@ import api from "@/lib/api";
 import {
   LayoutDashboard, Users, Package, FileText, ShoppingCart, Wallet,
   Receipt, BookOpen, Landmark, Settings, LogOut, Moon, Sun, Building2,
-  FileBarChart, ChevronDown, Plus, CreditCard, Sparkles, Bot, Wrench,
+  FileBarChart, ChevronDown, Plus, CreditCard, Sparkles, Bot, Wrench, FileSpreadsheet,
 } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import { STATES } from "@/pages/Parties";
 
 const NAV = [
   { to: "/dashboard", label: "Home", subtitle: "Dashboard", icon: LayoutDashboard, tid: "nav-dashboard" },
-  { to: "/ask-ai", label: "Ask BillEasy AI", subtitle: "Your AI bookkeeper", icon: Bot, tid: "nav-ai", badge: "AI" },
+  { to: "/ask-ai", label: "Ask BillingEasy AI", subtitle: "Your AI bookkeeper", icon: Bot, tid: "nav-ai", badge: "AI" },
   { to: "/tools", label: "GST Tools", subtitle: "GSTIN check, HSN finder", icon: Wrench, tid: "nav-tools", badge: "Free" },
   { to: "/parties", label: "Customers & Suppliers", subtitle: "Who you buy from / sell to", icon: Users, tid: "nav-parties" },
   { to: "/products", label: "Products & Stock", subtitle: "What you sell", icon: Package, tid: "nav-products" },
   { to: "/sales", label: "Sales / Invoices", subtitle: "Bills for your customers", icon: FileText, tid: "nav-sales" },
   { to: "/purchases", label: "Purchases / Bills", subtitle: "Bills from suppliers", icon: ShoppingCart, tid: "nav-purchases" },
   { to: "/payments", label: "Money In / Out", subtitle: "Cash, UPI, bank", icon: Wallet, tid: "nav-payments" },
+  { to: "/bank-statement", label: "Bank Statement", subtitle: "Upload & auto-match", icon: FileSpreadsheet, tid: "nav-bank-statement" },
   { to: "/expenses", label: "Expenses", subtitle: "Rent, electricity, salaries", icon: Receipt, tid: "nav-expenses" },
   { to: "/gst", label: "GST Returns", subtitle: "GSTR-1 & GSTR-3B", icon: FileBarChart, tid: "nav-gst" },
   { to: "/reports", label: "Reports & Books", subtitle: "P&L, ledgers, stock", icon: BookOpen, tid: "nav-accounting" },

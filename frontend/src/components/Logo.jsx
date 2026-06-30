@@ -55,7 +55,7 @@ export default function Logo({ withWordmark = false, size = 36, className = "", 
     <span className={`inline-flex items-center gap-2 ${className}`}>
       <LogoMark size={size} />
       <span className={`font-semibold tracking-tight ${wordmarkClassName}`} style={{ fontFamily: "Outfit, sans-serif" }}>
-        Bill<span className="text-blue-600">Easy</span>
+        Billing<span className="text-blue-600">Easy</span>
       </span>
     </span>
   );

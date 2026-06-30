@@ -30,6 +30,7 @@ import SuperAdmin from "@/pages/SuperAdmin";
 import PublicInvoice from "@/pages/PublicInvoice";
 import Tools from "@/pages/Tools";
 import AskAi from "@/pages/AskAi";
+import BankStatement from "@/pages/BankStatement";
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -99,6 +100,7 @@ export default function App() {
               <Route path="/sales/:id" element={<InvoiceDetail />} />
               <Route path="/purchases" element={<Purchases />} />
               <Route path="/payments" element={<Payments />} />
+              <Route path="/bank-statement" element={<BankStatement />} />
               <Route path="/expenses" element={<Expenses />} />
               <Route path="/gst" element={<GST />} />
               <Route path="/reports" element={<Reports />} />
