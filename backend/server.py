@@ -2159,6 +2159,7 @@ async def on_shutdown():
     client.close()
 
 
+@app.get("/health")
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
