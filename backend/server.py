@@ -274,6 +274,7 @@ class RegisterIn(BaseModel):
     password: str = Field(min_length=6)
     name: str
     org_name: str = "My Business"
+    phone: str = ""
 
 
 class LoginIn(BaseModel):
@@ -461,7 +462,7 @@ async def register(body: RegisterIn, request: Request, response: Response):
         raise HTTPException(400, "Email already registered")
     uid = str(uuid.uuid4())
     user = {
-        "id": uid, "email": email, "name": body.name,
+        "id": uid, "email": email, "name": body.name, "phone": body.phone,
         "password_hash": hash_password(body.password), "created_at": now_iso(),
         "last_login": now_iso(),
     }
@@ -741,13 +742,11 @@ class PurchasePackIn(BaseModel):
     pack_id: str
 
 @api.post("/wallet/purchase")
-async def purchase_pack(body: PurchasePackIn, user=Depends(get_current_user)):
+async def purchase_pack(body: PurchasePackIn, ctx=Depends(get_org_ctx)):
     pack = next((p for p in CREDIT_PACKS if p["id"] == body.pack_id), None)
     if not pack:
         raise HTTPException(400, "Invalid pack")
-    org_id = user.get("active_org_id") or user.get("org_id")
-    if not org_id:
-        raise HTTPException(400, "No active org")
+    org_id = ctx["org_id"]
     await db.wallets.update_one(
         {"org_id": org_id},
         {"$inc": {"balance": pack["credits"], "total_earned": pack["credits"]}},
@@ -763,10 +762,8 @@ async def purchase_pack(body: PurchasePackIn, user=Depends(get_current_user)):
     return {"ok": True, "pack": pack, "balance": w["balance"]}
 
 @api.get("/wallet")
-async def get_wallet(user=Depends(get_current_user)):
-    org_id = user.get("active_org_id") or user.get("org_id")
-    if not org_id:
-        raise HTTPException(400, "No active org")
+async def get_wallet(ctx=Depends(get_org_ctx)):
+    org_id = ctx["org_id"]
     w = await _get_wallet(org_id)
     costs = await _get_credit_costs()
     txns = await db.wallet_txns.find(
@@ -780,10 +777,8 @@ class TopUpIn(BaseModel):
     note: str = ""
 
 @api.post("/wallet/topup")
-async def topup_wallet(body: TopUpIn, user=Depends(get_current_user)):
-    org_id = user.get("active_org_id") or user.get("org_id")
-    if not org_id:
-        raise HTTPException(400, "No active org")
+async def topup_wallet(body: TopUpIn, ctx=Depends(get_org_ctx)):
+    org_id = ctx["org_id"]
     await db.wallets.update_one(
         {"org_id": org_id},
         {"$inc": {"balance": body.credits, "total_earned": body.credits}},
