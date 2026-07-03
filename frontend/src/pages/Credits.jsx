@@ -30,11 +30,8 @@ export default function Credits() {
   const [buying, setBuying]   = useState(null);
 
   useEffect(() => {
-    Promise.all([
-      api.get("/wallet/packs"),
-      api.get("/wallet"),
-    ]).then(([p, w]) => { setPacks(p.data); setWallet(w.data); })
-      .catch(() => toast.error("Failed to load"));
+    api.get("/wallet/packs").then(r => setPacks(r.data)).catch(() => {});
+    api.get("/wallet").then(r => setWallet(r.data)).catch(() => {});
   }, []);
 
   const buy = async (pack) => {

@@ -49,10 +49,10 @@ export default function AppLayout() {
   const nav = useNavigate();
   const loc = useLocation();
   const [showCreateOrg, setShowCreateOrg] = useState(false);
-  const [billing, setBilling] = useState(null);
+  const [wallet, setWallet] = useState(null);
 
   useEffect(() => {
-    if (orgId) api.get("/billing/status").then(r => setBilling(r.data)).catch(() => {});
+    if (orgId) api.get("/wallet").then(r => setWallet(r.data)).catch(() => {});
   }, [orgId, loc.pathname]);
 
   const handleLogout = async () => { await logout(); nav("/login"); };
@@ -149,17 +149,14 @@ export default function AppLayout() {
             <span className="text-sm text-muted-foreground">
               Welcome back, <span className="text-foreground font-medium">{user?.name?.split(" ")[0]}</span>
             </span>
-            {billing && billing.status === "trialing" && (
-              <Badge variant="secondary" className="gap-1 text-amber-700 bg-amber-100 dark:bg-amber-500/10 dark:text-amber-300">
-                <Sparkles className="h-3 w-3" /> Trial · {billing.days_left}d left
+            {wallet && (
+              <Badge variant="secondary" className="gap-1 text-blue-700 bg-blue-100 dark:bg-blue-500/10 dark:text-blue-300">
+                <Coins className="h-3 w-3" /> {wallet.balance} credits
               </Badge>
             )}
-            {billing && billing.status === "active" && (
-              <Badge className="gap-1 bg-emerald-600">Active · {billing.days_left}d</Badge>
-            )}
-            {billing && billing.needs_payment && (
-              <Button size="sm" variant="destructive" onClick={() => nav("/billing")} data-testid="upgrade-button">
-                Upgrade now
+            {wallet && wallet.balance < 10 && (
+              <Button size="sm" variant="destructive" onClick={() => nav("/credits")} data-testid="upgrade-button">
+                Top up credits
               </Button>
             )}
           </div>
@@ -192,7 +189,7 @@ function CreateOrgDialog({ open, onClose, onCreated }) {
     try {
       const st = STATES.find(s => s.code === stateCode);
       const { data } = await api.post("/orgs", { name, state: st.name, state_code: stateCode });
-      toast.success(`${data.name} created — 7-day free trial started`);
+      toast.success(`${data.name} created — 50 free credits added!`);
       onCreated(data.id);
       setName("");
     } catch (e) {
@@ -218,12 +215,12 @@ function CreateOrgDialog({ open, onClose, onCreated }) {
               </SelectContent>
             </Select>
           </div>
-          <div className="rounded-md border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 p-3 text-xs">
-            <div className="flex items-center gap-2 font-semibold text-amber-700 dark:text-amber-300 mb-1">
-              <Sparkles className="h-3.5 w-3.5" /> 7-day free trial
+          <div className="rounded-md border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 p-3 text-xs">
+            <div className="flex items-center gap-2 font-semibold text-blue-700 dark:text-blue-300 mb-1">
+              <Sparkles className="h-3.5 w-3.5" /> 50 free credits included
             </div>
-            <div className="text-amber-700/80 dark:text-amber-300/80">
-              Unlimited everything for 7 days. After that, ₹199/month or ₹1,990/year per organization.
+            <div className="text-blue-700/80 dark:text-blue-300/80">
+              Credits power every feature. Top up anytime from the Wallet page.
             </div>
           </div>
         </div>

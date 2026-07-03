@@ -146,11 +146,20 @@ export default function Parties() {
               <GstinField value={form.gstin}
                           onChange={(v) => setForm({ ...form, gstin: v.toUpperCase() })}
                           onValid={(info) => {
-                            // Auto-fill state from GSTIN
-                            if (info?.state_code) {
-                              const st = STATES.find(s => s.code === info.state_code);
-                              if (st) setForm(f => ({ ...f, state: st.name, state_code: st.code }));
-                            }
+                            setForm(f => {
+                              const updates = {};
+                              if (info?.state_code) {
+                                const st = STATES.find(s => s.code === info.state_code);
+                                if (st) { updates.state = st.name; updates.state_code = st.code; }
+                              }
+                              if (!f.name && (info?.legal_name || info?.trade_name)) {
+                                updates.name = info.legal_name || info.trade_name;
+                              }
+                              if (!f.billing_address && info?.address) {
+                                updates.billing_address = info.address;
+                              }
+                              return { ...f, ...updates };
+                            });
                           }} />
             </div>
             <Field label="PAN" v={form.pan} on={(v) => setForm({ ...form, pan: v.toUpperCase() })} tid="party-pan-input" />

@@ -14,7 +14,7 @@ export default function Register() {
   const nav = useNavigate();
   const [params] = useSearchParams();
   const planCode = params.get("plan");
-  const [form, setForm] = useState({ name: "", email: "", password: "", org_name: "" });
+  const [form, setForm] = useState({ name: "", email: "", password: "", org_name: "", phone: "" });
   const [loading, setLoading] = useState(false);
 
   const onSubmit = async (e) => {
@@ -23,7 +23,7 @@ export default function Register() {
     setLoading(true);
     try {
       await register(form);
-      toast.success("Welcome! Your 7-day free trial has started.");
+      toast.success("Welcome! You have 50 free credits to get started.");
       nav(planCode ? `/billing?plan=${encodeURIComponent(planCode)}` : "/dashboard");
     } catch (err) {
       toast.error(formatApiErrorDetail(err?.response?.data?.detail) || "Registration failed");
@@ -36,7 +36,7 @@ export default function Register() {
         <div className="mb-8 flex items-center gap-2.5">
           <LogoMark size={36} />
           <span className="font-semibold text-lg" style={{ fontFamily: "Outfit, sans-serif" }}>
-            Bill<span className="text-blue-600">Easy</span>
+            Billing<span className="text-blue-600">Easy</span>
           </span>
         </div>
         <h2 className="text-3xl font-semibold tracking-tight mb-1">Create your account</h2>
@@ -45,8 +45,8 @@ export default function Register() {
         <div className="rounded-md border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 p-3 text-xs mb-5 flex gap-2">
           <Sparkles className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
           <div>
-            <div className="font-semibold text-amber-700 dark:text-amber-300">7-day free trial — no card required</div>
-            <div className="text-amber-700/80 dark:text-amber-300/80">Then choose a plan from ₹499/month. Cancel anytime.</div>
+            <div className="font-semibold text-amber-700 dark:text-amber-300">50 free credits on signup — no card required</div>
+            <div className="text-amber-700/80 dark:text-amber-300/80">Credits power every feature. Top up anytime. No monthly lock-in.</div>
           </div>
         </div>
 
@@ -62,6 +62,11 @@ export default function Register() {
               placeholder="e.g. Sharma Enterprises" required data-testid="register-org-input" />
           </div>
           <div className="space-y-1.5">
+            <Label htmlFor="phone">Mobile number</Label>
+            <Input id="phone" type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              placeholder="e.g. 9876543210" data-testid="register-phone-input" />
+          </div>
+          <div className="space-y-1.5">
             <Label htmlFor="email">Email</Label>
             <Input id="email" type="email" value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })} required
@@ -75,7 +80,7 @@ export default function Register() {
           </div>
           <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={loading}
             data-testid="register-submit-button">
-            {loading ? "Creating…" : "Start free trial"}
+            {loading ? "Creating…" : "Create account — get 50 free credits"}
           </Button>
         </form>
         <div className="mt-6 text-sm text-center text-muted-foreground">

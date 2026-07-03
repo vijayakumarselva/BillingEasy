@@ -31,14 +31,23 @@ export default function Products() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [search]);
 
-  const startCreate = () => { setForm(empty); setEditId(null); setOpen(true); };
+  const genSku = () => `PRD-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+  const startCreate = () => { setForm({ ...empty, sku: genSku() }); setEditId(null); setOpen(true); };
   const startEdit = (p) => { setForm(p); setEditId(p.id); setOpen(true); };
   const save = async () => {
     try {
       if (editId) await api.put(`/products/${editId}`, form);
       else await api.post("/products", form);
       toast.success("Saved"); setOpen(false); load();
-    } catch { toast.error("Failed"); }
+    } catch (err) {
+      const detail = err?.response?.data?.detail || "";
+      if (err?.response?.status === 400 && /sku/i.test(detail)) {
+        toast.error("SKU already exists — a new one has been generated");
+        setForm(f => ({ ...f, sku: genSku() }));
+      } else {
+        toast.error("Failed");
+      }
+    }
   };
   const remove = async (id) => { await api.delete(`/products/${id}`); toast.success("Deleted"); load(); };
 

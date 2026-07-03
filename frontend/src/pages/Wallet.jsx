@@ -32,7 +32,7 @@ export default function Wallet() {
     try {
       const { data: d } = await api.get("/wallet");
       setData(d);
-    } catch { toast.error("Failed to load wallet"); }
+    } catch { /* silently ignore — wallet may not be set up yet */ }
     finally { setLoading(false); }
   };
 

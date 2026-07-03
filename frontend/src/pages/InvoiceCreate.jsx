@@ -6,9 +6,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { Trash2, Plus, ArrowLeft } from "lucide-react";
+import { Trash2, Plus, ArrowLeft, UserPlus } from "lucide-react";
 import { inr, todayISO, addDaysISO } from "@/lib/format";
 
 export default function InvoiceCreate() {
@@ -24,10 +25,13 @@ export default function InvoiceCreate() {
   const [items, setItems] = useState([blankItem()]);
   const [notes, setNotes] = useState("Thank you for your business!");
   const [saving, setSaving] = useState(false);
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+
+  const loadParties = () => api.get("/parties", { params: { type: "customer" } }).then(r => setParties(r.data));
 
   useEffect(() => {
     api.get("/business").then(r => setBiz(r.data || {}));
-    api.get("/parties", { params: { type: "customer" } }).then(r => setParties(r.data));
+    loadParties();
     api.get("/products").then(r => setProducts(r.data));
   }, []);
 
@@ -113,12 +117,24 @@ export default function InvoiceCreate() {
       <Card className="p-5 grid sm:grid-cols-3 gap-4">
         <div className="space-y-1.5">
           <Label>Customer *</Label>
-          <Select value={partyId} onValueChange={setPartyId}>
-            <SelectTrigger data-testid="inv-customer-select"><SelectValue placeholder="Select customer" /></SelectTrigger>
-            <SelectContent>
-              {parties.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          <div className="flex gap-2">
+            <Select value={partyId} onValueChange={setPartyId}>
+              <SelectTrigger data-testid="inv-customer-select" className="flex-1"><SelectValue placeholder="Select customer" /></SelectTrigger>
+              <SelectContent>
+                {parties.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              title="Quick-add customer"
+              onClick={() => setQuickAddOpen(true)}
+              data-testid="inv-quick-add-customer"
+            >
+              <UserPlus className="h-4 w-4" />
+            </Button>
+          </div>
           {party && (
             <div className="text-xs text-muted-foreground mt-1">
               {party.state} · GSTIN: {party.gstin || "—"} · {sameState ? "Intra-state (CGST+SGST)" : "Inter-state (IGST)"}
@@ -212,7 +228,87 @@ export default function InvoiceCreate() {
           {saving ? "Saving…" : "Save Invoice"}
         </Button>
       </div>
+
+      <QuickAddCustomerDialog
+        open={quickAddOpen}
+        onClose={() => setQuickAddOpen(false)}
+        onSaved={async (newParty) => {
+          await loadParties();
+          setPartyId(newParty.id);
+        }}
+      />
     </div>
+  );
+}
+
+function QuickAddCustomerDialog({ open, onClose, onSaved }) {
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [gstin, setGstin] = useState("");
+  const [state, setState] = useState("");
+  const [stateCode, setStateCode] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const reset = () => { setName(""); setPhone(""); setGstin(""); setState(""); setStateCode(""); };
+
+  const handleClose = () => { reset(); onClose(); };
+
+  const save = async () => {
+    if (!name.trim()) { toast.error("Customer name is required"); return; }
+    setSaving(true);
+    try {
+      const { data } = await api.post("/parties", {
+        type: "customer", name: name.trim(), phone, gstin, state, state_code: stateCode,
+      });
+      toast.success(`Customer "${data.name}" added`);
+      reset();
+      onClose();
+      onSaved(data);
+    } catch {
+      toast.error("Failed to add customer");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="max-w-md" data-testid="quick-add-customer-dialog">
+        <DialogHeader>
+          <DialogTitle>Quick-add Customer</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label>Name *</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Customer name" data-testid="qac-name" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Phone</Label>
+            <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone number" data-testid="qac-phone" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>GSTIN</Label>
+            <Input value={gstin} onChange={(e) => setGstin(e.target.value)} placeholder="e.g. 29AABCU9603R1ZX" data-testid="qac-gstin" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>State</Label>
+              <Input value={state} onChange={(e) => setState(e.target.value)} placeholder="e.g. Tamil Nadu" data-testid="qac-state" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>State Code</Label>
+              <Input value={stateCode} onChange={(e) => setStateCode(e.target.value)} placeholder="e.g. 33" data-testid="qac-state-code" />
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={handleClose}>Cancel</Button>
+          <Button className="bg-blue-600 hover:bg-blue-700" onClick={save} disabled={saving} data-testid="qac-save">
+            {saving ? "Saving…" : "Add Customer"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

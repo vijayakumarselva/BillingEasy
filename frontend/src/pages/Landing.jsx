@@ -183,15 +183,41 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* Download section */}
+      <section className="max-w-5xl mx-auto px-4 sm:px-6 py-16">
+        <div className="text-center mb-10">
+          <h2 className="text-3xl font-semibold">Use BillingEasy everywhere</h2>
+          <p className="mt-2 text-muted-foreground">Web app is live now. Mobile &amp; desktop apps coming soon.</p>
+        </div>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[
+            { icon: "🌐", name: "Web App", sub: "Works on any browser", status: "Use Now", live: true },
+            { icon: "📱", name: "Android", sub: "Google Play Store", status: "Coming Soon", live: false },
+            { icon: "🍎", name: "iOS", sub: "Apple App Store", status: "Coming Soon", live: false },
+            { icon: "💻", name: "Windows / Mac", sub: "Desktop application", status: "Coming Soon", live: false },
+          ].map(d => (
+            <div key={d.name} className={`rounded-2xl border p-5 text-center flex flex-col items-center gap-2 ${d.live ? "border-blue-200 bg-blue-50/50 dark:border-blue-700/30 dark:bg-blue-900/10" : "border-border bg-muted/30"}`}>
+              <span className="text-3xl">{d.icon}</span>
+              <div className="font-semibold text-sm">{d.name}</div>
+              <div className="text-xs text-muted-foreground">{d.sub}</div>
+              {d.live
+                ? <button onClick={goSignup} className="mt-1 text-xs font-semibold bg-blue-600 text-white px-3 py-1 rounded-full hover:bg-blue-700">{d.status} →</button>
+                : <span className="mt-1 text-xs font-medium text-muted-foreground border border-border rounded-full px-3 py-0.5">{d.status}</span>
+              }
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* Final CTA */}
       <section className="max-w-5xl mx-auto px-4 sm:px-6 py-16 md:py-20">
         <div className="rounded-3xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white p-10 md:p-14 text-center shadow-xl shadow-blue-600/20">
           <h2 className="text-3xl sm:text-4xl font-semibold">Ready to professionalise your books?</h2>
           <p className="mt-3 text-blue-100 max-w-xl mx-auto">
-            Join hundreds of Indian businesses already running on BillingEasy. Free for 7 days, no card needed.
+            Join Indian businesses already running on BillingEasy. Start with 50 free credits, no card needed.
           </p>
           <Button size="lg" className="mt-6 bg-white text-blue-700 hover:bg-blue-50 h-12 px-6 text-base shadow" onClick={() => goSignup()} data-testid="footer-cta-start">
-            Start free trial <ArrowRight className="h-4 w-4 ml-2" />
+            Get started free <ArrowRight className="h-4 w-4 ml-2" />
           </Button>
         </div>
       </section>

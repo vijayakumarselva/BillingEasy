@@ -12,12 +12,82 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Textarea } from "@/components/ui/textarea";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Trash2, ArrowLeft, FileDown } from "lucide-react";
+import { Plus, Trash2, ArrowLeft, FileDown, ScanLine, Upload } from "lucide-react";
 import { inr, fmtDate, todayISO } from "@/lib/format";
+
+function AiScanDialog({ open, onClose, onUseData }) {
+  const [file, setFile] = useState(null);
+  const [scanning, setScanning] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const scan = async () => {
+    if (!file) { toast.error("Select an invoice image or PDF"); return; }
+    setScanning(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const { data } = await api.post("/purchases/ai-scan", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      setResult(data);
+    } catch {
+      toast.error("AI scan failed — please fill manually");
+      onClose();
+    } finally { setScanning(false); }
+  };
+
+  const reset = () => { setFile(null); setResult(null); };
+  const handleClose = () => { reset(); onClose(); };
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle>AI Scan Vendor Invoice</DialogTitle></DialogHeader>
+        {!result ? (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">Upload a photo or PDF of your supplier's invoice. AI will extract the details automatically.</p>
+            <label className="flex flex-col items-center justify-center border-2 border-dashed border-border rounded-xl p-8 cursor-pointer hover:bg-muted/30 transition-colors">
+              <Upload className="h-8 w-8 text-muted-foreground mb-2" />
+              <span className="text-sm font-medium">{file ? file.name : "Click to upload invoice"}</span>
+              <span className="text-xs text-muted-foreground mt-1">JPG, PNG, PDF — max 10 MB</span>
+              <input type="file" accept="image/*,.pdf" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            </label>
+            <DialogFooter>
+              <Button variant="outline" onClick={handleClose}>Cancel</Button>
+              <Button className="bg-blue-600 hover:bg-blue-700" onClick={scan} disabled={scanning || !file}>
+                {scanning ? "Scanning…" : "Scan with AI"}
+              </Button>
+            </DialogFooter>
+          </div>
+        ) : (
+          <div className="space-y-3 text-sm">
+            <p className="font-medium text-green-600">AI extracted these details:</p>
+            <div className="bg-muted/40 rounded-lg p-3 space-y-1.5">
+              {result.supplier_name && <div><span className="text-muted-foreground">Supplier:</span> {result.supplier_name}</div>}
+              {result.bill_no && <div><span className="text-muted-foreground">Bill #:</span> {result.bill_no}</div>}
+              {result.date && <div><span className="text-muted-foreground">Date:</span> {result.date}</div>}
+              {result.total && <div><span className="text-muted-foreground">Total:</span> ₹{result.total}</div>}
+              {result.items?.length > 0 && (
+                <div><span className="text-muted-foreground">Items:</span> {result.items.length} line(s) found</div>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">Review and adjust in the form before saving.</p>
+            <DialogFooter>
+              <Button variant="outline" onClick={reset}>Re-scan</Button>
+              <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => { onUseData(result); reset(); }}>
+                Use This Data
+              </Button>
+            </DialogFooter>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export default function Purchases() {
   const [list, setList] = useState([]); const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [prefill, setPrefill] = useState(null);
   const nav = useNavigate();
 
   const load = async () => { setLoading(true); const { data } = await api.get("/purchases"); setList(data); setLoading(false); };
@@ -43,9 +113,14 @@ export default function Purchases() {
           <h1 className="text-3xl font-semibold tracking-tight">Purchases / Bills</h1>
           <p className="text-sm text-muted-foreground mt-1">Record bills you get from suppliers. Stock and Input GST update automatically.</p>
         </div>
-        <Button onClick={() => setOpen(true)} className="bg-blue-600 hover:bg-blue-700" data-testid="purchase-new-button">
-          <Plus className="h-4 w-4 mr-1.5" /> New Purchase
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setAiOpen(true)} data-testid="purchase-ai-scan-button">
+            <ScanLine className="h-4 w-4 mr-1.5" /> AI Scan Invoice
+          </Button>
+          <Button onClick={() => setOpen(true)} className="bg-blue-600 hover:bg-blue-700" data-testid="purchase-new-button">
+            <Plus className="h-4 w-4 mr-1.5" /> New Purchase
+          </Button>
+        </div>
       </div>
 
       <Card>
@@ -85,7 +160,12 @@ export default function Purchases() {
         </div>
       </Card>
 
-      <PurchaseDialog open={open} onClose={() => setOpen(false)} onSaved={load} />
+      <AiScanDialog
+        open={aiOpen}
+        onClose={() => setAiOpen(false)}
+        onUseData={(data) => { setAiOpen(false); setPrefill(data); setOpen(true); }}
+      />
+      <PurchaseDialog open={open} onClose={() => { setOpen(false); setPrefill(null); }} onSaved={load} prefill={prefill} />
     </div>
   );
 }
