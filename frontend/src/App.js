@@ -22,7 +22,6 @@ import GST from "@/pages/GST";
 import Reports from "@/pages/Reports";
 import TDS from "@/pages/TDS";
 import Settings from "@/pages/Settings";
-import Billing from "@/pages/Billing";
 import MockCheckout from "@/pages/MockCheckout";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
@@ -109,7 +108,6 @@ export default function App() {
               <Route path="/gst" element={<GST />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/tds" element={<TDS />} />
-              <Route path="/billing" element={<Billing />} />
               <Route path="/settings" element={<Settings />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

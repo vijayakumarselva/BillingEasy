@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { Trash2, Plus, ArrowLeft, UserPlus } from "lucide-react";
+import { Trash2, Plus, ArrowLeft, UserPlus, Landmark } from "lucide-react";
 import { inr, todayISO, addDaysISO } from "@/lib/format";
 
 export default function InvoiceCreate() {
@@ -26,6 +26,8 @@ export default function InvoiceCreate() {
   const [notes, setNotes] = useState("Thank you for your business!");
   const [saving, setSaving] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [banks, setBanks] = useState([]);
+  const [bankId, setBankId] = useState("");
 
   const loadParties = () => api.get("/parties", { params: { type: "customer" } }).then(r => setParties(r.data));
 
@@ -33,6 +35,7 @@ export default function InvoiceCreate() {
     api.get("/business").then(r => setBiz(r.data || {}));
     loadParties();
     api.get("/products").then(r => setProducts(r.data));
+    api.get("/bank-accounts").then(r => setBanks(r.data));
   }, []);
 
   function blankItem() {
@@ -78,7 +81,7 @@ export default function InvoiceCreate() {
     try {
       const { data } = await api.post("/invoices", {
         party_id: partyId, invoice_date: invoiceDate, due_date: dueDate,
-        items, notes, status, type, is_recurring: false,
+        items, notes, status, type, is_recurring: false, bank_account_id: bankId || null,
       });
       toast.success("Invoice created");
       nav(`/sales/${data.id}`);
@@ -114,7 +117,7 @@ export default function InvoiceCreate() {
         </div>
       </div>
 
-      <Card className="p-5 grid sm:grid-cols-3 gap-4">
+      <Card className="p-5 grid sm:grid-cols-4 gap-4">
         <div className="space-y-1.5">
           <Label>Customer *</Label>
           <div className="flex gap-2">
@@ -148,6 +151,16 @@ export default function InvoiceCreate() {
         <div className="space-y-1.5">
           <Label>Due Date</Label>
           <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} data-testid="inv-due-input" />
+        </div>
+        <div className="space-y-1.5">
+          <Label>Payment Bank</Label>
+          <Select value={bankId} onValueChange={setBankId}>
+            <SelectTrigger data-testid="inv-bank-select"><SelectValue placeholder="No bank / cash" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">No bank / cash</SelectItem>
+              {banks.map(b => <SelectItem key={b.id} value={b.id}>{b.bank_name} — {b.account_no}</SelectItem>)}
+            </SelectContent>
+          </Select>
         </div>
       </Card>
 

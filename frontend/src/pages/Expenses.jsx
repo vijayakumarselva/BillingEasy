@@ -18,14 +18,17 @@ export default function Expenses() {
   const [list, setList] = useState([]); const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ category: "Other", amount: 0, date: todayISO(), description: "", gst_rate: 0 });
+  const [banks, setBanks] = useState([]);
+  const [bankId, setBankId] = useState("");
 
   const load = async () => { setLoading(true); const { data } = await api.get("/expenses"); setList(data); setLoading(false); };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); api.get("/bank-accounts").then(r => setBanks(r.data)); }, []);
 
   const save = async () => {
-    try { await api.post("/expenses", { ...form, amount: parseFloat(form.amount), gst_rate: parseFloat(form.gst_rate) });
+    try { await api.post("/expenses", { ...form, amount: parseFloat(form.amount), gst_rate: parseFloat(form.gst_rate), bank_account_id: bankId || null });
       toast.success("Saved"); setOpen(false); load();
       setForm({ category: "Other", amount: 0, date: todayISO(), description: "", gst_rate: 0 });
+      setBankId("");
     } catch { toast.error("Failed"); }
   };
   const remove = async (id) => { await api.delete(`/expenses/${id}`); toast.success("Deleted"); load(); };
@@ -71,7 +74,7 @@ export default function Expenses() {
         </div>
       </Card>
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={(v) => { if (!v) setBankId(""); setOpen(v); }}>
         <DialogContent data-testid="expense-dialog">
           <DialogHeader><DialogTitle>New Expense</DialogTitle></DialogHeader>
           <div className="space-y-3">
@@ -87,6 +90,16 @@ export default function Expenses() {
               <div className="space-y-1.5"><Label>Date</Label><Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} data-testid="exp-date-input" /></div>
             </div>
             <div className="space-y-1.5"><Label>Description</Label><Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} data-testid="exp-desc-input" /></div>
+            <div className="space-y-1.5">
+              <Label>Payment Bank</Label>
+              <Select value={bankId} onValueChange={setBankId}>
+                <SelectTrigger data-testid="exp-bank-select"><SelectValue placeholder="No bank / cash" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">No bank / cash</SelectItem>
+                  {banks.map(b => <SelectItem key={b.id} value={b.id}>{b.bank_name} — {b.account_no}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>

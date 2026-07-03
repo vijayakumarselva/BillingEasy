@@ -179,11 +179,14 @@ function PurchaseDialog({ open, onClose, onSaved }) {
   const [type, setType] = useState("purchase");
   const [items, setItems] = useState([blank()]);
   const [notes, setNotes] = useState("");
+  const [banks, setBanks] = useState([]);
+  const [bankId, setBankId] = useState("");
 
   useEffect(() => {
     if (open) {
       api.get("/parties", { params: { type: "supplier" } }).then(r => setSuppliers(r.data));
       api.get("/products").then(r => setProducts(r.data));
+      api.get("/bank-accounts").then(r => setBanks(r.data));
     }
   }, [open]);
 
@@ -202,14 +205,16 @@ function PurchaseDialog({ open, onClose, onSaved }) {
   const save = async () => {
     if (!partyId || !billNo) { toast.error("Supplier and bill # required"); return; }
     try {
-      await api.post("/purchases", { party_id: partyId, bill_no: billNo, purchase_date: date, items, notes, type });
+      await api.post("/purchases", { party_id: partyId, bill_no: billNo, purchase_date: date, items, notes, type, bank_account_id: bankId || null });
       toast.success("Saved"); onClose(); onSaved();
-      setPartyId(""); setBillNo(""); setItems([blank()]);
+      setPartyId(""); setBillNo(""); setItems([blank()]); setBankId("");
     } catch { toast.error("Failed"); }
   };
 
+  const handleClose = () => { setBankId(""); onClose(); };
+
   return (
-    <Dialog open={open} onOpenChange={onClose}>
+    <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="max-w-4xl" data-testid="purchase-dialog">
         <DialogHeader><DialogTitle>New Purchase Bill</DialogTitle></DialogHeader>
         <div className="grid sm:grid-cols-4 gap-3">
@@ -236,6 +241,16 @@ function PurchaseDialog({ open, onClose, onSaved }) {
                 <SelectItem value="purchase">Purchase</SelectItem>
                 <SelectItem value="debit_note">Debit Note</SelectItem>
                 <SelectItem value="purchase_return">Purchase Return</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Payment Bank</Label>
+            <Select value={bankId} onValueChange={setBankId}>
+              <SelectTrigger data-testid="purchase-bank-select"><SelectValue placeholder="No bank / cash" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">No bank / cash</SelectItem>
+                {banks.map(b => <SelectItem key={b.id} value={b.id}>{b.bank_name} — {b.account_no}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -279,7 +294,7 @@ function PurchaseDialog({ open, onClose, onSaved }) {
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button variant="outline" onClick={handleClose}>Cancel</Button>
           <Button className="bg-blue-600 hover:bg-blue-700" onClick={save} data-testid="purchase-save-button">Save</Button>
         </DialogFooter>
       </DialogContent>

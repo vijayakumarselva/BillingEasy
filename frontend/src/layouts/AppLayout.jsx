@@ -39,7 +39,6 @@ const NAV = [
   { to: "/tds", label: "TDS", subtitle: "Tax deducted at source", icon: Landmark, tid: "nav-tds" },
   { to: "/credits", label: "Buy Credits", subtitle: "Credit packs & pricing", icon: Zap, tid: "nav-credits", badge: "New" },
   { to: "/wallet", label: "Wallet & Credits", subtitle: "Balance & history", icon: Coins, tid: "nav-wallet" },
-  { to: "/billing", label: "Billing & Plan", subtitle: "Your subscription", icon: CreditCard, tid: "nav-billing" },
   { to: "/settings", label: "Settings", subtitle: "Business, team, banks", icon: Settings, tid: "nav-settings" },
 ];
 

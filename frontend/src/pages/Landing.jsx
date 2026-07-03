@@ -1,259 +1,719 @@
-// Public marketing landing page — SEO-optimised, no auth required.
+// Public marketing landing page — AI-powered GST billing SaaS for India
 import { useNavigate } from "react-router-dom";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { ArrowRight, ShieldCheck, Sparkles, Receipt, Boxes, Wallet, FileSpreadsheet, Users, BarChart3, IndianRupee, CheckCircle2 } from "lucide-react";
-import Logo from "@/components/Logo";
-import { usePricing, PricingGrid, LaunchOfferBanner, AddonsBlock, TrustSection } from "@/components/Pricing";
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import Logo from "@/components/Logo";
+import {
+  ArrowRight,
+  Check,
+  Zap,
+  Shield,
+  Cloud,
+  Smartphone,
+  Bot,
+  FileText,
+  Package,
+  BarChart3,
+  CreditCard,
+  Users,
+  Wifi,
+  Globe,
+  MessageSquare,
+  QrCode,
+  ScanLine,
+  TrendingUp,
+  Landmark,
+  HardDrive,
+  ChevronDown,
+} from "lucide-react";
 
 export default function Landing() {
   const nav = useNavigate();
-  const pricing = usePricing();
-  const [billingCycle, setBillingCycle] = useState("monthly");
+  const [openFaq, setOpenFaq] = useState(null);
 
-  const goSignup = (code) => {
-    // Land on register with the chosen plan code so we can pick it up post-signup
-    nav(`/register${code ? `?plan=${encodeURIComponent(code)}` : ""}`);
-  };
+  const goSignup = () => nav("/register");
+  const goLogin = () => nav("/login");
+
+  const features = [
+    {
+      icon: <Bot className="h-5 w-5 text-blue-600" />,
+      name: "AI Invoice Creation",
+      desc: "Generate accurate GST invoices in seconds with AI assistance.",
+    },
+    {
+      icon: <TrendingUp className="h-5 w-5 text-blue-600" />,
+      name: "AI Sales Insights",
+      desc: "Understand your business trends with intelligent AI analytics.",
+    },
+    {
+      icon: <FileText className="h-5 w-5 text-blue-600" />,
+      name: "One-click GST Reports",
+      desc: "GSTR-1 and GSTR-3B reports ready in a single click.",
+    },
+    {
+      icon: <Package className="h-5 w-5 text-blue-600" />,
+      name: "Smart Inventory",
+      desc: "Real-time stock tracking with low-stock alerts.",
+    },
+    {
+      icon: <MessageSquare className="h-5 w-5 text-blue-600" />,
+      name: "WhatsApp Invoice Sharing",
+      desc: "Send invoices to customers directly via WhatsApp.",
+    },
+    {
+      icon: <Landmark className="h-5 w-5 text-blue-600" />,
+      name: "Bank Statement Auto-match",
+      desc: "Automatically reconcile payments against bank statements.",
+    },
+    {
+      icon: <Users className="h-5 w-5 text-blue-600" />,
+      name: "Multi-user Access",
+      desc: "Invite team members with granular role-based permissions.",
+    },
+    {
+      icon: <ScanLine className="h-5 w-5 text-blue-600" />,
+      name: "Barcode Support",
+      desc: "Generate and scan barcodes for fast billing at the counter.",
+    },
+    {
+      icon: <QrCode className="h-5 w-5 text-blue-600" />,
+      name: "QR Payments",
+      desc: "Accept UPI QR code payments instantly on invoices.",
+    },
+    {
+      icon: <CreditCard className="h-5 w-5 text-blue-600" />,
+      name: "Purchase Management",
+      desc: "Track vendor purchases and manage payables effortlessly.",
+    },
+    {
+      icon: <BarChart3 className="h-5 w-5 text-blue-600" />,
+      name: "Expense Tracking",
+      desc: "Log and categorise business expenses in one place.",
+    },
+    {
+      icon: <HardDrive className="h-5 w-5 text-blue-600" />,
+      name: "Cloud Backup",
+      desc: "Your data is encrypted and backed up to the cloud 24/7.",
+    },
+  ];
+
+  const platforms = [
+    { name: "Web App", icon: <Globe className="h-6 w-6" />, live: true },
+    { name: "Android", icon: <Smartphone className="h-6 w-6" />, live: false },
+    { name: "iOS", icon: <Smartphone className="h-6 w-6" />, live: false },
+    { name: "Windows", icon: <Wifi className="h-6 w-6" />, live: false },
+    { name: "Mac", icon: <Cloud className="h-6 w-6" />, live: false },
+  ];
+
+  const industries = [
+    "Retail Store",
+    "Wholesale",
+    "Supermarket",
+    "Restaurant",
+    "Café",
+    "Medical Store",
+    "Electronics",
+    "Fashion",
+    "Footwear",
+    "Mobile Shop",
+    "Hardware",
+    "Grocery",
+    "Department Store",
+    "Automobile",
+    "Distributor",
+    "Manufacturer",
+    "Service Business",
+    "Pharmacy",
+  ];
+
+  const pricingPacks = [
+    {
+      name: "Try It",
+      credits: 100,
+      price: "₹149",
+      perCredit: "₹1.49/credit",
+      popular: false,
+      bestValue: false,
+    },
+    {
+      name: "Starter",
+      credits: 500,
+      price: "₹649",
+      perCredit: "₹1.30/credit",
+      popular: true,
+      bestValue: false,
+    },
+    {
+      name: "Growth",
+      credits: 2000,
+      price: "₹2,299",
+      perCredit: "₹1.15/credit",
+      popular: false,
+      bestValue: true,
+    },
+  ];
+
+  const actionCosts = [
+    { action: "Create Invoice", credits: 3 },
+    { action: "Create Purchase", credits: 2 },
+    { action: "AI Query", credits: 10 },
+    { action: "GST Export", credits: 5 },
+  ];
+
+  const testimonials = [
+    {
+      quote:
+        "Switched from Tally and never looked back. BillingEasy's AI features save me 2 hours every day.",
+      name: "Rajesh Kumar",
+      role: "Wholesale Trader, Mumbai",
+    },
+    {
+      quote:
+        "Perfect for my restaurant. GST reports are auto-generated and WhatsApp sharing is a game changer.",
+      name: "Priya Sharma",
+      role: "Restaurant Owner, Chennai",
+    },
+    {
+      quote:
+        "Very affordable compared to other billing software. The AI invoice scanning is brilliant.",
+      name: "Amit Patel",
+      role: "Electronics Retailer, Ahmedabad",
+    },
+  ];
+
+  const faqs = [
+    {
+      q: "What is BillingEasy?",
+      a: "BillingEasy is an AI-powered GST billing software built for Indian businesses. It helps you create invoices, manage inventory, track expenses, and generate GST reports — all from one place.",
+    },
+    {
+      q: "Is BillingEasy suitable for retail shops?",
+      a: "Yes! BillingEasy works for retail, wholesale, restaurants, medical stores, and many more business types. It adapts to your workflow automatically.",
+    },
+    {
+      q: "Can I use BillingEasy on Android?",
+      a: "The Android app is coming soon. In the meantime, the web app works perfectly on any mobile browser — just open it in Chrome on your phone.",
+    },
+    {
+      q: "Is my data safe?",
+      a: "Absolutely. Your data is protected with 256-bit encryption and automatically backed up to the cloud, so you never lose anything.",
+    },
+    {
+      q: "Does it support GST?",
+      a: "Full GST support is built-in — CGST, SGST, IGST, GSTR-1, and GSTR-3B. Export your reports with one click.",
+    },
+    {
+      q: "What are credits?",
+      a: "Credits are the currency of BillingEasy. You spend a small number of credits each time you create an invoice, purchase, or run an AI query. You start with 50 free credits on signup — no card required.",
+    },
+    {
+      q: "Can I migrate from Tally?",
+      a: "Yes! We support importing your data via Excel/CSV files. Contact our support team and we'll guide you through the migration.",
+    },
+    {
+      q: "Does it support barcode billing?",
+      a: "Yes. You can generate barcodes for your products and scan them at billing time for fast, accurate checkouts.",
+    },
+    {
+      q: "Can multiple users access it?",
+      a: "Yes. You can invite team members and assign them roles (admin, cashier, etc.) with role-based access control.",
+    },
+    {
+      q: "Is there a free trial?",
+      a: "Yes — you get 50 free credits when you sign up. No credit card required. Start billing immediately.",
+    },
+  ];
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white dark:from-slate-950 dark:to-slate-900" data-testid="landing-page">
-      {/* Header */}
-      <header className="sticky top-0 z-50 backdrop-blur bg-background/80 border-b border-border/50">
+    <div className="min-h-screen bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+      {/* ── 1. NAVBAR ── */}
+      <header className="sticky top-0 z-50 backdrop-blur-md bg-white/80 dark:bg-slate-950/80 border-b border-slate-200 dark:border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
-          <Logo withWordmark />
-          <nav className="hidden md:flex items-center gap-6 text-sm">
-            <a href="#features" className="text-muted-foreground hover:text-foreground transition">Features</a>
-            <a href="#pricing" className="text-muted-foreground hover:text-foreground transition">Pricing</a>
-            <a href="#trust" className="text-muted-foreground hover:text-foreground transition">Security</a>
-            <a href="#faq" className="text-muted-foreground hover:text-foreground transition">FAQ</a>
+          <div className="flex items-center gap-2">
+            <Logo />
+            <span className="font-bold text-lg text-slate-900 dark:text-white">BillingEasy</span>
+          </div>
+          <nav className="hidden md:flex items-center gap-7 text-sm font-medium">
+            <a
+              href="#features"
+              className="text-slate-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+            >
+              Features
+            </a>
+            <a
+              href="#pricing"
+              className="text-slate-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+            >
+              Pricing
+            </a>
+            <a
+              href="#industries"
+              className="text-slate-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+            >
+              Industries
+            </a>
           </nav>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => nav("/login")} data-testid="header-signin">Sign in</Button>
-            <Button size="sm" className="bg-blue-600 hover:bg-blue-700" onClick={() => goSignup()} data-testid="header-start-free">
-              Start free <ArrowRight className="h-3.5 w-3.5 ml-1" />
+            <Button variant="ghost" size="sm" onClick={goLogin} data-testid="header-signin">
+              Login
+            </Button>
+            <Button
+              size="sm"
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+              onClick={goSignup}
+              data-testid="header-start-free"
+            >
+              Start Free <ArrowRight className="h-3.5 w-3.5 ml-1" />
             </Button>
           </div>
         </div>
       </header>
 
-      {/* Hero */}
-      <section className="relative overflow-hidden">
-        <div className="absolute inset-0 -z-10 bg-gradient-radial from-blue-100/40 via-transparent to-transparent dark:from-blue-950/30" />
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-20 md:py-28 text-center">
-          {pricing?.launch_offer?.active && (
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200 text-xs font-medium mb-6" data-testid="hero-offer-pill">
-              <Sparkles className="h-3.5 w-3.5" />
-              {pricing.launch_offer.title || `Launch offer — ${pricing.launch_offer.discount_pct}% off`}
-            </div>
-          )}
-          <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight max-w-4xl mx-auto leading-[1.1]">
-            Professional Billing Software for Indian Businesses —
-            <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent"> Secure, Simple, Affordable.</span>
+      {/* ── 2. HERO ── */}
+      <section
+        className="relative overflow-hidden"
+        style={{
+          background:
+            "linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 40%, #F0F9FF 100%)",
+        }}
+      >
+        <div className="dark:hidden absolute inset-0 bg-gradient-to-br from-blue-50 via-white to-sky-50 -z-10" />
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-24 md:py-36 text-center">
+          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 text-sm font-medium mb-6">
+            🇮🇳 Made for Indian Businesses
+          </div>
+          <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold tracking-tight text-slate-900 dark:text-white leading-tight mb-5">
+            AI-Powered GST Billing Software
+            <span className="text-blue-600"> for Every Business</span>
           </h1>
-          <p className="mt-6 text-base sm:text-lg text-muted-foreground max-w-2xl mx-auto leading-relaxed">
-            GST invoices, inventory, expenses, GSTR-1 / GSTR-3B reports, multi-branch and role-based access — everything an Indian SMB needs to run its books from day one.
+          <p className="text-lg sm:text-xl text-slate-600 dark:text-slate-400 max-w-2xl mx-auto mb-10 leading-relaxed">
+            The smartest, most affordable billing solution for Retail, Wholesale,
+            Restaurants &amp; SMEs. GST-ready, cloud-synced, works on all devices.
           </p>
-          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-            <Button size="lg" className="bg-blue-600 hover:bg-blue-700 h-12 px-6 text-base shadow-lg shadow-blue-600/20" onClick={() => goSignup()} data-testid="hero-cta-start">
-              Start 7-day free trial <ArrowRight className="h-4 w-4 ml-2" />
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-8">
+            <Button
+              size="lg"
+              className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-6 text-base font-semibold shadow-lg shadow-blue-200 dark:shadow-blue-900/40"
+              onClick={goSignup}
+              data-testid="hero-cta-signup"
+            >
+              Start Free — 50 Credits <ArrowRight className="h-4 w-4 ml-2" />
             </Button>
-            <Button size="lg" variant="outline" className="h-12 px-6 text-base" onClick={() => document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" })} data-testid="hero-cta-pricing">
-              See pricing
+            <Button
+              variant="outline"
+              size="lg"
+              className="px-8 py-6 text-base font-semibold border-slate-300 dark:border-slate-700"
+            >
+              Watch Demo
             </Button>
           </div>
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> No credit card needed</span>
-            <span className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Set up in under 2 minutes</span>
-            <span className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Cancel anytime</span>
+          <div className="flex flex-wrap items-center justify-center gap-4 text-sm text-slate-500 dark:text-slate-400">
+            <span className="flex items-center gap-1.5">
+              <Check className="h-4 w-4 text-green-500" /> No credit card needed
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Check className="h-4 w-4 text-green-500" /> GST compliant
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Check className="h-4 w-4 text-green-500" /> Setup in 2 minutes
+            </span>
           </div>
         </div>
       </section>
 
-      {/* Features */}
-      <section id="features" className="max-w-7xl mx-auto px-4 sm:px-6 py-16 md:py-20">
-        <div className="text-center mb-10">
-          <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight">Everything you need to run your books</h2>
-          <p className="text-sm text-muted-foreground mt-2 max-w-xl mx-auto">From your first invoice to your hundredth GSTR-1 filing — BillingEasy grows with you.</p>
-        </div>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {FEATURES.map(f => (
-            <div key={f.title} className="rounded-2xl border bg-card p-5 hover:shadow-md transition" data-testid={`feature-${f.title.toLowerCase().replace(/\s+/g, '-')}`}>
-              <div className={`h-10 w-10 rounded-lg ${f.color} grid place-items-center mb-3`}>
-                <f.icon className="h-5 w-5" />
-              </div>
-              <h3 className="font-semibold mb-1">{f.title}</h3>
-              <p className="text-xs text-muted-foreground leading-relaxed">{f.desc}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Free Tools — drives SEO + leadgen */}
-      <section className="bg-gradient-to-b from-violet-50/70 to-fuchsia-50/70 dark:from-violet-950/20 dark:to-fuchsia-950/10 border-y border-border/50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-16 md:py-20">
-          <div className="text-center mb-10">
-            <Badge className="bg-emerald-600 mb-3">100% Free · No signup</Badge>
-            <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight">Free GST tools every Indian business should bookmark</h2>
-            <p className="text-sm text-muted-foreground mt-2 max-w-2xl mx-auto">
-              Quick, public utilities — use them as much as you want, no login, no rate limits. Powered by the same engine that runs inside BillingEasy.
-            </p>
-          </div>
-          <div className="grid md:grid-cols-3 gap-4">
+      {/* ── 3. TRUST BADGES ── */}
+      <section className="border-y border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-5 overflow-x-auto">
+          <div className="flex items-center gap-6 min-w-max mx-auto justify-center">
             {[
-              { title: "GSTIN Validator", desc: "Check any GSTIN's format, state, and official checksum in 1 second.", icon: ShieldCheck, color: "from-emerald-500 to-teal-500" },
-              { title: "HSN/SAC Code Finder", desc: "Type your product or service → get the correct HSN code + GST rate.", icon: Receipt, color: "from-violet-500 to-fuchsia-500" },
-              { title: "AI HSN Suggestor", desc: "Stuck on a product description? Our AI gives you the most likely code + reasoning.", icon: Sparkles, color: "from-amber-500 to-orange-500", aiBadge: true },
-            ].map(t => (
-              <div key={t.title} className="rounded-2xl border bg-card p-6 hover:shadow-md transition" data-testid={`free-tool-${t.title.toLowerCase().replace(/[^a-z]+/g, '-')}`}>
-                <div className={`h-10 w-10 rounded-lg bg-gradient-to-br ${t.color} grid place-items-center text-white mb-3`}>
-                  <t.icon className="h-5 w-5" />
-                </div>
-                <div className="flex items-center gap-2 mb-1">
-                  <h3 className="font-semibold">{t.title}</h3>
-                  {t.aiBadge && <Badge className="bg-violet-600 text-[9px] px-1.5 py-0">AI</Badge>}
-                </div>
-                <p className="text-xs text-muted-foreground leading-relaxed">{t.desc}</p>
+              { icon: "🤖", label: "AI Powered" },
+              { icon: "🔒", label: "256-bit Secure" },
+              { icon: "📄", label: "GST Ready" },
+              { icon: "☁️", label: "Cloud Sync" },
+              { icon: "📱", label: "All Devices" },
+              { icon: "⚡", label: "Fast Setup" },
+              { icon: "💰", label: "Affordable" },
+            ].map((b) => (
+              <div
+                key={b.label}
+                className="flex items-center gap-2 px-4 py-2 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-300 shadow-sm whitespace-nowrap"
+              >
+                <span>{b.icon}</span>
+                {b.label}
               </div>
             ))}
           </div>
-          <div className="mt-8 text-center">
-            <Button size="lg" className="bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-700 hover:to-fuchsia-700 h-12 px-6 shadow-lg shadow-violet-600/20"
-                    onClick={() => nav("/free/tools")} data-testid="free-tools-cta">
-              Open free tools <ArrowRight className="h-4 w-4 ml-2" />
-            </Button>
-          </div>
         </div>
       </section>
 
-      {/* Pricing */}
-      <section id="pricing" className="bg-muted/30 border-y border-border/50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-16 md:py-20">
-          <div className="text-center mb-8">
-            <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight">Simple, transparent pricing</h2>
-            <p className="text-sm text-muted-foreground mt-2 max-w-xl mx-auto">
-              Start free for 7 days. Upgrade when you're ready. No setup fees, no hidden charges.
+      {/* ── 4. FEATURES ── */}
+      <section id="features" className="py-24 px-4 sm:px-6">
+        <div className="max-w-7xl mx-auto">
+          <div className="text-center mb-14">
+            <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 dark:text-white mb-4">
+              Everything your business needs
+            </h2>
+            <p className="text-slate-500 dark:text-slate-400 text-lg max-w-xl mx-auto">
+              From AI-powered invoicing to GST reports — built for the Indian market.
             </p>
           </div>
-
-          {pricing?.launch_offer?.active && (
-            <div className="max-w-3xl mx-auto mb-8">
-              <LaunchOfferBanner offer={pricing.launch_offer} />
-            </div>
-          )}
-
-          <PricingGrid
-            pricing={pricing}
-            billingCycle={billingCycle}
-            setBillingCycle={setBillingCycle}
-            onChoose={(tier, code) => tier.is_custom ? window.location.href = "mailto:sales@billingseasy.com?subject=Enterprise%20enquiry" : goSignup(code)}
-          />
-
-          <div className="mt-10">
-            <AddonsBlock addons={pricing?.addons || []} />
-          </div>
-
-          <p className="text-center text-xs text-muted-foreground mt-8">
-            All prices exclude GST. Payments via Cashfree — UPI, cards, netbanking, wallets.
-          </p>
-        </div>
-      </section>
-
-      {/* Trust */}
-      <section id="trust" className="max-w-7xl mx-auto px-4 sm:px-6 py-16 md:py-20">
-        <TrustSection />
-      </section>
-
-      {/* FAQ */}
-      <section id="faq" className="bg-muted/30 border-t border-border/50">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-16 md:py-20">
-          <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-center mb-10">Frequently asked</h2>
-          <div className="space-y-3">
-            {FAQ.map((f, i) => (
-              <details key={i} className="rounded-xl border bg-card p-4 group" data-testid={`faq-${i}`}>
-                <summary className="font-medium cursor-pointer flex items-center justify-between text-sm">
-                  {f.q}
-                  <span className="text-muted-foreground group-open:rotate-180 transition">▾</span>
-                </summary>
-                <p className="text-sm text-muted-foreground mt-3 leading-relaxed">{f.a}</p>
-              </details>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {features.map((f) => (
+              <div
+                key={f.name}
+                className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 hover:shadow-md hover:border-blue-200 dark:hover:border-blue-800 transition-all duration-200"
+              >
+                <div className="mb-3 inline-flex items-center justify-center w-9 h-9 rounded-lg bg-blue-50 dark:bg-blue-950/50">
+                  {f.icon}
+                </div>
+                <h3 className="font-semibold text-sm text-slate-900 dark:text-white mb-1">
+                  {f.name}
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                  {f.desc}
+                </p>
+              </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* Download section */}
-      <section className="max-w-5xl mx-auto px-4 sm:px-6 py-16">
-        <div className="text-center mb-10">
-          <h2 className="text-3xl font-semibold">Use BillingEasy everywhere</h2>
-          <p className="mt-2 text-muted-foreground">Web app is live now. Mobile &amp; desktop apps coming soon.</p>
-        </div>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[
-            { icon: "🌐", name: "Web App", sub: "Works on any browser", status: "Use Now", live: true },
-            { icon: "📱", name: "Android", sub: "Google Play Store", status: "Coming Soon", live: false },
-            { icon: "🍎", name: "iOS", sub: "Apple App Store", status: "Coming Soon", live: false },
-            { icon: "💻", name: "Windows / Mac", sub: "Desktop application", status: "Coming Soon", live: false },
-          ].map(d => (
-            <div key={d.name} className={`rounded-2xl border p-5 text-center flex flex-col items-center gap-2 ${d.live ? "border-blue-200 bg-blue-50/50 dark:border-blue-700/30 dark:bg-blue-900/10" : "border-border bg-muted/30"}`}>
-              <span className="text-3xl">{d.icon}</span>
-              <div className="font-semibold text-sm">{d.name}</div>
-              <div className="text-xs text-muted-foreground">{d.sub}</div>
-              {d.live
-                ? <button onClick={goSignup} className="mt-1 text-xs font-semibold bg-blue-600 text-white px-3 py-1 rounded-full hover:bg-blue-700">{d.status} →</button>
-                : <span className="mt-1 text-xs font-medium text-muted-foreground border border-border rounded-full px-3 py-0.5">{d.status}</span>
-              }
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Final CTA */}
-      <section className="max-w-5xl mx-auto px-4 sm:px-6 py-16 md:py-20">
-        <div className="rounded-3xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white p-10 md:p-14 text-center shadow-xl shadow-blue-600/20">
-          <h2 className="text-3xl sm:text-4xl font-semibold">Ready to professionalise your books?</h2>
-          <p className="mt-3 text-blue-100 max-w-xl mx-auto">
-            Join Indian businesses already running on BillingEasy. Start with 50 free credits, no card needed.
-          </p>
-          <Button size="lg" className="mt-6 bg-white text-blue-700 hover:bg-blue-50 h-12 px-6 text-base shadow" onClick={() => goSignup()} data-testid="footer-cta-start">
-            Get started free <ArrowRight className="h-4 w-4 ml-2" />
-          </Button>
-        </div>
-      </section>
-
-      <footer className="border-t border-border/50 py-8">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-wrap items-center justify-between gap-4 text-xs text-muted-foreground">
-          <div className="flex items-center gap-2">
-            <Logo size={24} />
-            <span>© {new Date().getFullYear()} BillingEasy. Built for Indian businesses.</span>
+      {/* ── 5. PLATFORM ── */}
+      <section className="py-20 px-4 sm:px-6 bg-slate-50 dark:bg-slate-900/40">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 dark:text-white mb-3">
+              Use BillingEasy everywhere
+            </h2>
+            <p className="text-slate-500 dark:text-slate-400">
+              Start on web today. More platforms coming soon.
+            </p>
           </div>
-          <div className="flex items-center gap-4">
-            <a href="#features" className="hover:text-foreground">Features</a>
-            <a href="#pricing" className="hover:text-foreground">Pricing</a>
-            <a href="#trust" className="hover:text-foreground">Security</a>
-            <a href="mailto:hello@billingseasy.com" className="hover:text-foreground">Contact</a>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
+            {platforms.map((p) => (
+              <div
+                key={p.name}
+                className={`rounded-2xl border p-6 text-center flex flex-col items-center gap-3 transition-all ${
+                  p.live
+                    ? "bg-white dark:bg-slate-900 border-blue-500 shadow-md shadow-blue-100 dark:shadow-blue-900/30"
+                    : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800"
+                }`}
+              >
+                <div
+                  className={`w-11 h-11 rounded-xl flex items-center justify-center ${
+                    p.live
+                      ? "bg-blue-600 text-white"
+                      : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                  }`}
+                >
+                  {p.icon}
+                </div>
+                <span className="font-semibold text-sm text-slate-800 dark:text-slate-200">
+                  {p.name}
+                </span>
+                {p.live ? (
+                  <Button
+                    size="sm"
+                    className="bg-blue-600 hover:bg-blue-700 text-white text-xs w-full"
+                    onClick={goSignup}
+                  >
+                    Use Now
+                  </Button>
+                ) : (
+                  <span className="inline-block text-xs px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-medium">
+                    Coming Soon
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── 6. INDUSTRIES ── */}
+      <section id="industries" className="py-24 px-4 sm:px-6">
+        <div className="max-w-5xl mx-auto text-center">
+          <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 dark:text-white mb-4">
+            Built for every type of business
+          </h2>
+          <p className="text-slate-500 dark:text-slate-400 text-lg mb-12 max-w-xl mx-auto">
+            From grocery stores to manufacturers — BillingEasy adapts to your
+            business.
+          </p>
+          <div className="flex flex-wrap justify-center gap-3">
+            {industries.map((ind) => (
+              <span
+                key={ind}
+                className="px-4 py-2 rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 text-sm font-medium hover:border-blue-400 hover:text-blue-600 dark:hover:border-blue-500 dark:hover:text-blue-400 transition-colors cursor-default"
+              >
+                {ind}
+              </span>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── 7. PRICING ── */}
+      <section id="pricing" className="py-24 px-4 sm:px-6 bg-slate-50 dark:bg-slate-900/40">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-14">
+            <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 dark:text-white mb-3">
+              Pay only for what you use
+            </h2>
+            <p className="text-slate-500 dark:text-slate-400 text-lg">
+              Credits never expire. No monthly lock-in.
+            </p>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-6 mb-10">
+            {pricingPacks.map((pack) => (
+              <div
+                key={pack.name}
+                className={`relative bg-white dark:bg-slate-900 rounded-2xl border p-7 flex flex-col gap-4 shadow-sm transition-all ${
+                  pack.popular
+                    ? "border-blue-500 shadow-blue-100 dark:shadow-blue-900/30 shadow-md"
+                    : "border-slate-200 dark:border-slate-800"
+                }`}
+              >
+                {pack.popular && (
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-blue-600 text-white text-xs font-semibold shadow">
+                    Popular
+                  </div>
+                )}
+                {pack.bestValue && (
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-emerald-600 text-white text-xs font-semibold shadow">
+                    Best Value
+                  </div>
+                )}
+                <div>
+                  <h3 className="font-bold text-slate-900 dark:text-white text-lg">{pack.name}</h3>
+                  <p className="text-3xl font-bold text-blue-600 mt-2">{pack.price}</p>
+                  <p className="text-slate-500 dark:text-slate-400 text-sm mt-0.5">
+                    {pack.credits} credits · {pack.perCredit}
+                  </p>
+                </div>
+                <Button
+                  className={`w-full mt-2 ${
+                    pack.popular
+                      ? "bg-blue-600 hover:bg-blue-700 text-white"
+                      : "bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900"
+                  }`}
+                  onClick={goSignup}
+                >
+                  Get Started
+                </Button>
+              </div>
+            ))}
+          </div>
+
+          <p className="text-center text-slate-500 dark:text-slate-400 text-sm mb-10">
+            Start with{" "}
+            <strong className="text-slate-700 dark:text-slate-300">50 free credits</strong> on signup.
+            No card required.
+          </p>
+
+          {/* Action costs table */}
+          <div className="max-w-sm mx-auto bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+            <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800">
+              <p className="font-semibold text-slate-800 dark:text-slate-200 text-sm">
+                What costs credits?
+              </p>
+            </div>
+            <div className="divide-y divide-slate-100 dark:divide-slate-800">
+              {actionCosts.map((a) => (
+                <div
+                  key={a.action}
+                  className="flex items-center justify-between px-5 py-3 text-sm"
+                >
+                  <span className="text-slate-600 dark:text-slate-400">{a.action}</span>
+                  <span className="font-semibold text-blue-600">
+                    {a.credits} credits
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── 8. TESTIMONIALS ── */}
+      <section className="py-24 px-4 sm:px-6">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-14">
+            <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 dark:text-white mb-3">
+              Loved by Indian businesses
+            </h2>
+            <p className="text-slate-500 dark:text-slate-400">
+              Real businesses. Real results.
+            </p>
+          </div>
+          <div className="grid md:grid-cols-3 gap-6">
+            {testimonials.map((t) => (
+              <div
+                key={t.name}
+                className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-7 shadow-sm"
+              >
+                <div className="text-yellow-400 text-lg mb-4">★★★★★</div>
+                <p className="text-slate-700 dark:text-slate-300 text-sm leading-relaxed mb-6">
+                  "{t.quote}"
+                </p>
+                <div>
+                  <p className="font-semibold text-slate-900 dark:text-white text-sm">{t.name}</p>
+                  <p className="text-slate-500 dark:text-slate-400 text-xs mt-0.5">{t.role}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── 9. FAQ ── */}
+      <section id="faq" className="py-24 px-4 sm:px-6 bg-slate-50 dark:bg-slate-900/40">
+        <div className="max-w-2xl mx-auto">
+          <div className="text-center mb-14">
+            <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 dark:text-white mb-3">
+              Frequently asked questions
+            </h2>
+            <p className="text-slate-500 dark:text-slate-400">
+              Got more questions? Contact us at{" "}
+              <a
+                href="mailto:hello@billingseasy.com"
+                className="text-blue-600 hover:underline"
+              >
+                hello@billingseasy.com
+              </a>
+            </p>
+          </div>
+          <div className="space-y-3">
+            {faqs.map((faq, i) => (
+              <div
+                key={i}
+                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden"
+              >
+                <button
+                  className="w-full flex items-center justify-between px-6 py-4 text-left font-semibold text-slate-800 dark:text-slate-200 text-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+                  onClick={() => setOpenFaq(openFaq === i ? null : i)}
+                  aria-expanded={openFaq === i}
+                >
+                  <span>{faq.q}</span>
+                  <ChevronDown
+                    className={`h-4 w-4 text-slate-400 transition-transform flex-shrink-0 ml-4 ${
+                      openFaq === i ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+                {openFaq === i && (
+                  <div className="px-6 pb-5 text-sm text-slate-600 dark:text-slate-400 leading-relaxed border-t border-slate-100 dark:border-slate-800 pt-4">
+                    {faq.a}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── 10. FINAL CTA ── */}
+      <section className="py-20 px-4 sm:px-6">
+        <div
+          className="max-w-3xl mx-auto rounded-3xl p-12 text-center text-white shadow-xl"
+          style={{
+            background: "linear-gradient(135deg, #1D4ED8 0%, #1E40AF 50%, #1E3A8A 100%)",
+          }}
+        >
+          <h2 className="text-3xl sm:text-4xl font-bold mb-4">
+            Ready to grow your business?
+          </h2>
+          <p className="text-blue-200 text-lg mb-8 max-w-xl mx-auto">
+            Join thousands of Indian businesses already using BillingEasy.
+          </p>
+          <Button
+            size="lg"
+            className="bg-white hover:bg-blue-50 text-blue-700 font-semibold px-8 py-6 text-base shadow-lg"
+            onClick={goSignup}
+            data-testid="final-cta"
+          >
+            Get Started Free <ArrowRight className="h-4 w-4 ml-2" />
+          </Button>
+          <p className="text-blue-300 text-sm mt-4">
+            50 free credits · No credit card required
+          </p>
+        </div>
+      </section>
+
+      {/* ── 11. FOOTER ── */}
+      <footer className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 py-14 px-4 sm:px-6">
+        <div className="max-w-6xl mx-auto grid sm:grid-cols-3 gap-10">
+          {/* Col 1 */}
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <Logo />
+              <span className="font-bold text-slate-900 dark:text-white">BillingEasy</span>
+            </div>
+            <p className="text-slate-500 dark:text-slate-400 text-sm leading-relaxed mb-4">
+              India's AI-powered GST billing software for every business. Credits-based pricing. No lock-in.
+            </p>
+            <p className="text-slate-400 dark:text-slate-600 text-xs">
+              © {new Date().getFullYear()} BillingEasy. All rights reserved.
+            </p>
+          </div>
+          {/* Col 2 */}
+          <div>
+            <h4 className="font-semibold text-slate-900 dark:text-white text-sm mb-4">Product</h4>
+            <ul className="space-y-2 text-sm text-slate-500 dark:text-slate-400">
+              <li>
+                <a href="#features" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                  Features
+                </a>
+              </li>
+              <li>
+                <a href="#pricing" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                  Pricing
+                </a>
+              </li>
+              <li>
+                <a href="#industries" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                  Industries
+                </a>
+              </li>
+              <li>
+                <a href="#faq" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                  FAQ
+                </a>
+              </li>
+              <li>
+                <a
+                  href="mailto:hello@billingseasy.com"
+                  className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                >
+                  Contact
+                </a>
+              </li>
+            </ul>
+          </div>
+          {/* Col 3 */}
+          <div>
+            <h4 className="font-semibold text-slate-900 dark:text-white text-sm mb-4">Legal</h4>
+            <ul className="space-y-2 text-sm text-slate-500 dark:text-slate-400">
+              <li>
+                <a href="/privacy" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                  Privacy Policy
+                </a>
+              </li>
+              <li>
+                <a href="/terms" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                  Terms of Service
+                </a>
+              </li>
+              <li>
+                <a href="/refund" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                  Refund Policy
+                </a>
+              </li>
+            </ul>
           </div>
         </div>
       </footer>
     </div>
   );
 }
-
-const FEATURES = [
-  { title: "GST Invoices",       desc: "Create CGST/SGST/IGST invoices with HSN, e-invoice ready, and beautiful PDFs in seconds.", icon: Receipt,         color: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300" },
-  { title: "Inventory & Stock",  desc: "Track stock with low-stock alerts, barcode lookup and per-product cost & margin reporting.",     icon: Boxes,           color: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
-  { title: "Expenses & Bank",    desc: "Capture every business expense, reconcile bank statements, and never miss an input GST claim.", icon: Wallet,          color: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
-  { title: "GSTR Reports",       desc: "One-click GSTR-1, GSTR-3B, HSN summary, and 26AS-friendly TDS reports.",                         icon: FileSpreadsheet, color: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" },
-  { title: "Team & Permissions", desc: "Invite accountants and sales staff with custom roles. Granular RBAC + audit log on every action.", icon: Users,        color: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" },
-  { title: "Analytics & Reports",desc: "P&L, Balance Sheet, Trial Balance, Day Book and Cash Flow — board-ready in seconds.",          icon: BarChart3,       color: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300" },
-];
-
-const FAQ = [
-  { q: "Is there a free trial?", a: "Yes — every new organisation gets a 7-day free trial of all features, with no credit card required." },
-  { q: "Can I switch plans later?", a: "Absolutely. Upgrade or downgrade any time from Billing & Plan inside the app. Prorated charges apply." },
-  { q: "What payment methods do you accept?", a: "UPI, debit & credit cards, netbanking and major wallets via Cashfree's secure subscription gateway." },
-  { q: "Is my data safe?", a: "Yes. Data is encrypted in transit (HTTPS) and at rest (AES-256). Each tenant runs in an isolated database namespace with daily backups." },
-  { q: "Do you support GSTR filing directly to the GST portal?", a: "We generate GSTR-1, GSTR-3B and HSN summary in the format the GST portal accepts. Direct API filing is on our roadmap for the Business plan." },
-  { q: "Can I cancel any time?", a: "Yes. Cancellation is one click — you continue to have access until the end of the period you've paid for." },
-];
