@@ -19,6 +19,7 @@ import {
   LayoutDashboard, Users, Package, FileText, ShoppingCart, Wallet,
   Receipt, BookOpen, Landmark, Settings, LogOut, Moon, Sun, Building2,
   FileBarChart, ChevronDown, Plus, CreditCard, Sparkles, Bot, Wrench, FileSpreadsheet, Coins, Zap,
+  UtensilsCrossed, Scan, SlidersHorizontal,
 } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import { STATES } from "@/pages/Parties";
@@ -30,6 +31,10 @@ const NAV = [
   { to: "/parties", label: "Customers & Suppliers", subtitle: "Who you buy from / sell to", icon: Users, tid: "nav-parties" },
   { to: "/products", label: "Products & Stock", subtitle: "What you sell", icon: Package, tid: "nav-products" },
   { to: "/sales", label: "Sales / Invoices", subtitle: "Bills for your customers", icon: FileText, tid: "nav-sales" },
+  { to: "/pos", label: "Retail POS", subtitle: "Quick retail billing & scanner", icon: Scan, tid: "nav-pos", badge: "New" },
+  { to: "/pos/admin", label: "POS Settings", subtitle: "Store, GST, receipt config", icon: SlidersHorizontal, tid: "nav-pos-admin" },
+  { to: "/restaurant", label: "Restaurant Billing", subtitle: "Tables, KOT & GST bills", icon: UtensilsCrossed, tid: "nav-restaurant", badge: "New" },
+  { to: "/restaurant/admin", label: "Restaurant Settings", subtitle: "Tables, sections, KOT config", icon: SlidersHorizontal, tid: "nav-restaurant-admin" },
   { to: "/purchases", label: "Purchases / Bills", subtitle: "Bills from suppliers", icon: ShoppingCart, tid: "nav-purchases" },
   { to: "/payments", label: "Money In / Out", subtitle: "Cash, UPI, bank", icon: Wallet, tid: "nav-payments" },
   { to: "/bank-statement", label: "Bank Statement", subtitle: "Upload & auto-match", icon: FileSpreadsheet, tid: "nav-bank-statement" },

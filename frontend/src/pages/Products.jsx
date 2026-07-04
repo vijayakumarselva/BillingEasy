@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,9 +10,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Edit, AlertTriangle } from "lucide-react";
+import { Plus, Search, Trash2, Edit, AlertTriangle, QrCode } from "lucide-react";
 import { inr } from "@/lib/format";
 import HsnSuggestButton from "@/components/HsnSuggestButton";
+import JsBarcode from "jsbarcode";
 
 const empty = {
   name: "", sku: "", hsn: "", unit: "NOS", category: "General",
@@ -23,6 +24,8 @@ export default function Products() {
   const [list, setList] = useState([]); const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState(""); const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty); const [editId, setEditId] = useState(null);
+  const [barcodeProduct, setBarcodeProduct] = useState(null);
+  const svgRef = useRef(null);
 
   const load = async () => {
     setLoading(true);
@@ -50,6 +53,25 @@ export default function Products() {
     }
   };
   const remove = async (id) => { await api.delete(`/products/${id}`); toast.success("Deleted"); load(); };
+
+  const printBarcode = () => {
+    const svg = svgRef.current;
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const win = window.open("", "_blank");
+    win.document.write(`<html><body style="margin:0;display:flex;justify-content:center;align-items:center;height:100vh">${svgData}</body></html>`);
+    win.document.close();
+    win.print();
+  };
+
+  const downloadPng = () => {
+    const svg = svgRef.current;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    const data = new XMLSerializer().serializeToString(svg);
+    const img = new Image();
+    img.onload = () => { canvas.width = img.width; canvas.height = img.height; ctx.drawImage(img, 0, 0); const a = document.createElement("a"); a.download = `barcode-${barcodeProduct?.sku}.png`; a.href = canvas.toDataURL(); a.click(); };
+    img.src = "data:image/svg+xml;base64," + btoa(data);
+  };
 
   return (
     <div className="space-y-6" data-testid="products-page">
@@ -96,6 +118,7 @@ export default function Products() {
                       {p.stock <= p.low_stock_alert && <AlertTriangle className="inline h-3 w-3 text-rose-500 ml-1" />}
                     </td>
                     <td className="text-right">
+                      <Button size="icon" variant="ghost" onClick={() => setBarcodeProduct(p)} title="Show Barcode"><QrCode className="h-4 w-4" /></Button>
                       <Button size="icon" variant="ghost" onClick={() => startEdit(p)} data-testid={`product-edit-${p.name}`}><Edit className="h-4 w-4" /></Button>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
@@ -113,6 +136,8 @@ export default function Products() {
           </table>
         </div>
       </Card>
+
+      <BarcodeDialog product={barcodeProduct} svgRef={svgRef} onClose={() => setBarcodeProduct(null)} onPrint={printBarcode} onDownload={downloadPng} />
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-2xl" data-testid="product-form-dialog">
@@ -154,6 +179,34 @@ export default function Products() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function BarcodeDialog({ product, svgRef, onClose, onPrint, onDownload }) {
+  const sku = product?.sku || "";
+  useEffect(() => {
+    if (product && svgRef.current && sku) {
+      JsBarcode(svgRef.current, sku, { format: "CODE128", width: 2, height: 60, displayValue: true });
+    }
+  }, [product, sku]);
+
+  return (
+    <Dialog open={!!product} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader><DialogTitle>Product Barcode</DialogTitle></DialogHeader>
+        <div className="flex flex-col items-center gap-3 py-2">
+          <svg ref={svgRef} />
+          <div className="text-center">
+            <div className="font-medium">{product?.name}</div>
+            <div className="text-xs text-muted-foreground font-mono">{sku}</div>
+          </div>
+        </div>
+        <DialogFooter className="flex gap-2 sm:justify-center">
+          <Button variant="outline" onClick={onPrint}>Print</Button>
+          <Button onClick={onDownload} className="bg-blue-600 hover:bg-blue-700">Download PNG</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

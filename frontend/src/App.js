@@ -32,6 +32,10 @@ import AskAi from "@/pages/AskAi";
 import BankStatement from "@/pages/BankStatement";
 import Wallet from "@/pages/Wallet";
 import Credits from "@/pages/Credits";
+import RetailPOS from "@/pages/RetailPOS";
+import Restaurant from "@/pages/Restaurant";
+import RestaurantAdmin from "@/pages/RestaurantAdmin";
+import POSAdmin from "@/pages/POSAdmin";
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -109,6 +113,10 @@ export default function App() {
               <Route path="/reports" element={<Reports />} />
               <Route path="/tds" element={<TDS />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/pos" element={<RetailPOS />} />
+              <Route path="/pos/admin" element={<POSAdmin />} />
+              <Route path="/restaurant" element={<Restaurant />} />
+              <Route path="/restaurant/admin" element={<RestaurantAdmin />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
