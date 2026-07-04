@@ -696,18 +696,23 @@ export default function Landing() {
             <h4 className="font-semibold text-slate-900 dark:text-white text-sm mb-4">Legal</h4>
             <ul className="space-y-2 text-sm text-slate-500 dark:text-slate-400">
               <li>
+                <Link to="/contact" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                  Contact Us
+                </Link>
+              </li>
+              <li>
                 <Link to="/privacy" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
                   Privacy Policy
                 </Link>
               </li>
               <li>
                 <Link to="/terms" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
-                  Terms of Service
+                  Terms &amp; Conditions
                 </Link>
               </li>
               <li>
                 <Link to="/refund" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
-                  Refund Policy
+                  Refunds &amp; Cancellations
                 </Link>
               </li>
               <li>

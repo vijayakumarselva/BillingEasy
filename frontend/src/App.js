@@ -32,6 +32,7 @@ import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
 import Refund from "@/pages/Refund";
 import Security from "@/pages/Security";
+import Contact from "@/pages/Contact";
 import AskAi from "@/pages/AskAi";
 import BankStatement from "@/pages/BankStatement";
 import Wallet from "@/pages/Wallet";
@@ -99,6 +100,7 @@ export default function App() {
             <Route path="/terms" element={<Terms />} />
             <Route path="/refund" element={<Refund />} />
             <Route path="/security" element={<Security />} />
+            <Route path="/contact" element={<Contact />} />
             <Route path="/super" element={<SuperOnly><SuperAdmin /></SuperOnly>} />
             <Route path="/billing/mock-checkout" element={<Protected><MockCheckout /></Protected>} />
             <Route element={<Protected><AppLayout /></Protected>}>
