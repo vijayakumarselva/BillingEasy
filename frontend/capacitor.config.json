@@ -1,0 +1,20 @@
+{
+  "appId": "com.billingseasy.app",
+  "appName": "BillingEasy",
+  "webDir": "build",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 2000,
+      "backgroundColor": "#1d4ed8",
+      "showSpinner": false
+    }
+  }
+}

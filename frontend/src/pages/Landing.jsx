@@ -1,5 +1,5 @@
 // Public marketing landing page — AI-powered GST billing SaaS for India
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import Logo from "@/components/Logo";
@@ -696,19 +696,24 @@ export default function Landing() {
             <h4 className="font-semibold text-slate-900 dark:text-white text-sm mb-4">Legal</h4>
             <ul className="space-y-2 text-sm text-slate-500 dark:text-slate-400">
               <li>
-                <a href="/privacy" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                <Link to="/privacy" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
                   Privacy Policy
-                </a>
+                </Link>
               </li>
               <li>
-                <a href="/terms" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                <Link to="/terms" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
                   Terms of Service
-                </a>
+                </Link>
               </li>
               <li>
-                <a href="/refund" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                <Link to="/refund" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
                   Refund Policy
-                </a>
+                </Link>
+              </li>
+              <li>
+                <Link to="/security" className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                  Security
+                </Link>
               </li>
             </ul>
           </div>

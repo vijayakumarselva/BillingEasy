@@ -1,0 +1,5 @@
+package com.billingseasy.app;
+
+import com.getcapacitor.BridgeActivity;
+
+public class MainActivity extends BridgeActivity {}

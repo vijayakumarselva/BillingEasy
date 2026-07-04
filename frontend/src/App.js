@@ -28,6 +28,10 @@ import ResetPassword from "@/pages/ResetPassword";
 import SuperAdmin from "@/pages/SuperAdmin";
 import PublicInvoice from "@/pages/PublicInvoice";
 import Tools from "@/pages/Tools";
+import Privacy from "@/pages/Privacy";
+import Terms from "@/pages/Terms";
+import Refund from "@/pages/Refund";
+import Security from "@/pages/Security";
 import AskAi from "@/pages/AskAi";
 import BankStatement from "@/pages/BankStatement";
 import Wallet from "@/pages/Wallet";
@@ -91,6 +95,10 @@ export default function App() {
             <Route path="/reset-password" element={<Public><ResetPassword /></Public>} />
             <Route path="/p/invoice/:token" element={<PublicInvoice />} />
             <Route path="/free/tools" element={<PublicTools />} />
+            <Route path="/privacy" element={<Privacy />} />
+            <Route path="/terms" element={<Terms />} />
+            <Route path="/refund" element={<Refund />} />
+            <Route path="/security" element={<Security />} />
             <Route path="/super" element={<SuperOnly><SuperAdmin /></SuperOnly>} />
             <Route path="/billing/mock-checkout" element={<Protected><MockCheckout /></Protected>} />
             <Route element={<Protected><AppLayout /></Protected>}>
