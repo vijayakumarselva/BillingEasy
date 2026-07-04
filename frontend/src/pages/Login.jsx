@@ -78,7 +78,7 @@ export default function Login() {
         <div className="flex items-center gap-2.5">
           <LogoMark size={40} />
           <span className="font-semibold text-lg" style={{ fontFamily: "Outfit, sans-serif" }}>
-            Billing<span className="text-blue-400">Easy</span>
+            Billings<span className="text-blue-400">Easy</span>
           </span>
         </div>
         <div>
@@ -90,7 +90,7 @@ export default function Login() {
             <div><div className="font-mono text-2xl text-blue-400">₹</div><div className="text-xs text-slate-500">INR · Lakhs/Cr</div></div>
           </div>
         </div>
-        <div className="text-xs text-slate-500">© 2026 BillingEasy · Made in India</div>
+        <div className="text-xs text-slate-500">© 2026 BillingsEasy · Made in India</div>
       </div>
 
       {/* Right panel */}
@@ -99,7 +99,7 @@ export default function Login() {
           <div className="lg:hidden mb-8 flex items-center gap-2.5">
             <LogoMark size={36} />
             <span className="font-semibold text-lg" style={{ fontFamily: "Outfit, sans-serif" }}>
-              Billing<span className="text-blue-600">Easy</span>
+              Billings<span className="text-blue-600">Easy</span>
             </span>
           </div>
 

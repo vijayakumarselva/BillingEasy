@@ -163,7 +163,7 @@ export default function Landing() {
   const testimonials = [
     {
       quote:
-        "Switched from Tally and never looked back. BillingEasy's AI features save me 2 hours every day.",
+        "Switched from Tally and never looked back. BillingsEasy's AI features save me 2 hours every day.",
       name: "Rajesh Kumar",
       role: "Wholesale Trader, Mumbai",
     },
@@ -183,15 +183,15 @@ export default function Landing() {
 
   const faqs = [
     {
-      q: "What is BillingEasy?",
-      a: "BillingEasy is an AI-powered GST billing software built for Indian businesses. It helps you create invoices, manage inventory, track expenses, and generate GST reports — all from one place.",
+      q: "What is BillingsEasy?",
+      a: "BillingsEasy is an AI-powered GST billing software built for Indian businesses. It helps you create invoices, manage inventory, track expenses, and generate GST reports — all from one place.",
     },
     {
-      q: "Is BillingEasy suitable for retail shops?",
-      a: "Yes! BillingEasy works for retail, wholesale, restaurants, medical stores, and many more business types. It adapts to your workflow automatically.",
+      q: "Is BillingsEasy suitable for retail shops?",
+      a: "Yes! BillingsEasy works for retail, wholesale, restaurants, medical stores, and many more business types. It adapts to your workflow automatically.",
     },
     {
-      q: "Can I use BillingEasy on Android?",
+      q: "Can I use BillingsEasy on Android?",
       a: "The Android app is coming soon. In the meantime, the web app works perfectly on any mobile browser — just open it in Chrome on your phone.",
     },
     {
@@ -204,7 +204,7 @@ export default function Landing() {
     },
     {
       q: "What are credits?",
-      a: "Credits are the currency of BillingEasy. You spend a small number of credits each time you create an invoice, purchase, or run an AI query. You start with 50 free credits on signup — no card required.",
+      a: "Credits are the currency of BillingsEasy. You spend a small number of credits each time you create an invoice, purchase, or run an AI query. You start with 50 free credits on signup — no card required.",
     },
     {
       q: "Can I migrate from Tally?",
@@ -231,7 +231,7 @@ export default function Landing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Logo />
-            <span className="font-bold text-lg text-slate-900 dark:text-white">BillingEasy</span>
+            <span className="font-bold text-lg text-slate-900 dark:text-white">BillingsEasy</span>
           </div>
           <nav className="hidden md:flex items-center gap-7 text-sm font-medium">
             <a
@@ -383,7 +383,7 @@ export default function Landing() {
         <div className="max-w-5xl mx-auto">
           <div className="text-center mb-12">
             <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 dark:text-white mb-3">
-              Use BillingEasy everywhere
+              Use BillingsEasy everywhere
             </h2>
             <p className="text-slate-500 dark:text-slate-400">
               Start on web today. More platforms coming soon.
@@ -437,7 +437,7 @@ export default function Landing() {
             Built for every type of business
           </h2>
           <p className="text-slate-500 dark:text-slate-400 text-lg mb-12 max-w-xl mx-auto">
-            From grocery stores to manufacturers — BillingEasy adapts to your
+            From grocery stores to manufacturers — BillingsEasy adapts to your
             business.
           </p>
           <div className="flex flex-wrap justify-center gap-3">
@@ -625,7 +625,7 @@ export default function Landing() {
             Ready to grow your business?
           </h2>
           <p className="text-blue-200 text-lg mb-8 max-w-xl mx-auto">
-            Join thousands of Indian businesses already using BillingEasy.
+            Join thousands of Indian businesses already using BillingsEasy.
           </p>
           <Button
             size="lg"
@@ -648,13 +648,13 @@ export default function Landing() {
           <div>
             <div className="flex items-center gap-2 mb-3">
               <Logo />
-              <span className="font-bold text-slate-900 dark:text-white">BillingEasy</span>
+              <span className="font-bold text-slate-900 dark:text-white">BillingsEasy</span>
             </div>
             <p className="text-slate-500 dark:text-slate-400 text-sm leading-relaxed mb-4">
               India's AI-powered GST billing software for every business. Credits-based pricing. No lock-in.
             </p>
             <p className="text-slate-400 dark:text-slate-600 text-xs">
-              © {new Date().getFullYear()} BillingEasy. All rights reserved.
+              © {new Date().getFullYear()} BillingsEasy. All rights reserved.
             </p>
           </div>
           {/* Col 2 */}

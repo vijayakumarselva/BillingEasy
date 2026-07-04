@@ -1,4 +1,4 @@
-// Security Policy page — BillingEasy
+// Security Policy page — BillingsEasy
 // Legal framework: IT Rules 2011, IT Act 2000 s.43A, DPDP Act 2023, ISO/IEC 27001, CERT-In
 import {
   Shield,
@@ -28,7 +28,7 @@ const SECTIONS = [
     content: (
       <>
         <p>
-          BillingEasy ("we", "our", "the Company") is committed to maintaining the security
+          BillingsEasy ("we", "our", "the Company") is committed to maintaining the security
           and confidentiality of all data entrusted to us by our users. This commitment is
           anchored in India's legal framework, specifically:
         </p>
@@ -65,7 +65,7 @@ const SECTIONS = [
     title: "2. Infrastructure Security",
     content: (
       <>
-        <p>BillingEasy is hosted on <strong>Railway</strong>, a managed cloud infrastructure platform that provides:</p>
+        <p>BillingsEasy is hosted on <strong>Railway</strong>, a managed cloud infrastructure platform that provides:</p>
         <ul>
           <li>Physical security and access controls at data centre level.</li>
           <li>Network-level DDoS protection and traffic filtering.</li>
@@ -172,7 +172,7 @@ const SECTIONS = [
         <p>Access to data and system resources is governed by the principle of least privilege:</p>
         <ul>
           <li>
-            <strong>Role-Based Access Control (RBAC):</strong> Within BillingEasy, user
+            <strong>Role-Based Access Control (RBAC):</strong> Within BillingsEasy, user
             accounts are assigned roles (e.g., admin, cashier, staff). Each role has a
             predefined set of permissions. Users cannot access data or perform actions beyond
             their assigned role.
@@ -203,7 +203,7 @@ const SECTIONS = [
     content: (
       <>
         <p>
-          All payment processing on BillingEasy is handled by{" "}
+          All payment processing on BillingsEasy is handled by{" "}
           <strong>Cashfree Payments</strong>, a PCI-DSS Level 1 compliant payment gateway —
           the highest level of PCI compliance. This means:
         </p>
@@ -213,7 +213,7 @@ const SECTIONS = [
             entirely within Cashfree's certified secure environment.
           </li>
           <li>
-            <strong>BillingEasy never stores, processes, or transmits raw card numbers.</strong>{" "}
+            <strong>BillingsEasy never stores, processes, or transmits raw card numbers.</strong>{" "}
             We receive only tokenised payment references and transaction status from Cashfree.
           </li>
           <li>
@@ -240,7 +240,7 @@ const SECTIONS = [
     content: (
       <>
         <p>
-          BillingEasy's AI features (including the "Ask AI" assistant and AI-assisted invoice
+          BillingsEasy's AI features (including the "Ask AI" assistant and AI-assisted invoice
           creation) are powered by the <strong>Anthropic Claude API</strong>. When you use
           these features:
         </p>
@@ -285,7 +285,7 @@ const SECTIONS = [
       <>
         <p>
           We welcome good-faith security research. If you discover a vulnerability in
-          BillingEasy, please report it to us responsibly before making it public.
+          BillingsEasy, please report it to us responsibly before making it public.
         </p>
         <h4 className="font-semibold text-slate-800 dark:text-slate-200 mt-4 mb-2">How to report:</h4>
         <ul>
@@ -333,7 +333,7 @@ const SECTIONS = [
     content: (
       <>
         <p>
-          In the event of a security incident, BillingEasy follows a documented Incident
+          In the event of a security incident, BillingsEasy follows a documented Incident
           Response Plan:
         </p>
         <ul>
@@ -436,7 +436,7 @@ const SECTIONS = [
     title: "12. Compliance",
     content: (
       <>
-        <p>BillingEasy's security programme is designed to comply with applicable Indian laws and regulatory frameworks:</p>
+        <p>BillingsEasy's security programme is designed to comply with applicable Indian laws and regulatory frameworks:</p>
         <ul>
           <li>
             <strong>Information Technology Act, 2000 (IT Act):</strong> We comply with the
@@ -461,7 +461,7 @@ const SECTIONS = [
             timelines and vulnerability management best practices.
           </li>
           <li>
-            <strong>ISO/IEC 27001 (Best Practice Alignment):</strong> While BillingEasy is
+            <strong>ISO/IEC 27001 (Best Practice Alignment):</strong> While BillingsEasy is
             not currently ISO 27001 certified, we align our information security management
             practices with the ISO 27001 framework as a recognised best-practice standard.
           </li>
@@ -594,7 +594,7 @@ export default function Security() {
           </div>
           <h1 className="text-4xl sm:text-5xl font-bold mb-4 tracking-tight">Security Policy</h1>
           <p className="text-green-200 text-lg max-w-2xl mx-auto leading-relaxed mb-6">
-            How BillingEasy protects your business data. Compliant with IT Act 2000, IT
+            How BillingsEasy protects your business data. Compliant with IT Act 2000, IT
             (SPDI) Rules 2011, DPDP Act 2023, and CERT-In guidelines.
           </p>
           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/10 backdrop-blur text-sm text-green-100">
@@ -630,13 +630,13 @@ export default function Security() {
         {/* Intro box */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
           <p className="text-slate-600 dark:text-slate-400 text-sm leading-relaxed">
-            This Security Policy describes the technical and organisational measures BillingEasy
+            This Security Policy describes the technical and organisational measures BillingsEasy
             implements to protect the confidentiality, integrity, and availability of data stored on
             our platform. It applies to all users of{" "}
             <a href="https://billingseasy.com" className="text-blue-600 hover:underline">
               billingseasy.com
             </a>{" "}
-            and the BillingEasy application. This policy should be read alongside our{" "}
+            and the BillingsEasy application. This policy should be read alongside our{" "}
             <a href="/privacy" className="text-blue-600 hover:underline">
               Privacy Policy
             </a>{" "}
@@ -688,7 +688,7 @@ export default function Security() {
             .
           </p>
           <p className="text-xs text-slate-400 dark:text-slate-600 mt-4">
-            BillingEasy · vijayakumartech1@gmail.com · https://billingseasy.com
+            BillingsEasy · vijayakumartech1@gmail.com · https://billingseasy.com
             <br />
             This policy was last reviewed and updated on July 4, 2026.
           </p>

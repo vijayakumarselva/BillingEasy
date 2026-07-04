@@ -9,7 +9,7 @@ export function LogoMark({ size = 36, className = "" }) {
       viewBox="0 0 64 64"
       xmlns="http://www.w3.org/2000/svg"
       role="img"
-      aria-label="BillingEasy"
+      aria-label="BillingsEasy"
       className={className}
     >
       <defs>
@@ -46,7 +46,7 @@ export default function Logo({ withWordmark = false, size = 36, className = "", 
     <span className={`inline-flex items-center gap-2 ${className}`}>
       <LogoMark size={size} />
       <span className={`font-semibold tracking-tight ${wordmarkClassName}`} style={{ fontFamily: "Outfit, sans-serif" }}>
-        Billing<span className="text-blue-600">Easy</span>
+        Billings<span className="text-blue-600">Easy</span>
       </span>
     </span>
   );

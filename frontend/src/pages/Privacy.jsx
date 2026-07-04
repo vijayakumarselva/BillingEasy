@@ -1,4 +1,4 @@
-// Privacy Policy — BillingEasy (AI-powered GST Billing SaaS)
+// Privacy Policy — BillingsEasy (AI-powered GST Billing SaaS)
 // Legally compliant with DPDP Act 2023, IT Act 2000, SPDI Rules 2011,
 // Consumer Protection Act 2019, Indian Contract Act 1872
 import { useEffect, useState } from "react";
@@ -160,7 +160,7 @@ export default function Privacy() {
           </button>
           <div className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-white">
             <Shield className="w-4 h-4 text-blue-600" />
-            BillingEasy Privacy Policy
+            BillingsEasy Privacy Policy
           </div>
           <a
             href="mailto:vijayakumartech1@gmail.com"
@@ -225,7 +225,7 @@ export default function Privacy() {
             </h1>
             <p className="text-gray-600 dark:text-gray-400 text-sm leading-relaxed">
               This Privacy Policy governs the collection, processing, storage, sharing, and protection
-              of personal data by BillingEasy in connection with our AI-powered GST billing software
+              of personal data by BillingsEasy in connection with our AI-powered GST billing software
               and related services. We are committed to transparency and to your rights under
               applicable Indian law.
             </p>
@@ -234,7 +234,7 @@ export default function Privacy() {
           {/* ── 1. Introduction & Scope ── */}
           <SectionHeading id="introduction" number="1" title="Introduction & Scope" />
           <P>
-            BillingEasy ("<strong>we</strong>", "<strong>us</strong>", "<strong>our</strong>", or
+            BillingsEasy ("<strong>we</strong>", "<strong>us</strong>", "<strong>our</strong>", or
             "<strong>the Company</strong>") is an AI-powered GST billing and business management
             Software-as-a-Service (SaaS) platform designed for Indian businesses. We provide
             invoicing, GST return filing assistance, inventory management, payment tracking,
@@ -257,7 +257,7 @@ export default function Privacy() {
             those rights.
           </P>
           <P>
-            This Policy applies to all individuals who interact with BillingEasy, including:
+            This Policy applies to all individuals who interact with BillingsEasy, including:
           </P>
           <Ul
             items={[
@@ -292,7 +292,7 @@ export default function Privacy() {
             Under the <strong>Digital Personal Data Protection (DPDP) Act, 2023</strong>, any person
             who, alone or in conjunction with other persons, determines the purpose and means of
             processing of personal data is referred to as a "<strong>Data Fiduciary</strong>."
-            BillingEasy acts as the Data Fiduciary with respect to the personal data of its users
+            BillingsEasy acts as the Data Fiduciary with respect to the personal data of its users
             and visitors.
           </LegalNote>
           <P>
@@ -303,7 +303,7 @@ export default function Privacy() {
               <span className="font-semibold text-gray-700 dark:text-gray-300 w-36">
                 Business Name:
               </span>
-              <span className="text-gray-900 dark:text-white font-medium">BillingEasy</span>
+              <span className="text-gray-900 dark:text-white font-medium">BillingsEasy</span>
             </div>
             <div className="flex gap-2">
               <span className="font-semibold text-gray-700 dark:text-gray-300 w-36">
@@ -534,7 +534,7 @@ export default function Privacy() {
             heightened protection.
           </LegalNote>
           <P>
-            BillingEasy processes the following categories that qualify as sensitive or
+            BillingsEasy processes the following categories that qualify as sensitive or
             high-sensitivity personal data:
           </P>
           <SubHeading>6.1 Financial Information</SubHeading>
@@ -543,7 +543,7 @@ export default function Privacy() {
             solely for populating invoice templates and internal financial reconciliation. We do not
             store full credit or debit card numbers; payment card data is handled exclusively by our
             PCI-DSS compliant payment processor (Cashfree Payments) and is never transmitted to or
-            stored on BillingEasy servers.
+            stored on BillingsEasy servers.
           </P>
           <SubHeading>6.2 GSTIN and PAN</SubHeading>
           <P>
@@ -623,7 +623,7 @@ export default function Privacy() {
           {/* ── 8. Data Sharing ── */}
           <SectionHeading id="data-sharing" number="8" title="Data Sharing & Third Parties" />
           <P>
-            BillingEasy does not sell, rent, or trade your personal data to any third party for
+            BillingsEasy does not sell, rent, or trade your personal data to any third party for
             commercial purposes. We share personal data only in the following circumstances:
           </P>
           <SubHeading>8.1 Service Providers (Data Processors)</SubHeading>
@@ -673,13 +673,13 @@ export default function Privacy() {
             enforcement authorities, or tax authorities (such as the GST Network, Income Tax
             Department, or any competent court or tribunal) when: (a) required by applicable law or
             valid legal process; (b) necessary to comply with a court order, subpoena, or regulatory
-            direction; or (c) to protect the rights, property, or safety of BillingEasy, its users,
+            direction; or (c) to protect the rights, property, or safety of BillingsEasy, its users,
             or the public.
           </P>
           <SubHeading>8.3 Business Transfers</SubHeading>
           <P>
             In the event of a merger, acquisition, restructuring, or sale of all or substantially
-            all of BillingEasy's business or assets, personal data held by us may be transferred to
+            all of BillingsEasy's business or assets, personal data held by us may be transferred to
             the acquiring entity as part of that transaction, subject to the acquiring entity
             assuming obligations no less protective than this Policy. We will notify you of any such
             transfer and any resulting changes to the processing of your data.
@@ -786,7 +786,7 @@ export default function Privacy() {
           <LegalNote>
             Chapter III of the <strong>Digital Personal Data Protection Act, 2023</strong> (Sections
             11–14) confers the following rights on every "Data Principal" (i.e., the individual to
-            whom the personal data relates). BillingEasy is committed to facilitating the exercise
+            whom the personal data relates). BillingsEasy is committed to facilitating the exercise
             of these rights within the timelines prescribed by law.
           </LegalNote>
           <SubHeading>11.1 Right to Access Information (Section 11)</SubHeading>
@@ -860,7 +860,7 @@ export default function Privacy() {
           {/* ── 12. Cookies ── */}
           <SectionHeading id="cookies" number="12" title="Cookies & Tracking" />
           <P>
-            BillingEasy uses cookies and similar technologies (local storage, session storage) to
+            BillingsEasy uses cookies and similar technologies (local storage, session storage) to
             operate and improve the Platform. By accessing the Platform, you consent to the use of
             cookies as described in this section. You may withdraw consent for non-essential cookies
             at any time through your browser settings or, where applicable, through our cookie
@@ -920,7 +920,7 @@ export default function Privacy() {
           </LegalNote>
           <P>
             The Platform is designed for use by businesses and their authorised adult
-            representatives. BillingEasy does not knowingly collect personal data from any person
+            representatives. BillingsEasy does not knowingly collect personal data from any person
             under the age of 18 ("<strong>child</strong>") without verifiable parental or guardian
             consent.
           </P>
@@ -949,7 +949,7 @@ export default function Privacy() {
             <strong>IT Act, 2000 — Section 43A</strong> and the{" "}
             <strong>SPDI Rules, 2011 (Rules 8 & 9)</strong> require bodies corporate that possess,
             deal, or handle sensitive personal data or information to implement and maintain
-            reasonable security practices and procedures. BillingEasy implements the following
+            reasonable security practices and procedures. BillingsEasy implements the following
             technical and organisational measures:
           </LegalNote>
           <SubHeading>14.1 Encryption</SubHeading>
@@ -1010,7 +1010,7 @@ export default function Privacy() {
           <P>
             In accordance with Rule 5(9) of the SPDI Rules, 2011 and the applicable provisions of
             the DPDP Act, 2023, the following individual has been designated as the Grievance
-            Officer for BillingEasy:
+            Officer for BillingsEasy:
           </P>
           <div className="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-5 mb-6 text-sm space-y-2">
             <div className="flex gap-2">
@@ -1022,7 +1022,7 @@ export default function Privacy() {
                 Designation:
               </span>
               <span className="text-gray-900 dark:text-white">
-                Grievance Officer, BillingEasy
+                Grievance Officer, BillingsEasy
               </span>
             </div>
             <div className="flex gap-2">
@@ -1047,7 +1047,7 @@ export default function Privacy() {
           <P>
             If you have any concern, complaint, or grievance regarding the collection, storage,
             processing, disclosure, or any other aspect of handling of your personal data by
-            BillingEasy, you may submit a grievance to the Grievance Officer by email at{" "}
+            BillingsEasy, you may submit a grievance to the Grievance Officer by email at{" "}
             <a
               href="mailto:vijayakumartech1@gmail.com"
               className="text-blue-600 hover:underline"
@@ -1059,7 +1059,7 @@ export default function Privacy() {
           </P>
           <Ul
             items={[
-              "Your full name and the email address associated with your BillingEasy account",
+              "Your full name and the email address associated with your BillingsEasy account",
               "A clear description of the grievance and the specific personal data or processing activity it concerns",
               "Any relevant dates, reference numbers, or supporting documentation",
               "The remedy or resolution you are seeking",
@@ -1131,7 +1131,7 @@ export default function Privacy() {
               <span className="font-semibold text-gray-700 dark:text-gray-300 w-36">
                 Business:
               </span>
-              <span className="text-gray-900 dark:text-white">BillingEasy</span>
+              <span className="text-gray-900 dark:text-white">BillingsEasy</span>
             </div>
             <div className="flex gap-2 items-start">
               <span className="font-semibold text-gray-700 dark:text-gray-300 w-36">
@@ -1168,7 +1168,7 @@ export default function Privacy() {
           {/* Footer */}
           <div className="mt-12 pt-8 border-t border-gray-200 dark:border-gray-800 text-center text-xs text-gray-500 dark:text-gray-500 space-y-1">
             <p>
-              © {new Date().getFullYear()} BillingEasy. Operated by Vijay Kumar. All rights
+              © {new Date().getFullYear()} BillingsEasy. Operated by Vijay Kumar. All rights
               reserved.
             </p>
             <p>

@@ -64,7 +64,7 @@ export default function SuperAdmin() {
         <div className="flex items-center gap-2">
           <ShieldAlert className="h-5 w-5 text-amber-400" />
           <div>
-            <div className="font-semibold">BillingEasy · Platform Console</div>
+            <div className="font-semibold">BillingsEasy · Platform Console</div>
             <div className="text-[10px] uppercase tracking-wider text-slate-400">Super admin · {user?.email}</div>
           </div>
         </div>
@@ -350,7 +350,7 @@ function PaymentGatewaySettings() {
             <div>
               <div className="text-sm font-medium">Enable gateway</div>
               <div className="text-[11px] text-muted-foreground">
-                When off, BillingEasy stays in mock mode regardless of environment.
+                When off, BillingsEasy stays in mock mode regardless of environment.
               </div>
             </div>
             <Switch checked={enabled} onCheckedChange={setEnabled} data-testid="payment-enabled-switch" />

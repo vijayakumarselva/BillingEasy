@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">BillingEasy</string>
-    <string name="title_activity_main">BillingEasy</string>
+    <string name="app_name">BillingsEasy</string>
+    <string name="title_activity_main">BillingsEasy</string>
     <string name="package_name">com.billingseasy.app</string>
     <string name="custom_url_scheme">com.billingseasy.app</string>
 </resources>

@@ -36,7 +36,7 @@ export default function Register() {
         <div className="mb-8 flex items-center gap-2.5">
           <LogoMark size={36} />
           <span className="font-semibold text-lg" style={{ fontFamily: "Outfit, sans-serif" }}>
-            Billing<span className="text-blue-600">Easy</span>
+            Billings<span className="text-blue-600">Easy</span>
           </span>
         </div>
         <h2 className="text-3xl font-semibold tracking-tight mb-1">Create your account</h2>

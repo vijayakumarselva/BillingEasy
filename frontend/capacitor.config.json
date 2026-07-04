@@ -1,6 +1,6 @@
 {
   "appId": "com.billingseasy.app",
-  "appName": "BillingEasy",
+  "appName": "BillingsEasy",
   "webDir": "build",
   "server": {
     "androidScheme": "https"

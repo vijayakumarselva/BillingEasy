@@ -4,7 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Zap, CheckCircle2, Coins, TrendingDown, Info } from "lucide-react";
+import { Zap, CheckCircle2, Coins, TrendingDown, Info, Shield } from "lucide-react";
 
 const COLOR = {
   slate:  { ring: "ring-slate-200",  btn: "bg-slate-800 hover:bg-slate-900",   badge: "bg-slate-100 text-slate-700" },
@@ -34,14 +34,47 @@ export default function Credits() {
     api.get("/wallet").then(r => setWallet(r.data)).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (!document.getElementById("cashfree-sdk")) {
+      const s = document.createElement("script");
+      s.id = "cashfree-sdk";
+      s.src = "https://sdk.cashfree.com/js/v3/cashfree.js";
+      document.head.appendChild(s);
+    }
+  }, []);
+
   const buy = async (pack) => {
     setBuying(pack.id);
     try {
-      const { data } = await api.post("/wallet/purchase", { pack_id: pack.id });
-      toast.success(`${pack.credits.toLocaleString()} credits added! Balance: ${data.balance}`);
-      setWallet(w => ({ ...w, balance: data.balance }));
+      const { data } = await api.post("/wallet/create-order", { pack_id: pack.id });
+
+      if (data.mock) {
+        // Mock mode — verify immediately without opening payment UI
+        const verify = await api.post("/wallet/verify-order", { order_id: data.order_id });
+        toast.success(`${pack.credits.toLocaleString()} credits added! Balance: ${verify.data.balance}`);
+        setWallet(w => ({ ...w, balance: verify.data.balance }));
+        return;
+      }
+
+      // Real Cashfree payment — open checkout modal
+      const cashfree = window.Cashfree({ mode: data.env === "sandbox" ? "sandbox" : "production" });
+      const checkoutOptions = {
+        paymentSessionId: data.payment_session_id,
+        redirectTarget: "_modal",
+      };
+      const result = await cashfree.checkout(checkoutOptions);
+
+      if (result.error) {
+        toast.error(result.error.message || "Payment failed");
+        return;
+      }
+      if (result.paymentDetails) {
+        const verify = await api.post("/wallet/verify-order", { order_id: data.order_id });
+        toast.success(`${pack.credits.toLocaleString()} credits added! Balance: ${verify.data.balance}`);
+        setWallet(w => ({ ...w, balance: verify.data.balance }));
+      }
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Purchase failed");
+      toast.error(e?.response?.data?.detail || "Payment failed");
     } finally { setBuying(null); }
   };
 
@@ -120,22 +153,21 @@ export default function Credits() {
 
                 <Button className={`w-full mt-auto ${c.btn} text-white`}
                   onClick={() => buy(pack)} disabled={buying === pack.id}>
-                  {buying === pack.id ? "Processing…" : `Buy ₹${pack.price.toLocaleString()}`}
+                  {buying === pack.id ? "Processing…" : `Pay ₹${pack.price.toLocaleString()} · Cashfree`}
                 </Button>
               </div>
             );
           })}
         </div>
         <p className="text-xs text-muted-foreground mt-3 flex items-center gap-1.5">
-          <Info className="h-3.5 w-3.5" />
-          Credits never expire. Purchase is currently simulated — payment gateway integration coming soon.
+          <Shield className="h-3.5 w-3.5" /> Secured by Cashfree Payments · PCI-DSS compliant · UPI, Cards, Net Banking accepted
         </p>
       </div>
 
       {/* What credits cost — action table */}
       <div>
         <h2 className="text-lg font-semibold mb-1">Credit Cost per Action</h2>
-        <p className="text-sm text-muted-foreground mb-4">Every action on BillingEasy costs a fixed number of credits. Super admin can adjust these at any time.</p>
+        <p className="text-sm text-muted-foreground mb-4">Every action on BillingsEasy costs a fixed number of credits. Super admin can adjust these at any time.</p>
         {wallet ? (
           <div className="rounded-2xl border overflow-hidden">
             <table className="w-full text-sm">

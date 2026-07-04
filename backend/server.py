@@ -752,6 +752,165 @@ async def get_credit_packs():
 class PurchasePackIn(BaseModel):
     pack_id: str
 
+@api.post("/wallet/create-order")
+async def wallet_create_order(body: dict, ctx=Depends(get_org_ctx)):
+    """Create a Cashfree payment order for a credit pack. Returns order_id + payment_session_id."""
+    pack_id = body.get("pack_id")
+    packs = await db.config.find_one({"key": "credit_packs"}, {"_id": 0})
+    pack = next((p for p in (packs or {}).get("value", []) if p["id"] == pack_id), None)
+    if not pack:
+        # Fall back to in-memory CREDIT_PACKS list
+        pack = next((p for p in CREDIT_PACKS if p["id"] == pack_id), None)
+    if not pack:
+        raise HTTPException(400, "Invalid pack")
+
+    creds = await get_cashfree_credentials(db)
+    order_id = f"BE-{ctx['org_id'][:8]}-{pack_id}-{str(uuid.uuid4())[:8]}"
+
+    if not creds.get("client_id") or not creds.get("client_secret") or creds.get("is_mock"):
+        # Mock mode — return a fake session for testing
+        mock_session = f"mock_session_{order_id}"
+        await db.pending_orders.insert_one({
+            "order_id": order_id, "org_id": ctx["org_id"],
+            "pack_id": pack_id, "pack": pack,
+            "amount": pack["price"], "status": "created",
+            "mock": True, "created_at": now_iso()
+        })
+        return {"order_id": order_id, "payment_session_id": mock_session, "mock": True, "amount": pack["price"]}
+
+    cf_env = creds.get("env", "sandbox")
+    base = "https://sandbox.cashfree.com" if cf_env == "sandbox" else "https://api.cashfree.com"
+    headers = {
+        "x-client-id": creds["client_id"],
+        "x-client-secret": creds["client_secret"],
+        "x-api-version": "2023-08-01",
+        "Content-Type": "application/json"
+    }
+    user = ctx["user"]
+    payload = {
+        "order_id": order_id,
+        "order_amount": pack["price"],
+        "order_currency": "INR",
+        "customer_details": {
+            "customer_id": user.get("id", str(uuid.uuid4())[:8]),
+            "customer_email": user.get("email", "user@example.com"),
+            "customer_phone": user.get("phone", "9999999999")
+        },
+        "order_meta": {"return_url": f"https://billingseasy.com/credits?order_id={order_id}"},
+        "order_note": f"BillingsEasy credit pack: {pack['name']} ({pack['credits']} credits)"
+    }
+    async with httpx.AsyncClient() as client:
+        r = await client.post(f"{base}/pg/orders", json=payload, headers=headers)
+    if r.status_code not in (200, 201):
+        raise HTTPException(502, f"Cashfree order creation failed: {r.text}")
+    data = r.json()
+    await db.pending_orders.insert_one({
+        "order_id": order_id, "org_id": ctx["org_id"],
+        "pack_id": pack_id, "pack": pack,
+        "amount": pack["price"], "status": "created",
+        "mock": False, "created_at": now_iso()
+    })
+    return {"order_id": order_id, "payment_session_id": data.get("payment_session_id"), "mock": False, "amount": pack["price"]}
+
+
+@api.post("/wallet/verify-order")
+async def wallet_verify_order(body: dict, ctx=Depends(get_org_ctx)):
+    """Called after Cashfree payment completes. Verifies and credits the wallet."""
+    order_id = body.get("order_id")
+    order = await db.pending_orders.find_one({"order_id": order_id, "org_id": ctx["org_id"]})
+    if not order:
+        raise HTTPException(404, "Order not found")
+    if order.get("status") == "paid":
+        wallet = await _get_wallet(ctx["org_id"])
+        return {"balance": wallet["balance"], "already_processed": True}
+
+    creds = await get_cashfree_credentials(db)
+
+    if order.get("mock"):
+        # Mock mode — auto-approve
+        verified = True
+        cf_status = "PAID"
+    else:
+        cf_env = creds.get("env", "sandbox")
+        base = "https://sandbox.cashfree.com" if cf_env == "sandbox" else "https://api.cashfree.com"
+        headers = {
+            "x-client-id": creds["client_id"],
+            "x-client-secret": creds["client_secret"],
+            "x-api-version": "2023-08-01"
+        }
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{base}/pg/orders/{order_id}", headers=headers)
+        if r.status_code != 200:
+            raise HTTPException(502, "Could not verify payment")
+        data = r.json()
+        cf_status = data.get("order_status", "")
+        verified = cf_status == "PAID"
+
+    if verified:
+        pack = order["pack"]
+        credits_to_add = pack["credits"]
+        wallet = await _get_wallet(ctx["org_id"])
+        new_balance = wallet["balance"] + credits_to_add
+        await db.wallets.update_one(
+            {"org_id": ctx["org_id"]},
+            {
+                "$set": {"balance": new_balance},
+                "$inc": {"total_earned": credits_to_add},
+                "$push": {"transactions": {
+                    "id": str(uuid.uuid4()), "type": "purchase",
+                    "amount": credits_to_add, "pack": pack["name"],
+                    "order_id": order_id, "paid_inr": pack["price"],
+                    "created_at": now_iso()
+                }}
+            }
+        )
+        await db.pending_orders.update_one({"order_id": order_id}, {"$set": {"status": "paid"}})
+        return {"balance": new_balance, "credits_added": credits_to_add}
+    else:
+        raise HTTPException(402, f"Payment not completed. Status: {cf_status}")
+
+
+@api.post("/wallet/cashfree-webhook")
+async def wallet_cashfree_payment_webhook(request: Request):
+    """Cashfree PG webhook for one-time credit pack payments."""
+    payload = await request.body()
+    sig = request.headers.get("x-webhook-signature", "")
+    ts = request.headers.get("x-webhook-timestamp", "")
+    creds = await get_cashfree_credentials(db)
+    secret = creds.get("client_secret", "")
+    if secret and sig:
+        msg = ts + payload.decode()
+        expected = base64.b64encode(
+            hmac.new(secret.encode(), msg.encode(), hashlib.sha256).digest()
+        ).decode()
+        if not hmac.compare_digest(sig, expected):
+            raise HTTPException(400, "Invalid signature")
+    data = json.loads(payload)
+    event = data.get("type", "")
+    if event == "PAYMENT_SUCCESS_WEBHOOK":
+        order_id = data.get("data", {}).get("order", {}).get("order_id", "")
+        order = await db.pending_orders.find_one({"order_id": order_id})
+        if order and order.get("status") != "paid":
+            pack = order["pack"]
+            wallet = await _get_wallet(order["org_id"])
+            new_balance = wallet["balance"] + pack["credits"]
+            await db.wallets.update_one(
+                {"org_id": order["org_id"]},
+                {
+                    "$set": {"balance": new_balance},
+                    "$inc": {"total_earned": pack["credits"]},
+                    "$push": {"transactions": {
+                        "id": str(uuid.uuid4()), "type": "purchase",
+                        "amount": pack["credits"], "pack": pack["name"],
+                        "order_id": order_id, "paid_inr": pack["price"],
+                        "created_at": now_iso()
+                    }}
+                }
+            )
+            await db.pending_orders.update_one({"order_id": order_id}, {"$set": {"status": "paid"}})
+    return {"ok": True}
+
+
 @api.post("/wallet/purchase")
 async def purchase_pack(body: PurchasePackIn, ctx=Depends(get_org_ctx)):
     pack = next((p for p in CREDIT_PACKS if p["id"] == body.pack_id), None)

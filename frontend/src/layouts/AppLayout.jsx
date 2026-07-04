@@ -26,7 +26,7 @@ import { STATES } from "@/pages/Parties";
 
 const NAV = [
   { to: "/dashboard", label: "Home", subtitle: "Dashboard", icon: LayoutDashboard, tid: "nav-dashboard" },
-  { to: "/ask-ai", label: "Ask BillingEasy AI", subtitle: "Your AI bookkeeper", icon: Bot, tid: "nav-ai", badge: "AI" },
+  { to: "/ask-ai", label: "Ask BillingsEasy AI", subtitle: "Your AI bookkeeper", icon: Bot, tid: "nav-ai", badge: "AI" },
   { to: "/tools", label: "GST Tools", subtitle: "GSTIN check, HSN finder", icon: Wrench, tid: "nav-tools", badge: "Free" },
   { to: "/parties", label: "Customers & Suppliers", subtitle: "Who you buy from / sell to", icon: Users, tid: "nav-parties" },
   { to: "/products", label: "Products & Stock", subtitle: "What you sell", icon: Package, tid: "nav-products" },
@@ -69,7 +69,7 @@ export default function AppLayout() {
             <LogoMark size={36} />
             <div>
               <div className="text-white font-semibold tracking-tight text-base" style={{ fontFamily: "Outfit, sans-serif" }}>
-                Billing<span className="text-blue-400">Easy</span>
+                Billings<span className="text-blue-400">Easy</span>
               </div>
               <div className="text-[10px] uppercase tracking-wider text-slate-400">GST · Billing · Books</div>
             </div>
@@ -147,7 +147,7 @@ export default function AppLayout() {
         <header className="h-14 border-b border-border flex items-center justify-between px-4 sm:px-6 sticky top-0 z-30 bg-background/80 backdrop-blur">
           <div className="md:hidden flex items-center gap-2">
             <LogoMark size={26} />
-            <span className="font-semibold" style={{ fontFamily: "Outfit, sans-serif" }}>BillingEasy</span>
+            <span className="font-semibold" style={{ fontFamily: "Outfit, sans-serif" }}>BillingsEasy</span>
           </div>
           <div className="hidden md:flex items-center gap-3">
             <span className="text-sm text-muted-foreground">

@@ -11,10 +11,10 @@ const sections = [
     title: "1. Credit Pack Purchases — General Policy",
     icon: null,
     type: "default",
-    content: `All credit pack purchases on BillingEasy are final. Due to the nature of digital goods and the immediate delivery of credits to your account upon successful payment, we operate a strict no-refund policy for credit pack purchases in general.
+    content: `All credit pack purchases on BillingsEasy are final. Due to the nature of digital goods and the immediate delivery of credits to your account upon successful payment, we operate a strict no-refund policy for credit pack purchases in general.
 
 When you purchase a credit pack:
-• Credits are immediately and automatically credited to your BillingEasy account upon successful payment confirmation from our payment gateway (Cashfree Payments).
+• Credits are immediately and automatically credited to your BillingsEasy account upon successful payment confirmation from our payment gateway (Cashfree Payments).
 • A GST-compliant tax invoice is generated and made available for download from your account dashboard.
 • The transaction is considered complete and delivered at the moment credits are added to your account.
 
@@ -27,11 +27,11 @@ We strongly recommend that you review available credit pack options carefully be
     title: "2. Exception — Technical Failure (Payment Debited, Credits Not Added)",
     icon: CheckCircle,
     type: "success",
-    content: `We recognise that technical failures can occasionally occur during payment processing. If your bank account or credit/debit card has been debited but the corresponding credits have NOT appeared in your BillingEasy account within 30 minutes of the transaction, you are entitled to a full refund of the debited amount.
+    content: `We recognise that technical failures can occasionally occur during payment processing. If your bank account or credit/debit card has been debited but the corresponding credits have NOT appeared in your BillingsEasy account within 30 minutes of the transaction, you are entitled to a full refund of the debited amount.
 
 Eligibility conditions for this exception:
 • Your bank account, UPI handle, or card has been charged/debited.
-• The credits have not been added to your BillingEasy wallet/account.
+• The credits have not been added to your BillingsEasy wallet/account.
 • This has not been resolved automatically within 30 minutes of the transaction timestamp.
 • You raise a refund request within 7 (seven) calendar days of the transaction date.
 
@@ -95,13 +95,13 @@ Step 1 — Contact Us by Email:
 Send an email to vijayakumartech1@gmail.com with the subject line: "Refund Request — [Your Transaction ID]"
 
 Step 2 — Include the Following Information in Your Email:
-• Your full name as registered on BillingEasy
+• Your full name as registered on BillingsEasy
 • Your registered email address
 • The Transaction ID / Order ID (available in your bank statement, UPI app, or Cashfree payment confirmation email)
 • The date and time of the transaction
 • The amount debited
 • A clear description of the issue (Technical Failure or Duplicate Payment)
-• Screenshots or documents supporting your claim (e.g., bank statement showing debit, payment confirmation, screenshot of your BillingEasy wallet showing credits not added)
+• Screenshots or documents supporting your claim (e.g., bank statement showing debit, payment confirmation, screenshot of your BillingsEasy wallet showing credits not added)
 
 Step 3 — Deadline:
 Your refund request must be submitted within 7 (seven) calendar days of the date of the transaction or the date you discovered the eligible issue, whichever is earlier. Requests received after this period will not be processed.
@@ -145,8 +145,8 @@ Why contact us first?
 • A direct resolution is faster and protects your account standing.
 
 Consequences of Wrongful Chargebacks:
-If you raise a chargeback for a transaction that does not qualify for a refund under this Policy (for example, a change-of-mind chargeback for fully delivered credits), BillingEasy reserves the right to:
-• Immediately suspend or terminate your BillingEasy account;
+If you raise a chargeback for a transaction that does not qualify for a refund under this Policy (for example, a change-of-mind chargeback for fully delivered credits), BillingsEasy reserves the right to:
+• Immediately suspend or terminate your BillingsEasy account;
 • Contest the chargeback with the payment network using transaction evidence, including proof of credit delivery to your account;
 • Seek recovery of any chargeback-related costs and fees imposed on us by the payment gateway or banks;
 • Report fraudulent chargebacks to appropriate authorities where warranted.
@@ -159,12 +159,12 @@ If you have not received a satisfactory resolution from us within the timelines 
     title: "8. Grievance Officer",
     icon: null,
     type: "default",
-    content: `In accordance with the Consumer Protection (E-Commerce) Rules, 2020 and the Information Technology (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021, BillingEasy has designated a Grievance Officer to address concerns related to refunds, billing, and service quality.
+    content: `In accordance with the Consumer Protection (E-Commerce) Rules, 2020 and the Information Technology (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021, BillingsEasy has designated a Grievance Officer to address concerns related to refunds, billing, and service quality.
 
 Grievance Officer Details:
 
 Name: Vijay Kumar
-Designation: Grievance Officer, BillingEasy
+Designation: Grievance Officer, BillingsEasy
 Email: vijayakumartech1@gmail.com
 Website: https://billingseasy.com
 
@@ -199,7 +199,7 @@ Any dispute arising out of or in connection with this Policy — including any q
 For matters involving amounts below the threshold for civil suits, disputes may also be raised before the appropriate Consumer Disputes Redressal Commission (District, State, or National, as applicable based on the value of the dispute) under the Consumer Protection Act, 2019.
 
 Effective Date of this Policy: July 4, 2026
-This Policy supersedes all prior refund policies published by BillingEasy.`,
+This Policy supersedes all prior refund policies published by BillingsEasy.`,
   },
 ];
 
@@ -250,7 +250,7 @@ export default function Refund() {
           </Button>
           <div className="flex items-center gap-2">
             <RefreshCw className="h-5 w-5 text-blue-600" />
-            <span className="font-semibold text-gray-900 hidden sm:block">BillingEasy</span>
+            <span className="font-semibold text-gray-900 hidden sm:block">BillingsEasy</span>
           </div>
         </div>
       </div>
@@ -264,7 +264,7 @@ export default function Refund() {
             </Badge>
             <h1 className="text-3xl sm:text-4xl font-bold text-gray-900">Refund &amp; Cancellation Policy</h1>
             <p className="text-gray-600 text-base max-w-2xl">
-              This policy explains our refund and cancellation terms for BillingEasy credit pack purchases, in accordance
+              This policy explains our refund and cancellation terms for BillingsEasy credit pack purchases, in accordance
               with Indian consumer protection law and RBI guidelines.
             </p>
             <div className="flex flex-wrap gap-2 mt-1">
@@ -375,7 +375,7 @@ export default function Refund() {
         </div>
 
         <div className="text-center text-xs text-gray-400 pb-8">
-          © 2026 BillingEasy. All rights reserved. |{" "}
+          © 2026 BillingsEasy. All rights reserved. |{" "}
           <a href="mailto:vijayakumartech1@gmail.com" className="hover:text-gray-600 underline">
             vijayakumartech1@gmail.com
           </a>{" "}
