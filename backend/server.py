@@ -356,6 +356,15 @@ class LineItem(BaseModel):
     gst_rate: float = 18
 
 
+class BranchIn(BaseModel):
+    name: str
+    gstin: str = ""
+    state: str = "Tamil Nadu"
+    state_code: str = "33"
+    address: str = ""
+    active: bool = True
+
+
 class InvoiceIn(BaseModel):
     party_id: str
     invoice_date: str
@@ -365,6 +374,7 @@ class InvoiceIn(BaseModel):
     status: str = "finalized"
     is_recurring: bool = False
     type: str = "sale"
+    branch_id: str = ""
 
 
 class PurchaseIn(BaseModel):
@@ -374,6 +384,7 @@ class PurchaseIn(BaseModel):
     items: List[LineItem]
     notes: str = ""
     type: str = "purchase"
+    branch_id: str = ""
 
 
 class PaymentIn(BaseModel):
@@ -918,6 +929,32 @@ async def update_current_org(body: OrgUpdateIn, request: Request, ctx=Depends(re
                     entity_type="organization", entity_id=ctx["org_id"], request=request)
     return await db.organizations.find_one({"id": ctx["org_id"]}, {"_id": 0})
 
+
+@api.get("/orgs/current/branches")
+async def list_branches(ctx=Depends(get_org_ctx)):
+    org = await get_org_doc(ctx["org_id"])
+    return org.get("branches", [])
+
+@api.post("/orgs/current/branches")
+async def add_branch(body: BranchIn, ctx=Depends(get_org_ctx)):
+    branch = {"id": str(uuid.uuid4()), **body.model_dump(), "created_at": now_iso()}
+    await db.organizations.update_one({"id": ctx["org_id"]}, {"$push": {"branches": branch}})
+    return branch
+
+@api.put("/orgs/current/branches/{branch_id}")
+async def update_branch(branch_id: str, body: BranchIn, ctx=Depends(get_org_ctx)):
+    org = await get_org_doc(ctx["org_id"])
+    branches = org.get("branches", [])
+    idx = next((i for i, b in enumerate(branches) if b["id"] == branch_id), None)
+    if idx is None: raise HTTPException(404, "Branch not found")
+    branches[idx] = {**branches[idx], **body.model_dump()}
+    await db.organizations.update_one({"id": ctx["org_id"]}, {"$set": {"branches": branches}})
+    return branches[idx]
+
+@api.delete("/orgs/current/branches/{branch_id}")
+async def delete_branch(branch_id: str, ctx=Depends(get_org_ctx)):
+    await db.organizations.update_one({"id": ctx["org_id"]}, {"$pull": {"branches": {"id": branch_id}}})
+    return {"ok": True}
 
 @api.get("/orgs/current/members")
 async def list_members(ctx=Depends(get_org_ctx)):
@@ -1647,7 +1684,14 @@ async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
     biz = await get_org_doc(ctx["org_id"])
     party = await db.parties.find_one(org_filter(ctx, {"id": body.party_id}), {"_id": 0})
     if not party: raise HTTPException(400, "Party not found")
-    same_state = (biz.get("state_code", "33") == party.get("state_code", "33"))
+    # Resolve branch — if branch_id given, use that branch's state for GST determination
+    branch = None
+    seller_state_code = biz.get("state_code", "33")
+    if body.branch_id:
+        branch = next((b for b in biz.get("branches", []) if b["id"] == body.branch_id), None)
+        if branch:
+            seller_state_code = branch.get("state_code", seller_state_code)
+    same_state = (seller_state_code == party.get("state_code", "33"))
     totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state)
     return {
         "id": str(uuid.uuid4()),
@@ -1659,6 +1703,7 @@ async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
         "totals": {k: v for k, v in totals.items() if k != "items"},
         "notes": body.notes, "status": body.status, "type": body.type,
         "is_recurring": body.is_recurring, "same_state": same_state,
+        "branch_id": body.branch_id, "branch_snapshot": branch,
         "created_at": now_iso(),
     }
 
@@ -1747,7 +1792,13 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
     biz = await get_org_doc(ctx["org_id"])
     party = await db.parties.find_one(org_filter(ctx, {"id": body.party_id}), {"_id": 0})
     if not party: raise HTTPException(400, "Supplier not found")
-    same_state = (biz.get("state_code", "33") == party.get("state_code", "33"))
+    branch = None
+    seller_state_code = biz.get("state_code", "33")
+    if body.branch_id:
+        branch = next((b for b in biz.get("branches", []) if b["id"] == body.branch_id), None)
+        if branch:
+            seller_state_code = branch.get("state_code", seller_state_code)
+    same_state = (seller_state_code == party.get("state_code", "33"))
     totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state)
     doc = {
         "id": str(uuid.uuid4()), "org_id": ctx["org_id"],
@@ -1756,6 +1807,7 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
         "items": totals["items"],
         "totals": {k: v for k, v in totals.items() if k != "items"},
         "notes": body.notes, "type": body.type, "same_state": same_state,
+        "branch_id": body.branch_id, "branch_snapshot": branch,
         "created_at": now_iso(),
     }
     await db.purchases.insert_one(doc)

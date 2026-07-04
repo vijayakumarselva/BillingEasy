@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Trash2, KeyRound } from "lucide-react";
+import { Plus, Trash2, KeyRound, Building2, Pencil } from "lucide-react";
 import { STATES } from "@/pages/Parties";
 import { useAuth } from "@/context/AuthContext";
 import RolesPanel from "@/components/RolesPanel";
@@ -31,15 +31,20 @@ export default function Settings() {
   const [composition, setComposition] = useState(false);
   const [language, setLanguage] = useState("English");
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [branches, setBranches] = useState([]);
+  const [branchDialog, setBranchDialog] = useState({ open: false, branch: null });
+  const EMPTY_BRANCH = { name: "", gstin: "", state: "Tamil Nadu", state_code: "33", address: "", active: true };
+  const [branchForm, setBranchForm] = useState(EMPTY_BRANCH);
 
   const load = async () => {
-    const [b, m, ba] = await Promise.all([
+    const [b, m, ba, br] = await Promise.all([
       api.get("/business"),
       api.get("/orgs/current/members"),
       api.get("/bank-accounts"),
+      api.get("/orgs/current/branches"),
     ]);
     if (b.data) setBiz(s => ({ ...s, ...b.data }));
-    setMembers(m.data); setBanks(ba.data);
+    setMembers(m.data); setBanks(ba.data); setBranches(br.data || []);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [currentOrg?.id]);
 
@@ -52,6 +57,17 @@ export default function Settings() {
     load();
   };
   const delBank = async (id) => { await api.delete(`/bank-accounts/${id}`); load(); };
+  const openAddBranch = () => { setBranchForm(EMPTY_BRANCH); setBranchDialog({ open: true, branch: null }); };
+  const openEditBranch = (br) => { setBranchForm({ name: br.name, gstin: br.gstin || "", state: br.state, state_code: br.state_code, address: br.address || "", active: br.active }); setBranchDialog({ open: true, branch: br }); };
+  const saveBranch = async () => {
+    try {
+      if (branchDialog.branch) await api.put(`/orgs/current/branches/${branchDialog.branch.id}`, branchForm);
+      else await api.post("/orgs/current/branches", branchForm);
+      toast.success(branchDialog.branch ? "Branch updated" : "Branch added");
+      setBranchDialog({ open: false, branch: null }); load();
+    } catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
+  };
+  const delBranch = async (id) => { await api.delete(`/orgs/current/branches/${id}`); toast.success("Deleted"); load(); };
   const removeMember = async (mid) => {
     try { await api.delete(`/orgs/current/members/${mid}`); toast.success("Removed"); load(); }
     catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
@@ -67,6 +83,7 @@ export default function Settings() {
       <Tabs defaultValue="biz">
         <TabsList>
           <TabsTrigger value="biz" data-testid="settings-tab-biz">Business</TabsTrigger>
+          <TabsTrigger value="branches" data-testid="settings-tab-branches">Branches & GSTINs</TabsTrigger>
           <TabsTrigger value="bank" data-testid="settings-tab-bank">Banking</TabsTrigger>
           <TabsTrigger value="users" data-testid="settings-tab-users">Team</TabsTrigger>
           <TabsTrigger value="roles" data-testid="settings-tab-roles">Roles</TabsTrigger>
@@ -109,6 +126,81 @@ export default function Settings() {
             <Button onClick={saveBiz} className="bg-blue-600 hover:bg-blue-700" disabled={currentRole !== "owner"} data-testid="set-biz-save">Save Business</Button>
             {currentRole !== "owner" && <div className="text-xs text-muted-foreground">Only the owner can edit business profile.</div>}
           </Card>
+        </TabsContent>
+
+        <TabsContent value="branches">
+          <Card className="p-5 mt-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold flex items-center gap-2"><Building2 className="h-4 w-4 text-blue-600" /> Branches & GSTINs</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">Add one entry per state where your company is registered. Each branch gets its own GSTIN and is used to auto-calculate IGST vs CGST+SGST on invoices.</p>
+              </div>
+              <Button onClick={openAddBranch} className="bg-blue-600 hover:bg-blue-700 gap-1.5"><Plus className="h-4 w-4" /> Add Branch</Button>
+            </div>
+            <div className="rounded-md border border-amber-200 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+              <strong>How GST state determination works:</strong> When you select a branch on an invoice, the system compares <em>that branch's state</em> with the customer's state. Same state → CGST + SGST. Different state → IGST. If no branch is selected, the org's primary state (configured in Business tab) is used.
+            </div>
+            {branches.length === 0 ? (
+              <div className="text-center py-10 text-muted-foreground text-sm">
+                <Building2 className="h-10 w-10 mx-auto mb-2 opacity-20" />
+                No branches yet. Add branches for each state you operate in.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {branches.map(br => (
+                  <div key={br.id} className={`flex items-start justify-between p-4 rounded-lg border ${br.active ? "bg-card" : "opacity-50 bg-muted"}`}>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold">{br.name}</span>
+                        {!br.active && <Badge variant="outline" className="text-xs">Inactive</Badge>}
+                      </div>
+                      <div className="text-sm text-muted-foreground">{br.state} (State code: {br.state_code})</div>
+                      {br.gstin && <div className="font-mono text-xs text-blue-600 dark:text-blue-400">GSTIN: {br.gstin}</div>}
+                      {br.address && <div className="text-xs text-muted-foreground">{br.address}</div>}
+                    </div>
+                    <div className="flex gap-1 shrink-0 ml-4">
+                      <Button variant="ghost" size="icon" onClick={() => openEditBranch(br)}><Pencil className="h-4 w-4" /></Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button variant="ghost" size="icon"><Trash2 className="h-4 w-4 text-rose-500" /></Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader><AlertDialogTitle>Delete branch "{br.name}"?</AlertDialogTitle><AlertDialogDescription>Existing invoices linked to this branch are unaffected.</AlertDialogDescription></AlertDialogHeader>
+                          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => delBranch(br.id)}>Delete</AlertDialogAction></AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          <Dialog open={branchDialog.open} onOpenChange={o => setBranchDialog(d => ({ ...d, open: o }))}>
+            <DialogContent>
+              <DialogHeader><DialogTitle>{branchDialog.branch ? "Edit Branch" : "Add Branch"}</DialogTitle></DialogHeader>
+              <div className="space-y-3">
+                <F2 label="Branch / Facility Name *" v={branchForm.name} on={v => setBranchForm(f => ({ ...f, name: v }))} />
+                <F2 label="GSTIN" v={branchForm.gstin} on={v => setBranchForm(f => ({ ...f, gstin: v.toUpperCase() }))} />
+                <div className="space-y-1.5">
+                  <Label>State *</Label>
+                  <Select value={branchForm.state_code} onValueChange={v => { const st = STATES.find(s => s.code === v); setBranchForm(f => ({ ...f, state: st.name, state_code: v })); }}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>{STATES.map(s => <SelectItem key={s.code} value={s.code}>{s.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <F2 label="Address" v={branchForm.address} on={v => setBranchForm(f => ({ ...f, address: v }))} />
+                <div className="flex items-center justify-between p-3 rounded border">
+                  <Label>Active</Label>
+                  <Switch checked={branchForm.active} onCheckedChange={v => setBranchForm(f => ({ ...f, active: v }))} />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setBranchDialog({ open: false, branch: null })}>Cancel</Button>
+                <Button className="bg-blue-600 hover:bg-blue-700" onClick={saveBranch}>Save</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </TabsContent>
 
         <TabsContent value="bank">

@@ -181,12 +181,15 @@ function PurchaseDialog({ open, onClose, onSaved }) {
   const [notes, setNotes] = useState("");
   const [banks, setBanks] = useState([]);
   const [bankId, setBankId] = useState("");
+  const [branches, setBranches] = useState([]);
+  const [branchId, setBranchId] = useState("");
 
   useEffect(() => {
     if (open) {
       api.get("/parties", { params: { type: "supplier" } }).then(r => setSuppliers(r.data));
       api.get("/products").then(r => setProducts(r.data));
       api.get("/bank-accounts").then(r => setBanks(r.data));
+      api.get("/orgs/current/branches").then(r => setBranches((r.data || []).filter(b => b.active))).catch(() => {});
     }
   }, [open]);
 
@@ -205,13 +208,13 @@ function PurchaseDialog({ open, onClose, onSaved }) {
   const save = async () => {
     if (!partyId || !billNo) { toast.error("Supplier and bill # required"); return; }
     try {
-      await api.post("/purchases", { party_id: partyId, bill_no: billNo, purchase_date: date, items, notes, type, bank_account_id: bankId || null });
+      await api.post("/purchases", { party_id: partyId, bill_no: billNo, purchase_date: date, items, notes, type, bank_account_id: bankId || null, branch_id: branchId || "" });
       toast.success("Saved"); onClose(); onSaved();
-      setPartyId(""); setBillNo(""); setItems([blank()]); setBankId("");
+      setPartyId(""); setBillNo(""); setItems([blank()]); setBankId(""); setBranchId("");
     } catch { toast.error("Failed"); }
   };
 
-  const handleClose = () => { setBankId(""); onClose(); };
+  const handleClose = () => { setBankId(""); setBranchId(""); onClose(); };
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -254,6 +257,20 @@ function PurchaseDialog({ open, onClose, onSaved }) {
               </SelectContent>
             </Select>
           </div>
+          {branches.length > 0 && (
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>Receiving Branch / GSTIN</Label>
+              <Select value={branchId} onValueChange={setBranchId}>
+                <SelectTrigger data-testid="purchase-branch-select"><SelectValue placeholder="HO — Primary GSTIN (default)" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">HO — Primary GSTIN</SelectItem>
+                  {branches.map(b => (
+                    <SelectItem key={b.id} value={b.id}>{b.name} — {b.state}{b.gstin ? ` · ${b.gstin}` : ""}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
         </div>
 
         <div className="overflow-x-auto">

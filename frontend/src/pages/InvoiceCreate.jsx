@@ -28,6 +28,8 @@ export default function InvoiceCreate() {
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [banks, setBanks] = useState([]);
   const [bankId, setBankId] = useState("");
+  const [branches, setBranches] = useState([]);
+  const [branchId, setBranchId] = useState("");
 
   const loadParties = () => api.get("/parties", { params: { type: "customer" } }).then(r => setParties(r.data));
 
@@ -36,6 +38,7 @@ export default function InvoiceCreate() {
     loadParties();
     api.get("/products").then(r => setProducts(r.data));
     api.get("/bank-accounts").then(r => setBanks(r.data));
+    api.get("/orgs/current/branches").then(r => setBranches((r.data || []).filter(b => b.active))).catch(() => {});
   }, []);
 
   function blankItem() {
@@ -43,7 +46,9 @@ export default function InvoiceCreate() {
   }
 
   const party = parties.find(p => p.id === partyId);
-  const sameState = (biz.state_code || "33") === (party?.state_code || "33");
+  const selectedBranch = branches.find(b => b.id === branchId);
+  const sellerStateCode = selectedBranch ? selectedBranch.state_code : (biz.state_code || "33");
+  const sameState = sellerStateCode === (party?.state_code || "33");
 
   const totals = useMemo(() => {
     let subtotal = 0, discount = 0, taxable = 0, cgst = 0, sgst = 0, igst = 0;
@@ -81,7 +86,8 @@ export default function InvoiceCreate() {
     try {
       const { data } = await api.post("/invoices", {
         party_id: partyId, invoice_date: invoiceDate, due_date: dueDate,
-        items, notes, status, type, is_recurring: false, bank_account_id: bankId || null,
+        items, notes, status, type, is_recurring: false,
+        bank_account_id: bankId || null, branch_id: branchId || "",
       });
       toast.success("Invoice created");
       nav(`/sales/${data.id}`);
@@ -162,6 +168,30 @@ export default function InvoiceCreate() {
             </SelectContent>
           </Select>
         </div>
+        {branches.length > 0 && (
+          <div className="space-y-1.5">
+            <Label>Billing Branch / GSTIN</Label>
+            <Select value={branchId} onValueChange={setBranchId}>
+              <SelectTrigger data-testid="inv-branch-select"><SelectValue placeholder={`HO — ${biz.state || "Primary"} (default)`} /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">HO — {biz.state} (primary GSTIN)</SelectItem>
+                {branches.map(b => (
+                  <SelectItem key={b.id} value={b.id}>
+                    {b.name} — {b.state} {b.gstin ? `· ${b.gstin}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedBranch && (
+              <p className="text-xs text-muted-foreground">
+                Selling from <strong>{selectedBranch.state}</strong> → buyer in <strong>{party?.state || "?"}</strong> →{" "}
+                <span className={sameState ? "text-green-600" : "text-amber-600"}>
+                  {sameState ? "CGST + SGST (intra-state)" : "IGST (inter-state)"}
+                </span>
+              </p>
+            )}
+          </div>
+        )}
       </Card>
 
       <Card>
