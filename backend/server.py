@@ -32,7 +32,8 @@ from io import BytesIO
 import bcrypt
 import jwt as pyjwt
 import httpx
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query, Body
+from fastapi import UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, EmailStr
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -81,7 +82,7 @@ api = APIRouter(prefix="/api")
 @app.get("/health")
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "v": "2.1"}
+    return {"status": "ok", "v": "2.3"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("billeasy")
@@ -298,11 +299,14 @@ class OrgUpdateIn(BaseModel):
     phone: str = ""
     email: str = ""
     logo_url: str = ""
+    logo_b64: str = ""          # base64 encoded logo stored in DB
     bank_name: str = ""
     bank_account: str = ""
     bank_ifsc: str = ""
     bank_branch: str = ""
     terms: str = ""
+    invoice_theme: dict = {}    # {primary_color, accent_color, show_logo, show_ship_to, show_bank, show_terms, show_signature, watermark}
+    business_mode: str = "b2b"  # "b2b" | "b2c" | "restaurant" | "pos"
 
 
 class InviteIn(BaseModel):
@@ -375,6 +379,7 @@ class InvoiceIn(BaseModel):
     is_recurring: bool = False
     type: str = "sale"
     branch_id: str = ""
+    invoice_category: str = "stock"   # "stock" | "service"
 
 
 class PurchaseIn(BaseModel):
@@ -385,6 +390,10 @@ class PurchaseIn(BaseModel):
     notes: str = ""
     type: str = "purchase"
     branch_id: str = ""
+    eway_bill_no: str = ""
+    vehicle_no: str = ""
+    bank_account_id: Optional[str] = None
+    purchase_category: str = "stock"  # "stock" | "service"
 
 
 class PaymentIn(BaseModel):
@@ -666,6 +675,7 @@ async def otp_request(body: OtpRequestIn, request: Request, response: Response):
     sent = send_email(email, f"{otp} is your BillingEasy OTP", html, f"Your OTP is: {otp}")
     if not sent:
         logger.info("OTP for %s: %s", email, otp)
+        return {"ok": True, "message": f"Email not configured — your OTP is: {otp}", "dev_otp": otp}
     return {"ok": True, "message": "OTP sent to your email. Valid for 10 minutes."}
 
 @api.post("/auth/otp/verify")
@@ -681,6 +691,100 @@ async def otp_verify(body: OtpVerifyIn, request: Request, response: Response):
         raise HTTPException(400, "OTP has expired. Request a new one.")
     await db.otp_codes.update_one({"_id": rec["_id"]}, {"$set": {"used": True}})
     u = await db.users.find_one({"email": email})
+    await db.users.update_one({"id": u["id"]}, {"$set": {"last_login": now_iso()}})
+    token = create_access_token(u["id"], u["email"])
+    refresh = create_refresh_token(u["id"])
+    response.set_cookie("access_token", token, httponly=True, samesite="lax",
+                        secure=False, max_age=30*60, path="/")
+    return {"id": u["id"], "email": u["email"], "name": u["name"],
+            "token": token, "refresh_token": refresh}
+
+
+
+# ──────────────── PHONE / SMS OTP LOGIN ────────────────
+class PhoneOtpRequestIn(BaseModel):
+    phone: str  # 10-digit Indian mobile number
+
+class PhoneOtpVerifyIn(BaseModel):
+    phone: str
+    otp: str
+
+def normalize_phone(phone: str) -> str:
+    """Strip +91 / 0 prefix, return 10-digit number."""
+    p = phone.strip().replace(" ", "").replace("-", "")
+    if p.startswith("+91"):
+        p = p[3:]
+    elif p.startswith("91") and len(p) == 12:
+        p = p[2:]
+    elif p.startswith("0"):
+        p = p[1:]
+    return p
+
+async def send_sms_otp(phone10: str, otp: str) -> bool:
+    """Send OTP via Fast2SMS. Returns True if sent."""
+    api_key = os.environ.get("FAST2SMS_API_KEY", "")
+    if not api_key:
+        logger.info("SMS OTP for %s: %s (no FAST2SMS_API_KEY)", phone10, otp)
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://www.fast2sms.com/dev/bulkV2",
+                headers={"authorization": api_key},
+                json={
+                    "variables_values": otp,
+                    "route": "otp",
+                    "numbers": phone10,
+                },
+            )
+        resp = r.json()
+        if resp.get("return"):
+            return True
+        logger.warning("Fast2SMS error: %s", resp)
+        return False
+    except Exception as exc:
+        logger.warning("Fast2SMS exception: %s", exc)
+        return False
+
+@api.post("/auth/phone/request")
+async def phone_otp_request(body: PhoneOtpRequestIn, request: Request):
+    ip = client_ip(request)
+    if not limiter.hit(f"phone_otp:{ip}", max_hits=5, window_seconds=900):
+        raise HTTPException(429, "Too many OTP requests. Try again in 15 minutes.")
+    phone = normalize_phone(body.phone)
+    if len(phone) != 10 or not phone.isdigit():
+        raise HTTPException(400, "Enter a valid 10-digit Indian mobile number")
+    # Auto-create user keyed by phone if not exists
+    u = await db.users.find_one({"phone": phone})
+    if not u:
+        uid = str(uuid.uuid4())
+        fake_email = f"{phone}@phone.billingseasy.com"
+        u = {"id": uid, "email": fake_email, "name": f"User{phone[-4:]}",
+             "phone": phone, "password_hash": "", "created_at": now_iso(), "last_login": now_iso()}
+        await db.users.insert_one(u)
+        await _create_org_internal(f"Business {phone[-4:]}", uid)
+    otp = str(secrets.randbelow(900000) + 100000)
+    expires_at = (now_dt() + timedelta(minutes=10)).isoformat()
+    await db.otp_codes.delete_many({"phone": phone})
+    await db.otp_codes.insert_one({"phone": phone, "otp": otp, "expires_at": expires_at, "used": False})
+    sent = await send_sms_otp(phone, otp)
+    if not sent:
+        return {"ok": True, "message": f"SMS not configured — OTP: {otp}", "dev_otp": otp}
+    return {"ok": True, "message": f"OTP sent to +91 {phone[:5]}XXXXX. Valid for 10 min."}
+
+@api.post("/auth/phone/verify")
+async def phone_otp_verify(body: PhoneOtpVerifyIn, request: Request, response: Response):
+    ip = client_ip(request)
+    if not limiter.hit(f"phone_verify:{ip}", max_hits=10, window_seconds=900):
+        raise HTTPException(429, "Too many attempts. Try again later.")
+    phone = normalize_phone(body.phone)
+    rec = await db.otp_codes.find_one({"phone": phone, "used": False})
+    if not rec or rec["otp"] != body.otp.strip():
+        raise HTTPException(400, "Invalid OTP")
+    if datetime.fromisoformat(rec["expires_at"]) < now_dt():
+        raise HTTPException(400, "OTP expired. Request a new one.")
+    await db.otp_codes.update_one({"_id": rec["_id"]}, {"$set": {"used": True}})
+    u = await db.users.find_one({"phone": phone})
     await db.users.update_one({"id": u["id"]}, {"$set": {"last_login": now_iso()}})
     token = create_access_token(u["id"], u["email"])
     refresh = create_refresh_token(u["id"])
@@ -913,6 +1017,8 @@ async def wallet_cashfree_payment_webhook(request: Request):
 
 @api.post("/wallet/purchase")
 async def purchase_pack(body: PurchasePackIn, ctx=Depends(get_org_ctx)):
+    if not ctx["user"].get("is_super_admin"):
+        raise HTTPException(403, "Use /credits to purchase credits via payment gateway")
     pack = next((p for p in CREDIT_PACKS if p["id"] == body.pack_id), None)
     if not pack:
         raise HTTPException(400, "Invalid pack")
@@ -948,6 +1054,8 @@ class TopUpIn(BaseModel):
 
 @api.post("/wallet/topup")
 async def topup_wallet(body: TopUpIn, ctx=Depends(get_org_ctx)):
+    if not ctx["user"].get("is_super_admin"):
+        raise HTTPException(403, "Use /credits to purchase credits via payment gateway")
     org_id = ctx["org_id"]
     await db.wallets.update_one(
         {"org_id": org_id},
@@ -1202,6 +1310,86 @@ async def public_pricing_endpoint():
 # =========================================================================
 # PUBLIC INDIAN COMPLIANCE TOOLS (no auth — free for SEO & lead-gen)
 # =========================================================================
+def _gstin_business_type(g: str) -> str:
+    """Decode business type from PAN 4th character embedded in GSTIN."""
+    pan_type = g[5] if len(g) >= 6 else ""
+    return {
+        "P": "Individual / Proprietor", "C": "Company", "H": "HUF",
+        "F": "Firm / LLP", "A": "Association of Persons", "T": "Trust",
+        "B": "Body of Individuals", "L": "Local Authority", "J": "Artificial Juridical Person",
+        "G": "Government",
+    }.get(pan_type, "")
+
+_GST_PORTAL_URLS = [
+    "https://services.gst.gov.in/services/api/search/taxpayerDetails?gstin={g}",
+    "https://services.gst.gov.in/services/api/search/taxpayerDetailsByTrade?gstin={g}",
+]
+
+@api.get("/public/gstin/lookup")
+async def public_gstin_lookup(gstin: str):
+    """Fetch GSTIN details from GST portal; falls back to structural parse."""
+    g = (gstin or "").strip().upper()
+    result = validate_gstin(g)
+    if not result.get("valid"):
+        raise HTTPException(400, result.get("reason", "Invalid GSTIN"))
+
+    btype = _gstin_business_type(g)
+    browser_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-IN,en;q=0.9",
+        "Referer": "https://www.gst.gov.in/",
+        "Origin": "https://www.gst.gov.in",
+        "sec-fetch-site": "same-site",
+        "sec-fetch-mode": "cors",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=8, verify=False) as client:
+            for url_tpl in _GST_PORTAL_URLS:
+                try:
+                    r = await client.get(url_tpl.format(g=g), headers=browser_headers)
+                    if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/json"):
+                        data = r.json()
+                        tp = data.get("taxpayerInfo") or data.get("data") or data
+                        if isinstance(tp, dict) and tp.get("tradeNam"):
+                            addr_parts = []
+                            princ = tp.get("pradr", {}).get("addr", {})
+                            for k in ["bnm", "st", "loc", "dst", "stcd"]:
+                                v = princ.get(k, "")
+                                if v and v.strip():
+                                    addr_parts.append(v.strip())
+                            return {
+                                "valid": True, "gstin": g,
+                                "trade_name": tp.get("tradeNam", ""),
+                                "legal_name": tp.get("lgnm", tp.get("tradeNam", "")),
+                                "state": result.get("state", ""),
+                                "state_code": g[:2],
+                                "address": ", ".join(addr_parts),
+                                "pincode": princ.get("pncd", ""),
+                                "status": tp.get("sts", "Active"),
+                                "business_type": tp.get("ctb", "") or btype,
+                                "source": "gst_portal",
+                            }
+                except Exception:
+                    continue
+    except Exception as exc:
+        logger.info("GST portal lookup failed for %s: %s", g, exc)
+
+    # Structural fallback — state and business type from GSTIN itself
+    return {
+        "valid": True, "gstin": g,
+        "trade_name": "", "legal_name": "",
+        "state": result.get("state", ""),
+        "state_code": g[:2],
+        "address": "", "pincode": "",
+        "status": "Active",
+        "business_type": btype,
+        "source": "structural_only",
+        "message": "GST portal unreachable from server — state & business type decoded from GSTIN",
+    }
+
+
 @api.get("/public/gstin/validate")
 async def public_gstin_validate(gstin: str):
     return validate_gstin(gstin)
@@ -1650,6 +1838,40 @@ async def update_biz(body: OrgUpdateIn, request: Request, ctx=Depends(require_pe
     return await db.organizations.find_one({"id": ctx["org_id"]}, {"_id": 0})
 
 
+@api.post("/business/logo")
+async def upload_logo(file: UploadFile = File(...), ctx=Depends(require_permission("settings.edit"))):
+    """Upload company logo — stored as base64 in org doc. Max 2 MB."""
+    if file.size and file.size > 2 * 1024 * 1024:
+        raise HTTPException(413, "Logo must be under 2 MB")
+    content = await file.read()
+    if len(content) > 2 * 1024 * 1024:
+        raise HTTPException(413, "Logo must be under 2 MB")
+    mime = file.content_type or "image/png"
+    if mime not in ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/svg+xml"):
+        raise HTTPException(415, "Unsupported format — use PNG, JPG, or WebP")
+    import base64 as b64mod
+    encoded = b64mod.b64encode(content).decode()
+    data_uri = f"data:{mime};base64,{encoded}"
+    await db.organizations.update_one(
+        {"id": ctx["org_id"]},
+        {"$set": {"logo_b64": data_uri, "updated_at": now_iso()}}
+    )
+    return {"ok": True, "logo_b64": data_uri}
+
+
+@api.delete("/business/logo")
+async def delete_logo(ctx=Depends(require_permission("settings.edit"))):
+    await db.organizations.update_one({"id": ctx["org_id"]}, {"$set": {"logo_b64": "", "updated_at": now_iso()}})
+    return {"ok": True}
+
+
+@api.get("/business/upload-token")
+async def get_upload_token(ctx=Depends(get_org_ctx)):
+    """Return the stable upload token for this org's mobile quick-upload link."""
+    token = _make_upload_token(ctx["org_id"])
+    return {"token": token}
+
+
 # ---------------- PARTIES ----------------
 async def compute_party_balance(pid: str, org_id: str) -> float:
     party = await db.parties.find_one({"id": pid, "org_id": org_id}, {"_id": 0})
@@ -1863,6 +2085,7 @@ async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
         "notes": body.notes, "status": body.status, "type": body.type,
         "is_recurring": body.is_recurring, "same_state": same_state,
         "branch_id": body.branch_id, "branch_snapshot": branch,
+        "invoice_category": getattr(body, "invoice_category", "stock"),
         "created_at": now_iso(),
     }
 
@@ -1875,7 +2098,8 @@ async def create_invoice(body: InvoiceIn, request: Request, ctx=Depends(require_
     prefix = {"sale": "INV", "quotation": "QT", "credit_note": "CN", "sales_return": "SR"}.get(body.type, "INV")
     doc = await _build_invoice_doc(body, ctx, prefix)
     await db.invoices.insert_one(doc)
-    if body.type == "sale" and body.status == "finalized":
+    # Only deduct stock for stock invoices (not service invoices)
+    if body.type == "sale" and body.status == "finalized" and body.invoice_category == "stock":
         for it in body.items:
             if it.product_id:
                 await db.products.update_one(org_filter(ctx, {"id": it.product_id}), {"$inc": {"stock": -it.qty}})
@@ -1933,6 +2157,292 @@ async def invoice_pdf(iid: str, ctx=Depends(get_org_ctx)):
 
 
 # ---------------- PURCHASES ----------------
+@api.post("/purchases/ai-scan")
+async def purchase_ai_scan(file: UploadFile = File(...), ctx=Depends(get_org_ctx)):
+    """Scan a vendor invoice image/PDF with AI and extract purchase details."""
+    import base64, json as _json, re as _re, io, tempfile, os as _os
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        raise HTTPException(400, "AI features require ANTHROPIC_API_KEY to be configured")
+    raw = await file.read()
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(400, "File too large — max 10 MB")
+
+    PROMPT = """You are an OCR assistant for Indian purchase invoices. Extract all visible details and return ONLY a valid JSON object (no markdown, no explanation):
+{"supplier_name":"","gstin":"","bill_no":"","date":"YYYY-MM-DD","eway_bill_no":"","vehicle_no":"","items":[{"name":"","hsn":"","qty":1,"unit":"pcs","rate":0,"gst_rate":0,"amount":0}],"subtotal":0,"gst_amount":0,"total":0,"notes":""}
+Rules:
+- supplier_name: the seller/vendor name (not the buyer)
+- gstin: seller's GSTIN if shown, else ""
+- bill_no: invoice/bill number
+- date: invoice date in YYYY-MM-DD format
+- eway_bill_no: e-Way Bill number if shown (12-digit), else ""
+- vehicle_no: vehicle/transport number if shown (e.g. TN34MB4437), else ""
+- items: list every line item with:
+  - name: product/item description
+  - hsn: HSN/SAC code if shown for this item, else ""
+  - qty: quantity as a number
+  - unit: unit of measure (pcs/kg/nos/bags/qtl/MT/etc)
+  - rate: rate per unit BEFORE GST
+  - gst_rate: GST percentage as number (e.g. 5, 12, 18, 28) — look for IGST/CGST+SGST rates
+  - amount: line total before GST
+- subtotal: sum of all line item amounts before GST
+- gst_amount: total GST/tax charged
+- total: final payable amount
+- notes: HSN codes summary, terms, e-way bill details, or any other info
+If a field is not visible, leave it empty string or 0. Return ONLY the JSON."""
+
+    import anthropic
+    client = anthropic.AsyncAnthropic(api_key=key)
+
+    media_type = (file.content_type or "").lower()
+    is_pdf = media_type == "application/pdf" or (file.filename or "").lower().endswith(".pdf")
+
+    if is_pdf:
+        # Convert PDF pages to images for reliable visual extraction
+        try:
+            from pdf2image import convert_from_bytes
+            images = convert_from_bytes(raw, dpi=200, fmt="jpeg")
+        except Exception as e:
+            # pdf2image not available or poppler missing — fall back to document API
+            images = None
+
+        if images:
+            # Build content with all page images (max 4 pages to stay within limits)
+            content = []
+            for img in images[:4]:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=85)
+                b64img = base64.standard_b64encode(buf.getvalue()).decode()
+                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64img}})
+            content.append({"type": "text", "text": PROMPT})
+            msg = await client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1500,
+                messages=[{"role": "user", "content": content}],
+            )
+        else:
+            # Fallback: send PDF as document
+            b64 = base64.standard_b64encode(raw).decode("utf-8")
+            msg = await client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1500,
+                messages=[{"role": "user", "content": [
+                    {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
+                    {"type": "text", "text": PROMPT},
+                ]}],
+            )
+    else:
+        # Image file — send directly
+        if media_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+            media_type = "image/jpeg"
+        b64 = base64.standard_b64encode(raw).decode("utf-8")
+        msg = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1500,
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+                {"type": "text", "text": PROMPT},
+            ]}],
+        )
+
+    raw_text = msg.content[0].text.strip()
+    m = _re.search(r"\{.*\}", raw_text, _re.DOTALL)
+    try:
+        result = _json.loads(m.group() if m else raw_text)
+    except Exception:
+        raise HTTPException(422, "AI could not parse the invoice — please fill manually")
+    return result
+
+
+# ── Quick upload via mobile link ──────────────────────────────────────────────
+
+def _make_upload_token(org_id: str) -> str:
+    """Generate a stable, unforgeable upload token for an org."""
+    import hmac, hashlib
+    secret = os.environ.get("SECRET_KEY", "billingeasy-secret")
+    return hmac.new(secret.encode(), org_id.encode(), hashlib.sha256).hexdigest()[:32]
+
+@api.get("/public/upload-token/{token}")
+async def validate_upload_token(token: str):
+    """Validate upload token and return org info — used by mobile quick-upload page."""
+    org = await db.organizations.find_one({"_id": {"$exists": True}}, {"_id": 0, "id": 1, "name": 1})
+    # Find org whose token matches
+    async for org in db.organizations.find({}, {"_id": 0, "id": 1, "name": 1}):
+        if _make_upload_token(org["id"]) == token:
+            return {"ok": True, "org_id": org["id"], "org_name": org["name"]}
+    raise HTTPException(404, "Invalid upload link")
+
+@api.post("/public/quick-upload/{token}")
+async def quick_upload_purchase(token: str, file: UploadFile = File(...)):
+    """Mobile quick upload — scan PDF/image with AI and store as a draft purchase.
+    No auth needed — token authenticates the org."""
+    # Resolve org
+    target_org_id = None
+    async for org in db.organizations.find({}, {"_id": 0, "id": 1}):
+        if _make_upload_token(org["id"]) == token:
+            target_org_id = org["id"]
+            break
+    if not target_org_id:
+        raise HTTPException(404, "Invalid upload link")
+
+    import base64, json as _json, re as _re, io
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        raise HTTPException(400, "AI not configured")
+
+    raw = await file.read()
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(400, "File too large — max 10 MB")
+
+    PROMPT = """You are an OCR assistant for Indian purchase invoices. Extract all visible details and return ONLY a valid JSON object (no markdown, no explanation):
+{"supplier_name":"","gstin":"","bill_no":"","date":"YYYY-MM-DD","eway_bill_no":"","vehicle_no":"","items":[{"name":"","hsn":"","qty":1,"unit":"pcs","rate":0,"gst_rate":0,"amount":0}],"subtotal":0,"gst_amount":0,"total":0,"notes":""}
+If a field is not visible, leave it empty string or 0. Return ONLY the JSON."""
+
+    import anthropic
+    client = anthropic.AsyncAnthropic(api_key=key)
+    media_type = (file.content_type or "").lower()
+    is_pdf = media_type == "application/pdf" or (file.filename or "").lower().endswith(".pdf")
+
+    if is_pdf:
+        try:
+            from pdf2image import convert_from_bytes
+            images = convert_from_bytes(raw, dpi=200, fmt="jpeg")
+            content = []
+            for img in images[:4]:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=85)
+                b64img = base64.standard_b64encode(buf.getvalue()).decode()
+                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64img}})
+            content.append({"type": "text", "text": PROMPT})
+        except Exception:
+            b64 = base64.standard_b64encode(raw).decode()
+            content = [
+                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
+                {"type": "text", "text": PROMPT},
+            ]
+    else:
+        if media_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+            media_type = "image/jpeg"
+        b64 = base64.standard_b64encode(raw).decode()
+        content = [
+            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+            {"type": "text", "text": PROMPT},
+        ]
+
+    msg = await client.messages.create(
+        model="claude-sonnet-4-6", max_tokens=1500,
+        messages=[{"role": "user", "content": content}],
+    )
+    raw_text = msg.content[0].text.strip()
+    m = _re.search(r"\{.*\}", raw_text, _re.DOTALL)
+    try:
+        ai_data = _json.loads(m.group() if m else raw_text)
+    except Exception:
+        ai_data = {}
+
+    # ── Auto-save: find or create supplier, then save purchase ──────────────
+    supplier_name = (ai_data.get("supplier_name") or "").strip() or "Unknown Supplier"
+    supplier_gstin = (ai_data.get("gstin") or "").strip().upper()
+
+    # Try to find existing party by GSTIN or name
+    party = None
+    if supplier_gstin:
+        party = await db.parties.find_one({"org_id": target_org_id, "gstin": supplier_gstin}, {"_id": 0})
+    if not party:
+        party = await db.parties.find_one(
+            {"org_id": target_org_id, "name": {"$regex": f"^{_re.escape(supplier_name)}$", "$options": "i"}},
+            {"_id": 0}
+        )
+    # If not found, auto-create the supplier
+    if not party:
+        from gstin import validate_gstin
+        state_code = supplier_gstin[:2] if len(supplier_gstin) >= 2 else "33"
+        from gstin import STATE_CODES  # maps code → name
+        state_name = STATE_CODES.get(state_code, "Tamil Nadu")
+        party = {
+            "id": str(uuid.uuid4()), "org_id": target_org_id,
+            "name": supplier_name, "gstin": supplier_gstin,
+            "phone": "", "email": "", "role": "supplier",
+            "state": state_name, "state_code": state_code,
+            "opening_balance": 0, "credit_limit": 0,
+            "billing_address": "", "shipping_address": "",
+            "created_at": now_iso(), "source": "quick_upload_auto",
+        }
+        await db.parties.insert_one(party)
+
+    # Build line items
+    raw_items = ai_data.get("items") or []
+    if not raw_items:
+        raw_items = [{"name": file.filename or "Purchase", "hsn": "", "qty": 1, "unit": "NOS", "rate": ai_data.get("subtotal", 0) or ai_data.get("total", 0), "gst_rate": 0}]
+
+    biz = await db.organizations.find_one({"id": target_org_id}, {"_id": 0, "state_code": 1}) or {}
+    seller_state = biz.get("state_code", "33")
+    same_state = seller_state == party.get("state_code", "33")
+
+    items_for_calc = [
+        {
+            "product_id": "",
+            "name": it.get("name", "Item"),
+            "hsn": it.get("hsn", ""),
+            "qty": float(it.get("qty") or 1),
+            "unit": it.get("unit", "NOS"),
+            "rate": float(it.get("rate") or it.get("amount") or 0),
+            "discount_pct": 0,
+            "gst_rate": float(it.get("gst_rate") or 0),
+        }
+        for it in raw_items
+    ]
+    totals = calc_invoice_totals(items_for_calc, same_state)
+
+    bill_date = ai_data.get("date") or now_iso()[:10]
+    bill_no = ai_data.get("bill_no") or f"QU-{str(uuid.uuid4())[:8].upper()}"
+
+    purchase_doc = {
+        "id": str(uuid.uuid4()), "org_id": target_org_id,
+        "party_id": party["id"], "party_snapshot": party,
+        "bill_no": bill_no, "purchase_date": bill_date,
+        "items": totals["items"],
+        "totals": {k: v for k, v in totals.items() if k != "items"},
+        "notes": ai_data.get("notes", ""),
+        "type": "purchase", "same_state": same_state,
+        "branch_id": "", "branch_snapshot": None,
+        "eway_bill_no": ai_data.get("eway_bill_no", ""),
+        "vehicle_no": ai_data.get("vehicle_no", ""),
+        "purchase_category": "stock",
+        "source": "quick_upload",
+        "status": "draft",
+        "created_at": now_iso(),
+    }
+    await db.purchases.insert_one(purchase_doc)
+
+    return {
+        "ok": True,
+        "saved": True,
+        "purchase_id": purchase_doc["id"],
+        "bill_no": bill_no,
+        "supplier": supplier_name,
+        "total": totals.get("grand_total", 0),
+        "ai_data": ai_data,
+    }
+
+@api.get("/purchase-uploads")
+async def list_purchase_uploads(ctx=Depends(get_org_ctx)):
+    """List pending quick-upload purchase drafts for this org."""
+    items = await db.purchase_uploads.find(
+        {"org_id": ctx["org_id"], "status": "pending_review"},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    return items
+
+@api.delete("/purchase-uploads/{uid}")
+async def dismiss_purchase_upload(uid: str, ctx=Depends(get_org_ctx)):
+    await db.purchase_uploads.update_one(
+        {"id": uid, "org_id": ctx["org_id"]},
+        {"$set": {"status": "dismissed"}}
+    )
+    return {"ok": True}
+
+
 @api.get("/purchases")
 async def list_purchases(ctx=Depends(get_org_ctx)):
     items = await db.purchases.find(org_filter(ctx), {"_id": 0}).sort("purchase_date", -1).to_list(500)
@@ -1967,10 +2477,14 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
         "totals": {k: v for k, v in totals.items() if k != "items"},
         "notes": body.notes, "type": body.type, "same_state": same_state,
         "branch_id": body.branch_id, "branch_snapshot": branch,
+        "eway_bill_no": body.eway_bill_no or "",
+        "vehicle_no": body.vehicle_no or "",
+        "purchase_category": body.purchase_category or "stock",
         "created_at": now_iso(),
     }
     await db.purchases.insert_one(doc)
-    if body.type == "purchase":
+    # Only add stock for stock purchases (not service purchases)
+    if body.type == "purchase" and body.purchase_category == "stock":
         for it in body.items:
             if it.product_id:
                 await db.products.update_one(org_filter(ctx, {"id": it.product_id}), {"$inc": {"stock": it.qty}})
@@ -2476,6 +2990,19 @@ async def super_list_users(user=Depends(require_super_admin)):
     for u in rows:
         u["org_count"] = await db.memberships.count_documents({"user_id": u["id"]})
     return rows
+
+
+
+@api.post("/super/users/{user_id}/reset-password")
+async def super_reset_password(user_id: str, body: dict = Body(...), user=Depends(require_super_admin)):
+    new_pw = body.get("password", "")
+    if len(new_pw) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    target = await db.users.find_one({"id": user_id}, {"_id": 0, "email": 1})
+    if not target:
+        raise HTTPException(404, "User not found")
+    await db.users.update_one({"id": user_id}, {"$set": {"password_hash": hash_password(new_pw)}})
+    return {"ok": True, "email": target["email"]}
 
 
 @api.post("/super/impersonate/{user_id}")
