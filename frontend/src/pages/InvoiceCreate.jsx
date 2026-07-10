@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { Trash2, Plus, ArrowLeft, UserPlus, Landmark } from "lucide-react";
+import PartySelect from "@/components/PartySelect";
 import { inr, todayISO, addDaysISO } from "@/lib/format";
 
 export default function InvoiceCreate() {
@@ -22,6 +23,8 @@ export default function InvoiceCreate() {
   const [dueDate, setDueDate] = useState(addDaysISO(30));
   const [type, setType] = useState("sale");
   const [status, setStatus] = useState("finalized");
+  const [invoiceCategory, setInvoiceCategory] = useState("stock"); // "stock" | "service"
+  const [taxMode, setTaxMode] = useState("exclusive"); // "exclusive" | "inclusive"
   const [items, setItems] = useState([blankItem()]);
   const [notes, setNotes] = useState("Thank you for your business!");
   const [saving, setSaving] = useState(false);
@@ -53,13 +56,22 @@ export default function InvoiceCreate() {
   const totals = useMemo(() => {
     let subtotal = 0, discount = 0, taxable = 0, cgst = 0, sgst = 0, igst = 0;
     items.forEach(it => {
-      const gross = it.qty * it.rate;
-      const d = gross * (it.discount_pct / 100);
-      const tx = gross - d;
-      const tax = tx * (it.gst_rate / 100);
-      subtotal += gross; discount += d; taxable += tx;
-      if (sameState) { cgst += tax / 2; sgst += tax / 2; }
-      else igst += tax;
+      if (taxMode === "inclusive") {
+        const divisor = 1 + it.gst_rate / 100;
+        const grossExcl = (it.qty * it.rate) / divisor;
+        const d = grossExcl * (it.discount_pct / 100);
+        const tx = grossExcl - d;
+        const tax = tx * (it.gst_rate / 100);
+        subtotal += grossExcl; discount += d; taxable += tx;
+        if (sameState) { cgst += tax / 2; sgst += tax / 2; } else igst += tax;
+      } else {
+        const gross = it.qty * it.rate;
+        const d = gross * (it.discount_pct / 100);
+        const tx = gross - d;
+        const tax = tx * (it.gst_rate / 100);
+        subtotal += gross; discount += d; taxable += tx;
+        if (sameState) { cgst += tax / 2; sgst += tax / 2; } else igst += tax;
+      }
     });
     const grand = taxable + cgst + sgst + igst;
     const roundOff = Math.round(grand) - grand;
@@ -67,7 +79,7 @@ export default function InvoiceCreate() {
       subtotal, discount, taxable_amount: taxable,
       cgst, sgst, igst, round_off: roundOff, grand_total: grand + roundOff,
     };
-  }, [items, sameState]);
+  }, [items, sameState, taxMode]);
 
   const setItem = (i, patch) => setItems(items.map((it, idx) => idx === i ? { ...it, ...patch } : it));
   const pickProduct = (i, pid) => {
@@ -87,7 +99,10 @@ export default function InvoiceCreate() {
       const { data } = await api.post("/invoices", {
         party_id: partyId, invoice_date: invoiceDate, due_date: dueDate,
         items, notes, status, type, is_recurring: false,
-        bank_account_id: bankId || null, branch_id: branchId || "",
+        bank_account_id: (bankId && bankId !== "__none__") ? bankId : null,
+        branch_id: (branchId && branchId !== "__none__") ? branchId : "",
+        invoice_category: invoiceCategory,
+        tax_mode: taxMode,
       });
       toast.success("Invoice created");
       nav(`/sales/${data.id}`);
@@ -103,7 +118,27 @@ export default function InvoiceCreate() {
       <Button variant="ghost" onClick={() => nav(-1)} data-testid="invoice-create-back"><ArrowLeft className="h-4 w-4 mr-1.5" /> Back</Button>
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-3xl font-semibold tracking-tight">New {TYPE_LABEL[type]}</h1>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap items-center">
+          <div className="flex rounded-md border overflow-hidden text-xs">
+            <button type="button" onClick={() => setInvoiceCategory("stock")}
+              className={`px-3 py-1.5 font-medium transition-colors ${invoiceCategory === "stock" ? "bg-blue-600 text-white" : "text-muted-foreground hover:bg-muted/50"}`}>
+              Stock Invoice
+            </button>
+            <button type="button" onClick={() => setInvoiceCategory("service")}
+              className={`px-3 py-1.5 font-medium transition-colors border-l ${invoiceCategory === "service" ? "bg-violet-600 text-white" : "text-muted-foreground hover:bg-muted/50"}`}>
+              Service Invoice
+            </button>
+          </div>
+          <div className="flex rounded-md border overflow-hidden text-xs">
+            <button type="button" onClick={() => setTaxMode("exclusive")}
+              className={`px-3 py-1.5 font-medium transition-colors ${taxMode === "exclusive" ? "bg-gray-700 text-white" : "text-muted-foreground hover:bg-muted/50"}`}>
+              + Tax
+            </button>
+            <button type="button" onClick={() => setTaxMode("inclusive")}
+              className={`px-3 py-1.5 font-medium transition-colors border-l ${taxMode === "inclusive" ? "bg-gray-700 text-white" : "text-muted-foreground hover:bg-muted/50"}`}>
+              Incl. Tax
+            </button>
+          </div>
           <Select value={type} onValueChange={setType}>
             <SelectTrigger className="w-44" data-testid="inv-type-select"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -126,24 +161,10 @@ export default function InvoiceCreate() {
       <Card className="p-5 grid sm:grid-cols-4 gap-4">
         <div className="space-y-1.5">
           <Label>Customer *</Label>
-          <div className="flex gap-2">
-            <Select value={partyId} onValueChange={setPartyId}>
-              <SelectTrigger data-testid="inv-customer-select" className="flex-1"><SelectValue placeholder="Select customer" /></SelectTrigger>
-              <SelectContent>
-                {parties.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              title="Quick-add customer"
-              onClick={() => setQuickAddOpen(true)}
-              data-testid="inv-quick-add-customer"
-            >
-              <UserPlus className="h-4 w-4" />
-            </Button>
-          </div>
+          <PartySelect
+            parties={parties} value={partyId} onChange={setPartyId}
+            role="customer" testId="inv-customer-select"
+            onCreated={(p) => { setParties(prev => [...prev, p]); }} />
           {party && (
             <div className="text-xs text-muted-foreground mt-1">
               {party.state} · GSTIN: {party.gstin || "—"} · {sameState ? "Intra-state (CGST+SGST)" : "Inter-state (IGST)"}
@@ -163,7 +184,7 @@ export default function InvoiceCreate() {
           <Select value={bankId} onValueChange={setBankId}>
             <SelectTrigger data-testid="inv-bank-select"><SelectValue placeholder="No bank / cash" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="">No bank / cash</SelectItem>
+              <SelectItem value="__none__">No bank / cash</SelectItem>
               {banks.map(b => <SelectItem key={b.id} value={b.id}>{b.bank_name} — {b.account_no}</SelectItem>)}
             </SelectContent>
           </Select>
@@ -174,7 +195,7 @@ export default function InvoiceCreate() {
             <Select value={branchId} onValueChange={setBranchId}>
               <SelectTrigger data-testid="inv-branch-select"><SelectValue placeholder={`HO — ${biz.state || "Primary"} (default)`} /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">HO — {biz.state} (primary GSTIN)</SelectItem>
+                <SelectItem value="__none__">HO — {biz.state} (primary GSTIN)</SelectItem>
                 {branches.map(b => (
                   <SelectItem key={b.id} value={b.id}>
                     {b.name} — {b.state} {b.gstin ? `· ${b.gstin}` : ""}
@@ -198,7 +219,9 @@ export default function InvoiceCreate() {
         <div className="overflow-x-auto">
           <table className="app-table">
             <thead><tr>
-              <th>Product / Description</th><th>HSN</th><th>Qty</th><th>Unit</th>
+              <th>{invoiceCategory === "stock" ? "Product" : "Service / Description"}</th>
+              {invoiceCategory === "stock" && <th>HSN</th>}
+              <th>Qty</th><th>Unit</th>
               <th>Rate</th><th>Disc%</th><th>GST%</th><th className="text-right">Total</th><th></th>
             </tr></thead>
             <tbody>
@@ -206,17 +229,21 @@ export default function InvoiceCreate() {
                 const gross = it.qty * it.rate;
                 const d = gross * (it.discount_pct / 100);
                 const tx = gross - d;
-                const total = tx + tx * (it.gst_rate / 100);
+                const total = taxMode === "inclusive"
+                  ? tx  // rate already includes tax
+                  : tx + tx * (it.gst_rate / 100);
                 return (
                   <tr key={i} data-testid={`inv-item-row-${i}`}>
                     <td>
-                      <Select value={it.product_id} onValueChange={(v) => pickProduct(i, v)}>
-                        <SelectTrigger className="h-9 w-56" data-testid={`inv-item-product-${i}`}><SelectValue placeholder="Pick product or type" /></SelectTrigger>
-                        <SelectContent>{products.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
-                      </Select>
-                      <Input className="mt-1 h-8" value={it.name} placeholder="Description" onChange={(e) => setItem(i, { name: e.target.value })} data-testid={`inv-item-name-${i}`} />
+                      {invoiceCategory === "stock" && (
+                        <Select value={it.product_id} onValueChange={(v) => pickProduct(i, v)}>
+                          <SelectTrigger className="h-9 w-56" data-testid={`inv-item-product-${i}`}><SelectValue placeholder="Pick product or type" /></SelectTrigger>
+                          <SelectContent>{products.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
+                        </Select>
+                      )}
+                      <Input className={`h-8 ${invoiceCategory === "stock" ? "mt-1" : ""}`} value={it.name} placeholder={invoiceCategory === "stock" ? "Description" : "Service description"} onChange={(e) => setItem(i, { name: e.target.value })} data-testid={`inv-item-name-${i}`} />
                     </td>
-                    <td><Input className="w-20 h-9" value={it.hsn} onChange={(e) => setItem(i, { hsn: e.target.value })} data-testid={`inv-item-hsn-${i}`} /></td>
+                    {invoiceCategory === "stock" && <td><Input className="w-20 h-9" value={it.hsn} onChange={(e) => setItem(i, { hsn: e.target.value })} data-testid={`inv-item-hsn-${i}`} /></td>}
                     <td><Input className="w-16 h-9" type="number" value={it.qty} onChange={(e) => setItem(i, { qty: parseFloat(e.target.value || 0) })} data-testid={`inv-item-qty-${i}`} /></td>
                     <td><Input className="w-16 h-9" value={it.unit} onChange={(e) => setItem(i, { unit: e.target.value })} data-testid={`inv-item-unit-${i}`} /></td>
                     <td><Input className="w-24 h-9" type="number" value={it.rate} onChange={(e) => setItem(i, { rate: parseFloat(e.target.value || 0) })} data-testid={`inv-item-rate-${i}`} /></td>
