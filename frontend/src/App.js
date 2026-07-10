@@ -41,6 +41,7 @@ import RetailPOS from "@/pages/RetailPOS";
 import Restaurant from "@/pages/Restaurant";
 import RestaurantAdmin from "@/pages/RestaurantAdmin";
 import POSAdmin from "@/pages/POSAdmin";
+import QuickUpload from "@/pages/QuickUpload";
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -101,6 +102,7 @@ export default function App() {
             <Route path="/refund" element={<Refund />} />
             <Route path="/security" element={<Security />} />
             <Route path="/contact" element={<Contact />} />
+            <Route path="/quick-upload" element={<QuickUpload />} />
             <Route path="/super" element={<SuperOnly><SuperAdmin /></SuperOnly>} />
             <Route path="/billing/mock-checkout" element={<Protected><MockCheckout /></Protected>} />
             <Route element={<Protected><AppLayout /></Protected>}>

@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { Plus } from "lucide-react";
+import PartySelect from "@/components/PartySelect";
 import { inr, fmtDate, todayISO } from "@/lib/format";
 
 const SECTIONS = [
@@ -91,10 +92,13 @@ export default function TDS() {
           <div className="space-y-3">
             <div className="space-y-1.5">
               <Label>Vendor (Supplier)</Label>
-              <Select value={form.party_id} onValueChange={(v) => setForm({ ...form, party_id: v })}>
-                <SelectTrigger data-testid="tds-party-select"><SelectValue placeholder="Select supplier" /></SelectTrigger>
-                <SelectContent>{parties.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
-              </Select>
+              <PartySelect
+                parties={parties}
+                value={form.party_id}
+                onChange={(v) => setForm({ ...form, party_id: v })}
+                role="supplier"
+                testId="tds-party-select"
+                onCreated={(p) => setParties(prev => [...prev, p])} />
             </div>
             <div className="space-y-1.5">
               <Label>Section</Label>

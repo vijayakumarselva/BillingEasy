@@ -2,10 +2,9 @@ import { useEffect, useState } from "react";
 import api from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { toast } from "sonner";
-import { Wallet as WalletIcon, Zap, TrendingDown, TrendingUp, RefreshCw } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Wallet as WalletIcon, Zap, TrendingDown, TrendingUp, RefreshCw, ShoppingCart } from "lucide-react";
 import { inr } from "@/lib/format";
 
 const ACTION_LABELS = {
@@ -24,8 +23,7 @@ const ACTION_LABELS = {
 export default function Wallet() {
   const [data, setData]     = useState(null);
   const [loading, setLoading] = useState(true);
-  const [topupAmt, setTopupAmt] = useState("");
-  const [topping, setTopping]   = useState(false);
+  const nav = useNavigate();
 
   const load = async () => {
     setLoading(true);
@@ -37,20 +35,6 @@ export default function Wallet() {
   };
 
   useEffect(() => { load(); }, []);
-
-  const handleTopup = async () => {
-    const amt = parseInt(topupAmt);
-    if (!amt || amt < 10) { toast.error("Minimum 10 credits"); return; }
-    setTopping(true);
-    try {
-      const { data: d } = await api.post("/wallet/topup", { credits: amt });
-      toast.success(`${amt} credits added! Balance: ${d.balance}`);
-      setTopupAmt("");
-      load();
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Top-up failed");
-    } finally { setTopping(false); }
-  };
 
   if (loading) return <div className="p-8 text-center text-muted-foreground">Loading…</div>;
   if (!data) return null;
@@ -96,25 +80,20 @@ export default function Wallet() {
         </Card>
       </div>
 
-      {/* Top up */}
-      <Card className="p-5">
-        <h2 className="font-semibold mb-3">Top Up Credits</h2>
-        <div className="flex gap-3 flex-wrap">
-          {[100, 500, 1000, 5000].map(amt => (
-            <Button key={amt} variant="outline" size="sm"
-              onClick={() => setTopupAmt(String(amt))}>
-              +{amt}
-            </Button>
-          ))}
-          <Input className="w-32" type="number" min="10" placeholder="Custom"
-            value={topupAmt} onChange={e => setTopupAmt(e.target.value)} />
-          <Button className="bg-blue-600 hover:bg-blue-700" onClick={handleTopup} disabled={topping}>
-            {topping ? "Adding…" : "Add Credits"}
-          </Button>
+      {/* Buy credits CTA */}
+      <Card className="p-5 flex items-center justify-between flex-wrap gap-4"
+        style={{ background: "hsl(var(--tally-green-light))", borderColor: "hsl(var(--tally-green) / 0.3)" }}>
+        <div>
+          <h2 className="font-semibold" style={{ color: "hsl(var(--tally-green))" }}>Need more credits?</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Buy credit packs via Cashfree — UPI, Cards, Net Banking. Pay ₹149 onwards.
+          </p>
         </div>
-        <p className="text-xs text-muted-foreground mt-2">
-          ₹1 = 1 credit (payment gateway integration coming soon — top-up is free for now)
-        </p>
+        <Button onClick={() => nav("/credits")}
+          style={{ background: "hsl(var(--tally-green))", color: "white" }}
+          className="gap-2 shrink-0">
+          <ShoppingCart className="h-4 w-4" /> Buy Credits
+        </Button>
       </Card>
 
       {/* Credit costs table */}

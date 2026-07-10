@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,19 +12,27 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Trash2, KeyRound, Building2, Pencil } from "lucide-react";
+import { Plus, Trash2, KeyRound, Building2, Pencil, Upload, X, Eye, Palette } from "lucide-react";
 import { STATES } from "@/pages/Parties";
 import { useAuth } from "@/context/AuthContext";
 import RolesPanel from "@/components/RolesPanel";
 import AuditLogPanel from "@/components/AuditLogPanel";
+import DropZone from "@/components/DropZone";
 
 export default function Settings() {
   const { currentOrg, currentRole } = useAuth();
   const [biz, setBiz] = useState({
     name: "", address: "", state: "Tamil Nadu", state_code: "33", gstin: "", pan: "",
-    phone: "", email: "", logo_url: "", bank_name: "", bank_account: "", bank_ifsc: "",
-    bank_branch: "", terms: "",
+    phone: "", email: "", logo_url: "", logo_b64: "", bank_name: "", bank_account: "", bank_ifsc: "",
+    bank_branch: "", terms: "", invoice_theme: {},
   });
+  const [theme, setTheme] = useState({
+    primary_color: "#1D4ED8", accent_color: "#1D4ED8",
+    show_logo: true, show_ship_to: true, show_bank: true, show_terms: true,
+    show_signature: true, watermark: "",
+  });
+  const [logoUploading, setLogoUploading] = useState(false);
+  const logoRef = useRef(null);
   const [members, setMembers] = useState([]);
   const [banks, setBanks] = useState([]);
   const [bankForm, setBankForm] = useState({ bank_name: "", account_no: "", ifsc: "", branch: "", opening_balance: 0 });
@@ -43,12 +51,39 @@ export default function Settings() {
       api.get("/bank-accounts"),
       api.get("/orgs/current/branches"),
     ]);
-    if (b.data) setBiz(s => ({ ...s, ...b.data }));
+    if (b.data) {
+      setBiz(s => ({ ...s, ...b.data }));
+      if (b.data.invoice_theme) setTheme(t => ({ ...t, ...b.data.invoice_theme }));
+    }
     setMembers(m.data); setBanks(ba.data); setBranches(br.data || []);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [currentOrg?.id]);
 
   const saveBiz = async () => { await api.put("/business", biz); toast.success("Saved"); };
+
+  const saveTheme = async () => {
+    await api.put("/business", { ...biz, invoice_theme: theme });
+    toast.success("Invoice theme saved");
+  };
+
+  const uploadLogo = async (file) => {
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { toast.error("Logo must be under 2 MB"); return; }
+    setLogoUploading(true);
+    try {
+      const fd = new FormData(); fd.append("file", file);
+      const { data } = await api.post("/business/logo", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      setBiz(b => ({ ...b, logo_b64: data.logo_b64 }));
+      toast.success("Logo uploaded");
+    } catch (e) { toast.error(e?.response?.data?.detail || "Upload failed"); }
+    finally { setLogoUploading(false); }
+  };
+
+  const removeLogo = async () => {
+    await api.delete("/business/logo");
+    setBiz(b => ({ ...b, logo_b64: "" }));
+    toast.success("Logo removed");
+  };
   const addBank = async () => {
     if (!bankForm.bank_name || !bankForm.account_no) { toast.error("Bank & A/c required"); return; }
     await api.post("/bank-accounts", { ...bankForm, opening_balance: parseFloat(bankForm.opening_balance || 0) });
@@ -81,8 +116,9 @@ export default function Settings() {
       </div>
 
       <Tabs defaultValue="biz">
-        <TabsList>
+        <TabsList className="flex-wrap">
           <TabsTrigger value="biz" data-testid="settings-tab-biz">Business</TabsTrigger>
+          <TabsTrigger value="invoice" data-testid="settings-tab-invoice">Invoice Theme</TabsTrigger>
           <TabsTrigger value="branches" data-testid="settings-tab-branches">Branches & GSTINs</TabsTrigger>
           <TabsTrigger value="bank" data-testid="settings-tab-bank">Banking</TabsTrigger>
           <TabsTrigger value="users" data-testid="settings-tab-users">Team</TabsTrigger>
@@ -281,6 +317,272 @@ export default function Settings() {
 
         <TabsContent value="security">
           <ChangePasswordCard />
+        </TabsContent>
+
+        <TabsContent value="invoice">
+          <div className="mt-4 grid lg:grid-cols-2 gap-6">
+
+            {/* ── LEFT: Controls ── */}
+            <div className="space-y-5">
+
+              {/* Logo upload */}
+              <Card className="p-5 space-y-3">
+                <h3 className="font-semibold flex items-center gap-2">
+                  <Palette className="h-4 w-4" style={{ color: "hsl(var(--tally-green))" }} /> Company Logo
+                </h3>
+                {biz.logo_b64 ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3 p-3 rounded-lg border bg-muted/30">
+                      <img src={biz.logo_b64} alt="Logo" className="h-14 max-w-[140px] object-contain rounded" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">Logo uploaded</p>
+                        <p className="text-xs text-muted-foreground">Appears in the top-left of every invoice</p>
+                      </div>
+                      <Button size="sm" variant="ghost" onClick={removeLogo} className="text-rose-500 shrink-0">
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Switch checked={theme.show_logo} onCheckedChange={v => setTheme(t => ({ ...t, show_logo: v }))} />
+                      <Label className="text-sm">Show logo on invoices</Label>
+                    </div>
+                  </div>
+                ) : (
+                  <DropZone
+                    accept="image/*"
+                    onFile={uploadLogo}
+                    label={logoUploading ? "Uploading…" : "Click or drag & drop logo here"}
+                    hint="PNG, JPG, WebP — max 2 MB · Recommended: 400×120 px"
+                    icon={Upload}
+                    disabled={logoUploading}
+                  />
+                )}
+              </Card>
+
+              {/* Colours */}
+              <Card className="p-5 space-y-4">
+                <h3 className="font-semibold">Colour Scheme</h3>
+                <p className="text-xs text-muted-foreground">The primary colour is used for the table header row, grand total banner, and the divider line.</p>
+
+                {/* Preset swatches */}
+                <div className="space-y-2">
+                  <Label className="text-xs">Quick Presets</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { label: "Classic Blue",  hex: "#1D4ED8" },
+                      { label: "Forest Green", hex: "#15803D" },
+                      { label: "Royal Purple", hex: "#7C3AED" },
+                      { label: "Crimson Red",  hex: "#DC2626" },
+                      { label: "Slate Grey",   hex: "#374151" },
+                      { label: "Teal",         hex: "#0D9488" },
+                      { label: "Amber",        hex: "#B45309" },
+                      { label: "Indigo",       hex: "#4338CA" },
+                    ].map(({ label, hex }) => (
+                      <button key={hex} type="button" title={label}
+                        onClick={() => setTheme(t => ({ ...t, primary_color: hex, accent_color: hex }))}
+                        className="w-7 h-7 rounded-full border-2 transition-transform hover:scale-110"
+                        style={{
+                          background: hex,
+                          borderColor: theme.primary_color === hex ? "#000" : "transparent",
+                          boxShadow: theme.primary_color === hex ? `0 0 0 2px ${hex}55` : "none",
+                        }} />
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label>Primary Colour</Label>
+                    <div className="flex items-center gap-2">
+                      <input type="color" value={theme.primary_color}
+                        onChange={e => setTheme(t => ({ ...t, primary_color: e.target.value, accent_color: e.target.value }))}
+                        className="h-9 w-14 rounded border cursor-pointer p-0.5" />
+                      <Input value={theme.primary_color}
+                        onChange={e => setTheme(t => ({ ...t, primary_color: e.target.value }))}
+                        className="font-mono uppercase text-sm" maxLength={7} />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Preview</Label>
+                    <div className="h-9 rounded flex items-center justify-center text-white text-xs font-bold"
+                      style={{ background: theme.primary_color }}>
+                      GRAND TOTAL
+                    </div>
+                  </div>
+                </div>
+              </Card>
+
+              {/* Section toggles */}
+              <Card className="p-5 space-y-3">
+                <h3 className="font-semibold">Invoice Sections</h3>
+                {[
+                  { key: "show_logo",      label: "Company Logo",             desc: "Show logo in header" },
+                  { key: "show_ship_to",   label: "Ship To Column",            desc: "Show delivery address box" },
+                  { key: "show_bank",      label: "Bank Details",              desc: "Show bank account at bottom" },
+                  { key: "show_terms",     label: "Terms & Conditions",        desc: "Show T&C section" },
+                  { key: "show_signature", label: "Authorized Signatory Box",  desc: "Space for signature at bottom" },
+                ].map(({ key, label, desc }) => (
+                  <div key={key} className="flex items-center justify-between py-1.5 border-b last:border-0">
+                    <div>
+                      <div className="text-sm font-medium">{label}</div>
+                      <div className="text-xs text-muted-foreground">{desc}</div>
+                    </div>
+                    <Switch checked={!!theme[key]} onCheckedChange={v => setTheme(t => ({ ...t, [key]: v }))} />
+                  </div>
+                ))}
+              </Card>
+
+              {/* Watermark */}
+              <Card className="p-5 space-y-3">
+                <h3 className="font-semibold">Watermark</h3>
+                <p className="text-xs text-muted-foreground">Text printed diagonally across every invoice page (e.g. ORIGINAL, DUPLICATE). Leave blank for none.</p>
+                <div className="flex gap-2">
+                  {["", "ORIGINAL", "DUPLICATE", "DRAFT", "CANCELLED"].map(w => (
+                    <button key={w || "__none"} type="button"
+                      onClick={() => setTheme(t => ({ ...t, watermark: w }))}
+                      className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${theme.watermark === w
+                        ? "text-white border-transparent"
+                        : "text-muted-foreground hover:bg-muted/50"}`}
+                      style={theme.watermark === w ? { background: theme.primary_color } : {}}>
+                      {w || "None"}
+                    </button>
+                  ))}
+                </div>
+              </Card>
+
+              <Button onClick={saveTheme} style={{ background: "hsl(var(--tally-green))", color: "white" }}>
+                Save Invoice Theme
+              </Button>
+            </div>
+
+            {/* ── RIGHT: Live preview ── */}
+            <div className="space-y-3">
+              <h3 className="font-semibold flex items-center gap-2">
+                <Eye className="h-4 w-4" /> Invoice Preview
+              </h3>
+              <div className="rounded-xl border bg-white shadow-sm overflow-hidden" style={{ fontFamily: "sans-serif", fontSize: "11px" }}>
+                {/* Header */}
+                <div className="flex items-start justify-between p-4 pb-2">
+                  <div className="space-y-1">
+                    {theme.show_logo && biz.logo_b64 && (
+                      <img src={biz.logo_b64} alt="Logo" className="h-10 max-w-[120px] object-contain mb-1" />
+                    )}
+                    <div className="font-bold text-base" style={{ color: theme.primary_color }}>
+                      {biz.name || "Your Company Name"}
+                    </div>
+                    <div className="text-gray-500 text-[10px]">{biz.address || "Company Address"}</div>
+                    <div className="text-gray-500 text-[10px]">GSTIN: {biz.gstin || "27AAACR5055K1Z7"}</div>
+                  </div>
+                  <div className="text-right space-y-0.5">
+                    <div className="font-bold text-sm" style={{ color: theme.primary_color }}>TAX INVOICE</div>
+                    <div className="text-[10px] text-gray-600">Invoice #: INV-2026-0001</div>
+                    <div className="text-[10px] text-gray-600">Date: 04/07/2026</div>
+                    {!theme.show_ship_to && <div className="text-[10px] text-gray-600">Due: 03/08/2026</div>}
+                  </div>
+                </div>
+
+                {/* Divider */}
+                <div className="h-0.5 mx-4" style={{ background: theme.primary_color }} />
+
+                {/* Bill to / Ship to */}
+                <div className={`grid ${theme.show_ship_to ? "grid-cols-2" : "grid-cols-1"} gap-0 mx-4 mt-3 border border-gray-200 rounded text-[10px]`}>
+                  <div className="p-2 border-r border-gray-200">
+                    <div className="text-gray-400 text-[9px] uppercase mb-0.5">Bill To</div>
+                    <div className="font-semibold">63IDEAS INFOLABS PVT LTD</div>
+                    <div className="text-gray-500">Chennai, Tamil Nadu 600032</div>
+                    <div className="text-gray-500">GSTIN: 33AAACZ8597L1ZJ</div>
+                  </div>
+                  {theme.show_ship_to && (
+                    <div className="p-2">
+                      <div className="text-gray-400 text-[9px] uppercase mb-0.5">Ship To</div>
+                      <div className="font-semibold">63IDEAS INFOLABS PVT LTD</div>
+                      <div className="text-gray-500">Chennai, Tamil Nadu 600032</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Items table */}
+                <div className="mx-4 mt-3">
+                  <table className="w-full text-[10px] border-collapse">
+                    <thead>
+                      <tr style={{ background: theme.primary_color, color: "white" }}>
+                        <th className="px-2 py-1.5 text-left">#</th>
+                        <th className="px-2 py-1.5 text-left">Description</th>
+                        <th className="px-2 py-1.5 text-right">HSN</th>
+                        <th className="px-2 py-1.5 text-right">Qty</th>
+                        <th className="px-2 py-1.5 text-right">Rate</th>
+                        <th className="px-2 py-1.5 text-right">GST%</th>
+                        <th className="px-2 py-1.5 text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr className="border-b border-gray-100" style={{ background: "#EFF6FF" }}>
+                        <td className="px-2 py-1.5">1</td>
+                        <td className="px-2 py-1.5">Sugar 50 KGS</td>
+                        <td className="px-2 py-1.5 text-right">1701</td>
+                        <td className="px-2 py-1.5 text-right">700</td>
+                        <td className="px-2 py-1.5 text-right">2,000.00</td>
+                        <td className="px-2 py-1.5 text-right">5%</td>
+                        <td className="px-2 py-1.5 text-right">14,70,000</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Totals */}
+                <div className="flex justify-end mx-4 mt-2">
+                  <table className="text-[10px] border-collapse">
+                    <tbody>
+                      <tr><td className="px-3 py-1 text-gray-500">Taxable Amount</td><td className="px-3 py-1 text-right">₹14,00,000.00</td></tr>
+                      <tr><td className="px-3 py-1 text-gray-500">CGST</td><td className="px-3 py-1 text-right">₹35,000.00</td></tr>
+                      <tr><td className="px-3 py-1 text-gray-500">SGST</td><td className="px-3 py-1 text-right">₹35,000.00</td></tr>
+                      <tr style={{ background: theme.primary_color, color: "white" }}>
+                        <td className="px-3 py-1.5 font-bold">GRAND TOTAL</td>
+                        <td className="px-3 py-1.5 font-bold text-right">₹14,70,000.00</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Bank + Terms */}
+                <div className={`grid ${theme.show_bank && theme.show_terms ? "grid-cols-2" : "grid-cols-1"} gap-3 mx-4 mt-3 mb-3 text-[10px]`}>
+                  {theme.show_bank && (
+                    <div>
+                      <div className="font-semibold mb-0.5">Bank Details</div>
+                      <div className="text-gray-500">Bank: {biz.bank_name || "HDFC Bank"}</div>
+                      <div className="text-gray-500">A/c: {biz.bank_account || "XXXXXX1234"}</div>
+                      <div className="text-gray-500">IFSC: {biz.bank_ifsc || "HDFC0001234"}</div>
+                    </div>
+                  )}
+                  {theme.show_terms && (
+                    <div>
+                      <div className="font-semibold mb-0.5">Terms & Conditions</div>
+                      <div className="text-gray-500">1. Payment due within 30 days.</div>
+                      <div className="text-gray-500">2. Subject to local jurisdiction.</div>
+                    </div>
+                  )}
+                </div>
+
+                {theme.show_signature && (
+                  <div className="flex justify-end mx-4 mb-3 text-[10px] text-gray-600">
+                    <div className="text-right">
+                      <div className="font-semibold">For {biz.name || "Your Company"}</div>
+                      <div className="mt-5 border-t border-gray-300 pt-1">Authorized Signatory</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Watermark preview */}
+                {theme.watermark && (
+                  <div className="flex justify-center pb-2">
+                    <span className="text-[9px] font-bold opacity-30 tracking-widest rotate-45 inline-block" style={{ color: theme.primary_color }}>
+                      {theme.watermark}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </TabsContent>
 
         <TabsContent value="prefs">

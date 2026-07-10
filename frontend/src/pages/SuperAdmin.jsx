@@ -46,6 +46,16 @@ export default function SuperAdmin() {
     toast.success(`Impersonating ${data.user.email}`);
     window.location.href = "/dashboard";
   };
+  const [resetTarget, setResetTarget] = useState(null);
+  const [resetPw, setResetPw] = useState("");
+  const doReset = async () => {
+    if (!resetPw || resetPw.length < 6) { toast.error("Min 6 characters"); return; }
+    try {
+      await api.post(`/super/users/${resetTarget.id}/reset-password`, { password: resetPw });
+      toast.success(`Password reset for ${resetTarget.email}`);
+      setResetTarget(null); setResetPw("");
+    } catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
+  };
   const exitSuper = async () => { await logout(); nav("/login"); };
 
   if (!stats) return null;
@@ -148,12 +158,16 @@ export default function SuperAdmin() {
                     <td className="text-muted-foreground">{u.email}</td>
                     <td><Badge variant="secondary">{u.org_count}</Badge></td>
                     <td className="text-xs text-muted-foreground">{u.last_login ? fmtDate(u.last_login) : "Never"}</td>
-                    <td className="text-right">
+                    <td className="text-right flex gap-1 justify-end">
                       {!u.is_super_admin && (
                         <Button size="sm" variant="outline" onClick={() => impersonate(u.id)} data-testid={`impersonate-${u.email}`}>
                           <UserCog className="h-3.5 w-3.5 mr-1" /> Impersonate
                         </Button>
                       )}
+                      <Button size="sm" variant="ghost" className="text-amber-600 hover:text-amber-700"
+                        onClick={() => { setResetTarget(u); setResetPw(""); }}>
+                        Reset PW
+                      </Button>
                     </td>
                   </tr>
                 ))}
@@ -170,6 +184,25 @@ export default function SuperAdmin() {
           </TabsContent>
         </Tabs>
       </main>
+
+      {/* Reset Password Dialog */}
+      {resetTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white dark:bg-slate-900 rounded-xl p-6 w-full max-w-sm shadow-xl space-y-4">
+            <h3 className="font-semibold text-lg">Reset Password</h3>
+            <p className="text-sm text-muted-foreground">Setting new password for <strong>{resetTarget.email}</strong></p>
+            <div className="space-y-1.5">
+              <Label>New Password</Label>
+              <Input type="password" value={resetPw} onChange={e => setResetPw(e.target.value)}
+                placeholder="Min 6 characters" autoFocus />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button variant="ghost" onClick={() => { setResetTarget(null); setResetPw(""); }}>Cancel</Button>
+              <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={doReset}>Reset Password</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

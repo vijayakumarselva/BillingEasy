@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { Upload, CheckCircle2, XCircle, Link2, Trash2, FileText } from "lucide-react";
+import DropZone from "@/components/DropZone";
 import { inr, fmtDate } from "@/lib/format";
 
 function parseCSV(text) {
@@ -128,6 +129,15 @@ export default function BankStatement() {
           <p className="text-sm text-amber-600">Add a bank account in Settings → Banking first.</p>
         )}
       </div>
+
+      <DropZone
+        accept=".csv"
+        onFile={(f) => onFile({ target: { files: [f] } })}
+        label="Drag & drop your bank CSV here"
+        hint="CSV file from your bank · or use the Upload CSV button above"
+        icon={FileText}
+        compact
+      />
 
       {/* CSV Format hint */}
       <Card className="p-4 bg-blue-50 border-blue-100">

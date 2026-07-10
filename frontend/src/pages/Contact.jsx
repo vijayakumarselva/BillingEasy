@@ -57,7 +57,7 @@ export default function Contact() {
     },
     {
       icon: MapPin, label: "Registered Address", value: "Tamil Nadu, India",
-      note: "BillingsEasy — GST Billing Software",
+      note: "Nammahut Services Private Limited",
       color: "text-green-600 bg-green-50 dark:bg-green-500/10",
     },
   ];
@@ -224,7 +224,7 @@ export default function Contact() {
         </div>
 
         <p className="text-center text-xs text-muted-foreground pb-6">
-          © {new Date().getFullYear()} BillingsEasy. All rights reserved. · Tamil Nadu, India
+          © {new Date().getFullYear()} Nammahut Services Private Limited. All rights reserved. · BillingsEasy · Tamil Nadu, India
         </p>
       </div>
     </div>

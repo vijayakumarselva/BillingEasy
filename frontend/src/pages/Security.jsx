@@ -688,7 +688,9 @@ export default function Security() {
             .
           </p>
           <p className="text-xs text-slate-400 dark:text-slate-600 mt-4">
-            BillingsEasy · vijayakumartech1@gmail.com · https://billingseasy.com
+            © {new Date().getFullYear()} Nammahut Services Private Limited. All rights reserved. · BillingsEasy
+            <br />
+            vijayakumartech1@gmail.com · https://billingseasy.com
             <br />
             This policy was last reviewed and updated on July 4, 2026.
           </p>

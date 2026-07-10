@@ -152,11 +152,22 @@ export default function Parties() {
                                 const st = STATES.find(s => s.code === info.state_code);
                                 if (st) { updates.state = st.name; updates.state_code = st.code; }
                               }
-                              if (!f.name && (info?.legal_name || info?.trade_name)) {
-                                updates.name = info.legal_name || info.trade_name;
-                              }
-                              if (!f.billing_address && info?.address) {
-                                updates.billing_address = info.address;
+                              return { ...f, ...updates };
+                            });
+                          }}
+                          onLookup={(info) => {
+                            if (!info || info.error) return;
+                            setForm(f => {
+                              const updates = {};
+                              // Fill name if empty
+                              const fetchedName = info.trade_name || info.legal_name || "";
+                              if (fetchedName && !f.name) updates.name = fetchedName;
+                              // Fill address if empty
+                              if (info.address && !f.billing_address) updates.billing_address = info.address;
+                              // Always update state from GSTIN
+                              if (info.state_code) {
+                                const st = STATES.find(s => s.code === info.state_code);
+                                if (st) { updates.state = st.name; updates.state_code = st.code; }
                               }
                               return { ...f, ...updates };
                             });

@@ -307,6 +307,12 @@ export default function Privacy() {
             </div>
             <div className="flex gap-2">
               <span className="font-semibold text-gray-700 dark:text-gray-300 w-36">
+                Legal Entity:
+              </span>
+              <span className="text-gray-900 dark:text-white font-medium">Nammahut Services Private Limited</span>
+            </div>
+            <div className="flex gap-2">
+              <span className="font-semibold text-gray-700 dark:text-gray-300 w-36">
                 Operated By:
               </span>
               <span className="text-gray-900 dark:text-white">Vijay Kumar</span>

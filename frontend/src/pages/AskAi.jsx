@@ -61,7 +61,7 @@ export default function AskAi() {
     setStreaming(true);
 
     try {
-      const token = localStorage.getItem("token");
+      const token = localStorage.getItem("be_token");
       const r = await fetch(`${API}/ai/chat`, {
         method: "POST",
         headers: {
@@ -95,9 +95,18 @@ export default function AskAi() {
                 return copy;
               });
             } else if (payload.error) {
+              const rawErr = payload.error || "";
+              let friendlyErr;
+              if (rawErr.includes("credit balance is too low") || rawErr.includes("billing")) {
+                friendlyErr = "⚠️ Anthropic API credits exhausted. Please ask your administrator to top up the Anthropic account at console.anthropic.com → Billing.";
+              } else if (rawErr.includes("401") || rawErr.includes("authentication")) {
+                friendlyErr = "⚠️ AI API key is invalid or expired. Please contact your administrator.";
+              } else {
+                friendlyErr = `⚠️ AI error: ${rawErr}`;
+              }
               setMessages(prev => {
                 const copy = [...prev];
-                copy[copy.length - 1] = { role: "assistant", content: `(AI service error: ${payload.error})` };
+                copy[copy.length - 1] = { role: "assistant", content: friendlyErr };
                 return copy;
               });
             }

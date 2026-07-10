@@ -25,7 +25,7 @@ export default function Expenses() {
   useEffect(() => { load(); api.get("/bank-accounts").then(r => setBanks(r.data)); }, []);
 
   const save = async () => {
-    try { await api.post("/expenses", { ...form, amount: parseFloat(form.amount), gst_rate: parseFloat(form.gst_rate), bank_account_id: bankId || null });
+    try { await api.post("/expenses", { ...form, amount: parseFloat(form.amount), gst_rate: parseFloat(form.gst_rate), bank_account_id: (bankId && bankId !== "__none__") ? bankId : null });
       toast.success("Saved"); setOpen(false); load();
       setForm({ category: "Other", amount: 0, date: todayISO(), description: "", gst_rate: 0 });
       setBankId("");
@@ -95,7 +95,7 @@ export default function Expenses() {
               <Select value={bankId} onValueChange={setBankId}>
                 <SelectTrigger data-testid="exp-bank-select"><SelectValue placeholder="No bank / cash" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">No bank / cash</SelectItem>
+                  <SelectItem value="__none__">No bank / cash</SelectItem>
                   {banks.map(b => <SelectItem key={b.id} value={b.id}>{b.bank_name} — {b.account_no}</SelectItem>)}
                 </SelectContent>
               </Select>

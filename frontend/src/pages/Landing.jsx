@@ -839,6 +839,10 @@ export default function Landing() {
                 AI-powered GST billing for India. Built for SMBs, kirana stores,
                 restaurants, and distributors.
               </p>
+              <p className="text-xs text-gray-600 mt-3 leading-relaxed">
+                BillingsEasy is a product of<br />
+                <span className="text-gray-400 font-medium">Nammahut Services Private Limited</span>
+              </p>
             </div>
 
             {/* Product */}
@@ -938,8 +942,8 @@ export default function Landing() {
 
           {/* Bottom bar */}
           <div className="border-t border-gray-800 pt-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-gray-600">
-            <span>© 2026 BillingsEasy. All rights reserved.</span>
-            <span>Made with ❤️ in India · Tamil Nadu</span>
+            <span>© 2026 Nammahut Services Private Limited. All rights reserved.</span>
+            <span>BillingsEasy · Made with ❤️ in India · Tamil Nadu</span>
           </div>
         </div>
       </footer>

@@ -1,0 +1,30 @@
+{
+  "name": "BillingsEasy",
+  "short_name": "BillingsEasy",
+  "description": "AI-Powered GST Billing for India",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#16a34a",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "share_target": {
+    "action": "/quick-upload",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "file",
+          "accept": ["application/pdf", "image/jpeg", "image/png", "image/webp"]
+        }
+      ]
+    }
+  }
+}

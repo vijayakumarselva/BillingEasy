@@ -31,6 +31,11 @@ export default function Login() {
     nav("/dashboard");
   };
 
+  const setToken = (data) => {
+    localStorage.setItem("be_token", data.token);
+    if (data.refresh_token) localStorage.setItem("be_refresh", data.refresh_token);
+  };
+
   const onPasswordSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -38,7 +43,7 @@ export default function Login() {
       await login(email, password);
       await goToDashboard();
     } catch (err) {
-      toast.error(formatApiErrorDetail(err?.response?.data?.detail) || "Login failed");
+      toast.error(formatApiErrorDetail(err?.response?.data?.detail) || "Invalid email or password");
     } finally { setLoading(false); }
   };
 
@@ -49,9 +54,10 @@ export default function Login() {
     try {
       const { data } = await api.post("/auth/otp/request", { email });
       setOtpSent(true);
-      toast.success("OTP sent! Check your email.");
       if (data.dev_otp) {
-        toast.info(`Dev OTP: ${data.dev_otp}`, { duration: 30000 });
+        toast.info(`OTP: ${data.dev_otp}`, { duration: 60000 });
+      } else {
+        toast.success(data.message || "OTP sent! Check your email.");
       }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed to send OTP");
@@ -63,13 +69,14 @@ export default function Login() {
     setLoading(true);
     try {
       const { data } = await api.post("/auth/otp/verify", { email, otp });
-      localStorage.setItem("be_token", data.token);
-      if (data.refresh_token) localStorage.setItem("be_refresh", data.refresh_token);
+      setToken(data);
       await goToDashboard();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Invalid OTP");
     } finally { setLoading(false); }
   };
+
+  const switchTab = (t) => { setTab(t); setOtpSent(false); setOtp(""); };
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2">
@@ -90,7 +97,7 @@ export default function Login() {
             <div><div className="font-mono text-2xl text-blue-400">₹</div><div className="text-xs text-slate-500">INR · Lakhs/Cr</div></div>
           </div>
         </div>
-        <div className="text-xs text-slate-500">© 2026 BillingsEasy · Made in India</div>
+        <div className="text-xs text-slate-500">© 2026 Nammahut Services Private Limited · Made in India</div>
       </div>
 
       {/* Right panel */}
@@ -110,25 +117,24 @@ export default function Login() {
           <div className="flex rounded-lg border border-border overflow-hidden mb-6">
             <button
               className={`flex-1 py-2 text-sm font-medium transition-colors ${tab === "password" ? "bg-blue-600 text-white" : "text-muted-foreground hover:bg-muted"}`}
-              onClick={() => { setTab("password"); setOtpSent(false); }}>
+              onClick={() => switchTab("password")}>
               Password
             </button>
             <button
               className={`flex-1 py-2 text-sm font-medium transition-colors ${tab === "otp" ? "bg-blue-600 text-white" : "text-muted-foreground hover:bg-muted"}`}
-              onClick={() => { setTab("otp"); setOtpSent(false); }}>
+              onClick={() => switchTab("otp")}>
               OTP / Passwordless
             </button>
           </div>
 
-          {/* Email field (shared) */}
-          <div className="space-y-1.5 mb-4">
-            <Label htmlFor="email">Email</Label>
-            <Input id="email" type="email" autoComplete="email" value={email}
-              onChange={(e) => setEmail(e.target.value)} required placeholder="you@example.com" />
-          </div>
-
-          {tab === "password" ? (
+          {/* ── PASSWORD ── */}
+          {tab === "password" && (
             <form onSubmit={onPasswordSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="email">Email</Label>
+                <Input id="email" type="email" autoComplete="email" value={email}
+                  onChange={(e) => setEmail(e.target.value)} required placeholder="you@example.com" />
+              </div>
               <div className="space-y-1.5">
                 <Label htmlFor="password">Password</Label>
                 <Input id="password" type="password" autoComplete="current-password" value={password}
@@ -138,25 +144,33 @@ export default function Login() {
                 {loading ? "Signing in…" : "Sign in"}
               </Button>
             </form>
-          ) : !otpSent ? (
+          )}
+
+          {/* ── EMAIL OTP ── */}
+          {tab === "otp" && !otpSent && (
             <form onSubmit={onRequestOtp} className="space-y-4">
-              <p className="text-xs text-muted-foreground">
-                We'll send a 6-digit OTP to your email. No password needed.
-              </p>
+              <div className="space-y-1.5">
+                <Label htmlFor="email-otp">Email</Label>
+                <Input id="email-otp" type="email" autoComplete="email" value={email}
+                  onChange={(e) => setEmail(e.target.value)} required placeholder="you@example.com" />
+              </div>
+              <p className="text-xs text-muted-foreground">We'll send a 6-digit OTP to your email. No password needed.</p>
               <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={loading}>
                 {loading ? "Sending OTP…" : "Send OTP"}
               </Button>
             </form>
-          ) : (
+          )}
+
+          {tab === "otp" && otpSent && (
             <form onSubmit={onOtpSubmit} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="otp">Enter 6-digit OTP</Label>
                 <Input id="otp" type="text" inputMode="numeric" maxLength={6}
                   value={otp} onChange={(e) => setOtp(e.target.value)}
-                  placeholder="123456" className="text-center text-xl tracking-widest font-mono" />
+                  placeholder="• • • • • •" className="text-center text-2xl tracking-[0.5em] font-mono" autoFocus />
               </div>
               <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={loading}>
-                {loading ? "Verifying…" : "Verify OTP"}
+                {loading ? "Verifying…" : "Verify & Sign in"}
               </Button>
               <button type="button" className="w-full text-xs text-muted-foreground hover:text-foreground"
                 onClick={() => { setOtpSent(false); setOtp(""); }}>

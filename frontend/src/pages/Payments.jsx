@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { Plus, Trash2 } from "lucide-react";
+import PartySelect from "@/components/PartySelect";
 import { inr, fmtDate, todayISO } from "@/lib/format";
 
 export default function Payments() {
@@ -101,10 +102,13 @@ function PaymentDialog({ open, onClose, direction, onSaved }) {
         <div className="space-y-3">
           <div className="space-y-1.5">
             <Label>{direction === "received" ? "Customer" : "Supplier"} *</Label>
-            <Select value={form.party_id} onValueChange={(v) => setForm({ ...form, party_id: v })}>
-              <SelectTrigger data-testid="pay-party-select"><SelectValue placeholder="Select" /></SelectTrigger>
-              <SelectContent>{parties.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
-            </Select>
+            <PartySelect
+              parties={parties}
+              value={form.party_id}
+              onChange={(v) => setForm({ ...form, party_id: v })}
+              role={direction === "received" ? "customer" : "supplier"}
+              testId="pay-party-select"
+              onCreated={(p) => setParties(prev => [...prev, p])} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5"><Label>Amount</Label><Input type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} data-testid="pay-amount-input" /></div>

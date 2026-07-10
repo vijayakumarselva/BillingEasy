@@ -413,7 +413,7 @@ export default function Terms() {
         </div>
 
         <div className="text-center text-xs text-gray-400 pb-8">
-          © 2026 BillingsEasy. All rights reserved. |{" "}
+          © 2026 Nammahut Services Private Limited. All rights reserved. · BillingsEasy |{" "}
           <a href="mailto:vijayakumartech1@gmail.com" className="hover:text-gray-600 underline">
             vijayakumartech1@gmail.com
           </a>{" "}
