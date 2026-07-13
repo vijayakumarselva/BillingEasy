@@ -1149,11 +1149,10 @@ async def bootstrap_admin(body: dict):
 
 
 @api.post("/admin/migrate-biz-type")
-async def migrate_biz_type(body: dict):
-    """One-time migration: tag all existing untagged docs as b2b."""
-    secret = os.getenv("BOOTSTRAP_SECRET", "")
-    if not secret or body.get("secret") != secret:
-        raise HTTPException(403, "Invalid secret")
+async def migrate_biz_type(body: dict, user=Depends(get_current_user)):
+    """One-time migration: tag all existing untagged docs as the given biz_type (default b2b)."""
+    if not user.get("is_super_admin"):
+        raise HTTPException(403, "Super admin only")
     biz_type = body.get("biz_type", "b2b")
     no_tag = {"$or": [{"biz_type": {"$exists": False}}, {"biz_type": None}]}
     results = {}
