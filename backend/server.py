@@ -348,6 +348,7 @@ class ProductIn(BaseModel):
     low_stock_alert: float = 5
     barcode: str = ""
     modes: List[str] = ["b2b", "b2c", "restaurant", "pos"]  # which business modes use this product
+    image_b64: str = ""  # base64 data-URI of product image
 
 
 class LineItem(BaseModel):

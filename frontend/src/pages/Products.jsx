@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Edit, AlertTriangle, QrCode } from "lucide-react";
+import { Plus, Search, Trash2, Edit, AlertTriangle, QrCode, Upload, Package, RefreshCw, Barcode, DollarSign, Layers } from "lucide-react";
 import { inr } from "@/lib/format";
 import HsnSuggestButton from "@/components/HsnSuggestButton";
 import JsBarcode from "jsbarcode";
@@ -24,8 +24,8 @@ const ALL_MODES = [
 
 const empty = {
   name: "", sku: "", hsn: "", unit: "NOS", category: "General",
-  purchase_price: 0, sale_price: 0, gst_rate: 18, stock: 0, low_stock_alert: 5, barcode: "",
-  modes: ["b2b", "b2c", "restaurant", "pos"],
+  purchase_price: 0, sale_price: 0, gst_rate: 18, stock: 0, low_stock_alert: 5,
+  barcode: "", modes: ["b2b", "b2c", "restaurant", "pos"], image_b64: "",
 };
 
 export default function Products() {
@@ -34,7 +34,7 @@ export default function Products() {
   const [form, setForm] = useState(empty); const [editId, setEditId] = useState(null);
   const [barcodeProduct, setBarcodeProduct] = useState(null);
   const [modeFilter, setModeFilter] = useState("all");
-  const svgRef = useRef(null);
+  const barcodeDialogRef = useRef(null);
 
   const load = async () => {
     setLoading(true);
@@ -47,7 +47,7 @@ export default function Products() {
 
   const genSku = () => `PRD-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
   const startCreate = () => { setForm({ ...empty, sku: genSku() }); setEditId(null); setOpen(true); };
-  const startEdit = (p) => { setForm(p); setEditId(p.id); setOpen(true); };
+  const startEdit = (p) => { setForm({ ...empty, ...p }); setEditId(p.id); setOpen(true); };
   const save = async () => {
     try {
       if (editId) await api.put(`/products/${editId}`, form);
@@ -66,21 +66,28 @@ export default function Products() {
   const remove = async (id) => { await api.delete(`/products/${id}`); toast.success("Deleted"); load(); };
 
   const printBarcode = () => {
-    const svg = svgRef.current;
+    const svg = barcodeDialogRef.current;
+    if (!svg) return;
     const svgData = new XMLSerializer().serializeToString(svg);
     const win = window.open("", "_blank");
     win.document.write(`<html><body style="margin:0;display:flex;justify-content:center;align-items:center;height:100vh">${svgData}</body></html>`);
-    win.document.close();
-    win.print();
+    win.document.close(); win.print();
   };
 
   const downloadPng = () => {
-    const svg = svgRef.current;
+    const svg = barcodeDialogRef.current;
+    if (!svg) return;
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
     const data = new XMLSerializer().serializeToString(svg);
     const img = new Image();
-    img.onload = () => { canvas.width = img.width; canvas.height = img.height; ctx.drawImage(img, 0, 0); const a = document.createElement("a"); a.download = `barcode-${barcodeProduct?.sku}.png`; a.href = canvas.toDataURL(); a.click(); };
+    img.onload = () => {
+      canvas.width = img.width; canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+      const a = document.createElement("a");
+      a.download = `barcode-${barcodeProduct?.sku}.png`;
+      a.href = canvas.toDataURL(); a.click();
+    };
     img.src = "data:image/svg+xml;base64," + btoa(data);
   };
 
@@ -116,15 +123,23 @@ export default function Products() {
       <Card>
         <div className="overflow-x-auto">
           <table className="app-table">
-            <thead><tr><th>Name</th><th>HSN</th><th>Category</th><th>Used In</th><th className="text-right">Purchase</th><th className="text-right">Sale</th><th className="text-right">GST%</th><th className="text-right">Stock</th><th></th></tr></thead>
+            <thead><tr><th>Product</th><th>HSN</th><th>Category</th><th>Used In</th><th className="text-right">Purchase</th><th className="text-right">Sale</th><th className="text-right">GST%</th><th className="text-right">Stock</th><th></th></tr></thead>
             <tbody>
               {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={9}><Skeleton className="h-8 w-full" /></td></tr>) :
                 list.length === 0 ? <tr><td colSpan={9} className="text-center text-muted-foreground py-8">No products yet.</td></tr> :
                 list.map(p => (
                   <tr key={p.id} data-testid={`product-row-${p.name}`}>
                     <td>
-                      <div className="font-medium">{p.name}</div>
-                      <div className="text-xs text-muted-foreground font-mono-fin">{p.sku || "—"}</div>
+                      <div className="flex items-center gap-2">
+                        {p.image_b64
+                          ? <img src={p.image_b64} alt="" className="w-8 h-8 rounded object-cover flex-shrink-0 border" />
+                          : <div className="w-8 h-8 rounded bg-muted flex items-center justify-center flex-shrink-0"><Package className="h-4 w-4 text-muted-foreground" /></div>
+                        }
+                        <div>
+                          <div className="font-medium">{p.name}</div>
+                          <div className="text-xs text-muted-foreground font-mono-fin">{p.sku || "—"}</div>
+                        </div>
+                      </div>
                     </td>
                     <td className="font-mono-fin text-xs">{p.hsn || "—"}</td>
                     <td><Badge variant="secondary">{p.category}</Badge></td>
@@ -165,75 +180,250 @@ export default function Products() {
         </div>
       </Card>
 
-      <BarcodeDialog product={barcodeProduct} svgRef={svgRef} onClose={() => setBarcodeProduct(null)} onPrint={printBarcode} onDownload={downloadPng} />
+      <BarcodeDialog product={barcodeProduct} svgRef={barcodeDialogRef} onClose={() => setBarcodeProduct(null)} onPrint={printBarcode} onDownload={downloadPng} />
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-2xl" data-testid="product-form-dialog">
-          <DialogHeader><DialogTitle>{editId ? "Edit Product" : "New Product"}</DialogTitle></DialogHeader>
-          <div className="grid sm:grid-cols-2 gap-3">
-            <Field label="Name *" v={form.name} on={(v) => setForm({ ...form, name: v })} tid="product-name-input" />
-            <Field label="SKU" v={form.sku} on={(v) => setForm({ ...form, sku: v })} tid="product-sku-input" />
-            <div className="space-y-1.5">
-              <Label className="flex items-center justify-between">
-                HSN Code
-                <HsnSuggestButton
-                  description={form.name}
-                  onPick={(hit) => setForm(f => ({ ...f, hsn: hit.code, gst_rate: hit.gst_rate }))} />
-              </Label>
-              <Input value={form.hsn || ""} onChange={(e) => setForm({ ...form, hsn: e.target.value })}
-                     className="font-mono" data-testid="product-hsn-input" />
-            </div>
-            <Field label="Category" v={form.category} on={(v) => setForm({ ...form, category: v })} tid="product-category-input" />
-            <Field label="Unit" v={form.unit} on={(v) => setForm({ ...form, unit: v })} tid="product-unit-input" />
-            <div className="space-y-1.5">
-              <Label>GST Rate (%)</Label>
-              <Select value={String(form.gst_rate)} onValueChange={(v) => setForm({ ...form, gst_rate: parseFloat(v) })}>
-                <SelectTrigger data-testid="product-gst-select"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {[0,5,12,18,28].map(r => <SelectItem key={r} value={String(r)}>{r}%</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <Field label="Purchase Price (₹)" type="number" v={form.purchase_price} on={(v) => setForm({ ...form, purchase_price: parseFloat(v||0) })} tid="product-pp-input" />
-            <Field label="Sale Price (₹)" type="number" v={form.sale_price} on={(v) => setForm({ ...form, sale_price: parseFloat(v||0) })} tid="product-sp-input" />
-            <Field label="Current Stock" type="number" v={form.stock} on={(v) => setForm({ ...form, stock: parseFloat(v||0) })} tid="product-stock-input" />
-            <Field label="Low-Stock Alert" type="number" v={form.low_stock_alert} on={(v) => setForm({ ...form, low_stock_alert: parseFloat(v||0) })} tid="product-low-input" />
-            <Field label="Barcode" v={form.barcode} on={(v) => setForm({ ...form, barcode: v })} tid="product-barcode-input" />
-            <div className="sm:col-span-2 space-y-2">
-              <Label>Available In</Label>
-              <div className="flex flex-wrap gap-3">
-                {ALL_MODES.map(m => {
-                  const checked = (form.modes || []).includes(m.value);
-                  return (
-                    <label key={m.value} className="flex items-center gap-2 cursor-pointer">
-                      <input type="checkbox" checked={checked}
-                        onChange={() => {
-                          const cur = form.modes || [];
-                          setForm({ ...form, modes: checked ? cur.filter(x => x !== m.value) : [...cur, m.value] });
-                        }} className="rounded" />
-                      <span className={`text-xs px-2 py-0.5 rounded font-medium ${m.color}`}>{m.label}</span>
-                    </label>
-                  );
-                })}
-              </div>
-              <p className="text-xs text-muted-foreground">Controls which business mode's product picker shows this item.</p>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={save} className="bg-blue-600 hover:bg-blue-700" data-testid="product-save-button">Save</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ProductFormDialog open={open} onOpenChange={setOpen} form={form} setForm={setForm} editId={editId} onSave={save} genSku={genSku} />
     </div>
   );
 }
 
+/* ─── Advanced Product Form Dialog ─── */
+function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, genSku }) {
+  const inlineBarcodeRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const [imgDrag, setImgDrag] = useState(false);
+
+  // Render barcode live as SKU changes
+  useEffect(() => {
+    if (!open) return;
+    const val = form.barcode || form.sku;
+    if (inlineBarcodeRef.current && val) {
+      try {
+        JsBarcode(inlineBarcodeRef.current, val, {
+          format: "CODE128", width: 2, height: 50,
+          displayValue: true, fontSize: 12, margin: 6,
+        });
+      } catch {
+        // invalid barcode value
+      }
+    }
+  }, [form.barcode, form.sku, open]);
+
+  const handleImageFile = useCallback((file) => {
+    if (!file || !file.type.startsWith("image/")) { toast.error("Please upload an image file"); return; }
+    if (file.size > 2 * 1024 * 1024) { toast.error("Image must be under 2 MB"); return; }
+    const reader = new FileReader();
+    reader.onload = (e) => setForm(f => ({ ...f, image_b64: e.target.result }));
+    reader.readAsDataURL(file);
+  }, [setForm]);
+
+  const f = (key) => (v) => setForm(prev => ({ ...prev, [key]: v }));
+
+  const barcodeVal = form.barcode || form.sku;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto" data-testid="product-form-dialog">
+        <DialogHeader>
+          <DialogTitle className="text-xl">{editId ? "Edit Product" : "New Product"}</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-5">
+          {/* ── Row 1: Image + Core Info ── */}
+          <div className="flex gap-4">
+            {/* Image Upload */}
+            <div className="flex-shrink-0">
+              <Label className="mb-2 block text-xs text-muted-foreground uppercase tracking-wide">Product Image</Label>
+              <div
+                className={`w-28 h-28 rounded-xl border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-colors relative overflow-hidden
+                  ${imgDrag ? "border-blue-400 bg-blue-50 dark:bg-blue-950" : "border-border hover:border-blue-400 hover:bg-muted/30"}`}
+                onDragOver={(e) => { e.preventDefault(); setImgDrag(true); }}
+                onDragLeave={() => setImgDrag(false)}
+                onDrop={(e) => { e.preventDefault(); setImgDrag(false); handleImageFile(e.dataTransfer.files[0]); }}
+                onClick={() => imageInputRef.current?.click()}
+              >
+                {form.image_b64
+                  ? <img src={form.image_b64} alt="Product" className="absolute inset-0 w-full h-full object-cover" />
+                  : <>
+                      <Upload className="h-6 w-6 text-muted-foreground mb-1" />
+                      <span className="text-[10px] text-muted-foreground text-center px-1">Drop or click</span>
+                    </>
+                }
+                <input ref={imageInputRef} type="file" accept="image/*" className="hidden"
+                  onChange={(e) => handleImageFile(e.target.files[0])} />
+              </div>
+              {form.image_b64 && (
+                <button className="mt-1 text-[10px] text-rose-500 hover:underline w-full text-center"
+                  onClick={() => setForm(f => ({ ...f, image_b64: "" }))}>Remove</button>
+              )}
+            </div>
+
+            {/* Name + SKU + Category */}
+            <div className="flex-1 grid grid-cols-2 gap-3">
+              <div className="col-span-2 space-y-1.5">
+                <Label>Product Name *</Label>
+                <Input value={form.name} onChange={(e) => f("name")(e.target.value)}
+                  placeholder="e.g. Basmati Rice 1kg" data-testid="product-name-input" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="flex items-center justify-between">
+                  SKU
+                  <button type="button" title="Auto-generate SKU"
+                    onClick={() => setForm(prev => ({ ...prev, sku: genSku() }))}
+                    className="text-blue-500 hover:text-blue-700">
+                    <RefreshCw className="h-3 w-3" />
+                  </button>
+                </Label>
+                <Input value={form.sku} onChange={(e) => f("sku")(e.target.value)}
+                  placeholder="PRD-XXXX" className="font-mono text-sm" data-testid="product-sku-input" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Category</Label>
+                <Input value={form.category} onChange={(e) => f("category")(e.target.value)}
+                  placeholder="General" data-testid="product-category-input" />
+              </div>
+            </div>
+          </div>
+
+          {/* ── Section: Tax & Pricing ── */}
+          <div className="rounded-lg border p-4 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground mb-1">
+              <DollarSign className="h-4 w-4" /> Pricing & Tax
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="space-y-1.5">
+                <Label>Unit</Label>
+                <Input value={form.unit} onChange={(e) => f("unit")(e.target.value)}
+                  placeholder="NOS" data-testid="product-unit-input" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>GST Rate</Label>
+                <Select value={String(form.gst_rate)} onValueChange={(v) => setForm(prev => ({ ...prev, gst_rate: parseFloat(v) }))}>
+                  <SelectTrigger data-testid="product-gst-select"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {[0,5,12,18,28].map(r => <SelectItem key={r} value={String(r)}>{r}%</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Purchase Price (₹)</Label>
+                <Input type="number" value={form.purchase_price}
+                  onChange={(e) => setForm(prev => ({ ...prev, purchase_price: parseFloat(e.target.value||0) }))}
+                  data-testid="product-pp-input" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Sale Price (₹)</Label>
+                <Input type="number" value={form.sale_price}
+                  onChange={(e) => setForm(prev => ({ ...prev, sale_price: parseFloat(e.target.value||0) }))}
+                  data-testid="product-sp-input" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="flex items-center justify-between">
+                  HSN Code
+                  <HsnSuggestButton
+                    description={form.name}
+                    onPick={(hit) => setForm(prev => ({ ...prev, hsn: hit.code, gst_rate: hit.gst_rate }))} />
+                </Label>
+                <Input value={form.hsn || ""} onChange={(e) => f("hsn")(e.target.value)}
+                  className="font-mono" placeholder="e.g. 1006" data-testid="product-hsn-input" />
+              </div>
+              <div className="bg-muted/40 rounded-md p-2.5 text-xs text-muted-foreground flex flex-col justify-center">
+                <div>Margin: <span className="font-semibold text-foreground">{form.sale_price > 0 && form.purchase_price > 0
+                  ? `${(((form.sale_price - form.purchase_price) / form.purchase_price) * 100).toFixed(1)}%`
+                  : "—"}</span></div>
+                <div>Tax on sale: <span className="font-semibold text-foreground">{inr(form.sale_price * (form.gst_rate / 100))}</span></div>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Section: Stock ── */}
+          <div className="rounded-lg border p-4 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground mb-1">
+              <Layers className="h-4 w-4" /> Stock Management
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Current Stock</Label>
+                <Input type="number" value={form.stock}
+                  onChange={(e) => setForm(prev => ({ ...prev, stock: parseFloat(e.target.value||0) }))}
+                  data-testid="product-stock-input" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Low-Stock Alert</Label>
+                <Input type="number" value={form.low_stock_alert}
+                  onChange={(e) => setForm(prev => ({ ...prev, low_stock_alert: parseFloat(e.target.value||0) }))}
+                  data-testid="product-low-input" />
+              </div>
+            </div>
+          </div>
+
+          {/* ── Section: Barcode ── */}
+          <div className="rounded-lg border p-4 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground mb-1">
+              <Barcode className="h-4 w-4" /> Barcode
+            </div>
+            <div className="grid sm:grid-cols-2 gap-4 items-center">
+              <div className="space-y-1.5">
+                <Label>Barcode Value</Label>
+                <div className="flex gap-2">
+                  <Input value={form.barcode} onChange={(e) => f("barcode")(e.target.value)}
+                    placeholder={`Leave empty to use SKU (${form.sku})`} className="font-mono text-sm"
+                    data-testid="product-barcode-input" />
+                </div>
+                <p className="text-[10px] text-muted-foreground">Leave empty to auto-use the SKU as barcode</p>
+              </div>
+              <div className="flex flex-col items-center gap-1">
+                {barcodeVal
+                  ? <svg ref={inlineBarcodeRef} className="max-w-full" />
+                  : <div className="h-16 flex items-center text-xs text-muted-foreground">Enter a SKU to preview</div>
+                }
+              </div>
+            </div>
+          </div>
+
+          {/* ── Section: Availability ── */}
+          <div className="rounded-lg border p-4 space-y-3">
+            <div className="text-sm font-medium text-muted-foreground mb-2">Available In</div>
+            <div className="flex flex-wrap gap-3">
+              {ALL_MODES.map(m => {
+                const checked = (form.modes || []).includes(m.value);
+                return (
+                  <label key={m.value} className="flex items-center gap-2 cursor-pointer select-none">
+                    <input type="checkbox" checked={checked}
+                      onChange={() => {
+                        const cur = form.modes || [];
+                        setForm(prev => ({ ...prev, modes: checked ? cur.filter(x => x !== m.value) : [...cur, m.value] }));
+                      }} className="rounded" />
+                    <span className={`text-xs px-2 py-0.5 rounded font-medium ${m.color}`}>{m.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="text-xs text-muted-foreground">Controls which business mode's product picker shows this item.</p>
+          </div>
+        </div>
+
+        <DialogFooter className="pt-2">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={onSave} className="bg-blue-600 hover:bg-blue-700" data-testid="product-save-button">
+            {editId ? "Update Product" : "Add Product"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ─── Barcode View Dialog ─── */
 function BarcodeDialog({ product, svgRef, onClose, onPrint, onDownload }) {
   const sku = product?.sku || "";
   useEffect(() => {
     if (product && svgRef.current && sku) {
-      JsBarcode(svgRef.current, sku, { format: "CODE128", width: 2, height: 60, displayValue: true });
+      try {
+        JsBarcode(svgRef.current, sku, { format: "CODE128", width: 2, height: 60, displayValue: true });
+      } catch {}
     }
   }, [product, sku]);
 
@@ -254,14 +444,5 @@ function BarcodeDialog({ product, svgRef, onClose, onPrint, onDownload }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function Field({ label, v, on, type = "text", tid }) {
-  return (
-    <div className="space-y-1.5">
-      <Label>{label}</Label>
-      <Input type={type} value={v} onChange={(e) => on(e.target.value)} data-testid={tid} />
-    </div>
   );
 }
