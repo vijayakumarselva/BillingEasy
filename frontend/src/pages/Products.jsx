@@ -15,9 +15,17 @@ import { inr } from "@/lib/format";
 import HsnSuggestButton from "@/components/HsnSuggestButton";
 import JsBarcode from "jsbarcode";
 
+const ALL_MODES = [
+  { value: "b2b", label: "B2B", color: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" },
+  { value: "b2c", label: "B2C", color: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200" },
+  { value: "restaurant", label: "Restaurant", color: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200" },
+  { value: "pos", label: "POS", color: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" },
+];
+
 const empty = {
   name: "", sku: "", hsn: "", unit: "NOS", category: "General",
   purchase_price: 0, sale_price: 0, gst_rate: 18, stock: 0, low_stock_alert: 5, barcode: "",
+  modes: ["b2b", "b2c", "restaurant", "pos"],
 };
 
 export default function Products() {
@@ -25,14 +33,17 @@ export default function Products() {
   const [search, setSearch] = useState(""); const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty); const [editId, setEditId] = useState(null);
   const [barcodeProduct, setBarcodeProduct] = useState(null);
+  const [modeFilter, setModeFilter] = useState("all");
   const svgRef = useRef(null);
 
   const load = async () => {
     setLoading(true);
-    const { data } = await api.get("/products", { params: { search } });
+    const params = { search };
+    if (modeFilter !== "all") params.mode = modeFilter;
+    const { data } = await api.get("/products", { params });
     setList(data); setLoading(false);
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [search]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [search, modeFilter]);
 
   const genSku = () => `PRD-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
   const startCreate = () => { setForm({ ...empty, sku: genSku() }); setEditId(null); setOpen(true); };
@@ -85,7 +96,16 @@ export default function Products() {
         </Button>
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex flex-wrap gap-3 items-center justify-between">
+        <div className="flex rounded-md border overflow-hidden text-xs">
+          {[{ value: "all", label: "All" }, ...ALL_MODES].map(m => (
+            <button key={m.value} type="button"
+              onClick={() => setModeFilter(m.value)}
+              className={`px-3 py-1.5 font-medium transition-colors border-l first:border-l-0 ${modeFilter === m.value ? "bg-blue-600 text-white" : "text-muted-foreground hover:bg-muted/50"}`}>
+              {m.label}
+            </button>
+          ))}
+        </div>
         <div className="relative w-full sm:w-64">
           <Search className="h-4 w-4 absolute left-2.5 top-2.5 text-muted-foreground" />
           <Input className="pl-8" placeholder="Search products…" value={search}
@@ -96,10 +116,10 @@ export default function Products() {
       <Card>
         <div className="overflow-x-auto">
           <table className="app-table">
-            <thead><tr><th>Name</th><th>HSN</th><th>Category</th><th className="text-right">Purchase</th><th className="text-right">Sale</th><th className="text-right">GST%</th><th className="text-right">Stock</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>HSN</th><th>Category</th><th>Used In</th><th className="text-right">Purchase</th><th className="text-right">Sale</th><th className="text-right">GST%</th><th className="text-right">Stock</th><th></th></tr></thead>
             <tbody>
-              {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={8}><Skeleton className="h-8 w-full" /></td></tr>) :
-                list.length === 0 ? <tr><td colSpan={8} className="text-center text-muted-foreground py-8">No products yet.</td></tr> :
+              {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={9}><Skeleton className="h-8 w-full" /></td></tr>) :
+                list.length === 0 ? <tr><td colSpan={9} className="text-center text-muted-foreground py-8">No products yet.</td></tr> :
                 list.map(p => (
                   <tr key={p.id} data-testid={`product-row-${p.name}`}>
                     <td>
@@ -108,6 +128,14 @@ export default function Products() {
                     </td>
                     <td className="font-mono-fin text-xs">{p.hsn || "—"}</td>
                     <td><Badge variant="secondary">{p.category}</Badge></td>
+                    <td>
+                      <div className="flex gap-1 flex-wrap">
+                        {(p.modes || ["b2b","b2c","restaurant","pos"]).map(m => {
+                          const def = ALL_MODES.find(x => x.value === m);
+                          return def ? <span key={m} className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${def.color}`}>{def.label}</span> : null;
+                        })}
+                      </div>
+                    </td>
                     <td className="num text-muted-foreground">{inr(p.purchase_price)}</td>
                     <td className="num">{inr(p.sale_price)}</td>
                     <td className="num">{p.gst_rate}%</td>
@@ -171,6 +199,25 @@ export default function Products() {
             <Field label="Current Stock" type="number" v={form.stock} on={(v) => setForm({ ...form, stock: parseFloat(v||0) })} tid="product-stock-input" />
             <Field label="Low-Stock Alert" type="number" v={form.low_stock_alert} on={(v) => setForm({ ...form, low_stock_alert: parseFloat(v||0) })} tid="product-low-input" />
             <Field label="Barcode" v={form.barcode} on={(v) => setForm({ ...form, barcode: v })} tid="product-barcode-input" />
+            <div className="sm:col-span-2 space-y-2">
+              <Label>Available In</Label>
+              <div className="flex flex-wrap gap-3">
+                {ALL_MODES.map(m => {
+                  const checked = (form.modes || []).includes(m.value);
+                  return (
+                    <label key={m.value} className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={checked}
+                        onChange={() => {
+                          const cur = form.modes || [];
+                          setForm({ ...form, modes: checked ? cur.filter(x => x !== m.value) : [...cur, m.value] });
+                        }} className="rounded" />
+                      <span className={`text-xs px-2 py-0.5 rounded font-medium ${m.color}`}>{m.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground">Controls which business mode's product picker shows this item.</p>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>

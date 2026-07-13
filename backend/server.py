@@ -347,6 +347,7 @@ class ProductIn(BaseModel):
     stock: float = 0
     low_stock_alert: float = 5
     barcode: str = ""
+    modes: List[str] = ["b2b", "b2c", "restaurant", "pos"]  # which business modes use this product
 
 
 class LineItem(BaseModel):
@@ -2003,9 +2004,12 @@ async def party_ledger(pid: str, ctx=Depends(get_org_ctx)):
 
 # ---------------- PRODUCTS ----------------
 @api.get("/products")
-async def list_products(search: Optional[str] = None, ctx=Depends(get_org_ctx)):
+async def list_products(search: Optional[str] = None, mode: Optional[str] = None, ctx=Depends(get_org_ctx)):
     q = org_filter(ctx)
     if search: q["name"] = {"$regex": search, "$options": "i"}
+    if mode:
+        # Return products that include this mode OR have no modes field (legacy)
+        q["$or"] = [{"modes": mode}, {"modes": {"$exists": False}}, {"modes": []}]
     return await db.products.find(q, {"_id": 0}).sort("name", 1).to_list(1000)
 
 

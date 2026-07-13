@@ -334,7 +334,9 @@ function PurchaseDialog({ open, onClose, onSaved, prefill }) {
   useEffect(() => {
     if (!open) return;
     api.get("/parties", { params: { type: "supplier" } }).then(r => setSuppliers(r.data));
-    api.get("/products").then(r => setProducts(r.data));
+    const orgId = localStorage.getItem("be_org_id") || "";
+    const mode = localStorage.getItem(`biz_mode_${orgId}`) || "b2b";
+    api.get("/products", { params: { mode } }).then(r => setProducts(r.data));
     api.get("/bank-accounts").then(r => setBanks(r.data));
     api.get("/orgs/current/branches").then(r => setBranches((r.data || []).filter(b => b.active))).catch(() => {});
   }, [open]);
