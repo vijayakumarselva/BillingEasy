@@ -10,7 +10,11 @@ api.interceptors.request.use((config) => {
   const t = localStorage.getItem("be_token");
   if (t) config.headers.Authorization = `Bearer ${t}`;
   const orgId = localStorage.getItem("be_org_id");
-  if (orgId) config.headers["X-Org-Id"] = orgId;
+  if (orgId) {
+    config.headers["X-Org-Id"] = orgId;
+    const bizType = localStorage.getItem(`biz_mode_${orgId}`);
+    if (bizType) config.headers["X-Biz-Type"] = bizType;
+  }
   return config;
 });
 

@@ -195,8 +195,9 @@ async def get_org_ctx(request: Request, user=Depends(get_current_user)) -> dict:
         await db.users.update_one({"id": user["id"]}, {"$set": {"last_active_org_id": org_id}})
     perms = await resolve_permissions(db, membership["role"], org_id)
     allowed_modes = await resolve_allowed_modes(db, membership["role"], org_id)
+    biz_type = request.headers.get("X-Biz-Type") or None
     return {"user": user, "org_id": org_id, "role": membership["role"], "permissions": perms,
-            "allowed_modes": allowed_modes, "request": request}
+            "allowed_modes": allowed_modes, "biz_type": biz_type, "request": request}
 
 
 def require_permission(perm: str):
@@ -218,6 +219,15 @@ def require_roles(*roles: str):
 def org_filter(ctx: dict, extra: Optional[dict] = None) -> dict:
     q = {"org_id": ctx["org_id"]}
     if extra: q.update(extra)
+    return q
+
+
+def biz_filter(ctx: dict, extra: Optional[dict] = None) -> dict:
+    """org_filter + optional biz_type scoping. Docs with no biz_type field are visible in all modes."""
+    q = org_filter(ctx, extra)
+    bt = ctx.get("biz_type")
+    if bt:
+        q["$or"] = [{"biz_type": bt}, {"biz_type": {"$exists": False}}]
     return q
 
 
@@ -1138,6 +1148,22 @@ async def bootstrap_admin(body: dict):
     return {"ok": True, "message": f"{email} is now super admin"}
 
 
+@api.post("/admin/migrate-biz-type")
+async def migrate_biz_type(body: dict):
+    """One-time migration: tag all existing untagged docs as b2b."""
+    secret = os.getenv("BOOTSTRAP_SECRET", "")
+    if not secret or body.get("secret") != secret:
+        raise HTTPException(403, "Invalid secret")
+    biz_type = body.get("biz_type", "b2b")
+    no_tag = {"$or": [{"biz_type": {"$exists": False}}, {"biz_type": None}]}
+    results = {}
+    for coll_name in ["parties", "invoices", "purchases", "expenses", "payments"]:
+        coll = db[coll_name]
+        r = await coll.update_many(no_tag, {"$set": {"biz_type": biz_type}})
+        results[coll_name] = r.modified_count
+    return {"ok": True, "tagged_as": biz_type, "counts": results}
+
+
 # ---------------- ORGS ----------------
 async def _create_org_internal(name: str, owner_user_id: str, state: str = "Tamil Nadu", state_code: str = "33") -> dict:
     org_id = str(uuid.uuid4())
@@ -1987,7 +2013,7 @@ async def bulk_party_balances(org_id: str, parties: List[dict]) -> Dict[str, flo
 
 @api.get("/parties")
 async def list_parties(type: Optional[str] = None, search: Optional[str] = None, ctx=Depends(get_org_ctx)):
-    q = org_filter(ctx)
+    q = biz_filter(ctx)
     if type: q["type"] = type
     if search: q["name"] = {"$regex": search, "$options": "i"}
     items = await db.parties.find(q, {"_id": 0}).sort("name", 1).to_list(500)
@@ -2001,7 +2027,7 @@ async def list_parties(type: Optional[str] = None, search: Optional[str] = None,
 async def create_party(body: PartyIn, ctx=Depends(get_org_ctx)):
     await ensure_active_subscription(ctx)
     doc = {**body.model_dump(), "id": str(uuid.uuid4()),
-           "org_id": ctx["org_id"], "created_at": now_iso()}
+           "org_id": ctx["org_id"], "biz_type": ctx.get("biz_type"), "created_at": now_iso()}
     await db.parties.insert_one(doc)
     return strip_id(doc)
 
@@ -2090,7 +2116,7 @@ async def delete_product(pid: str, ctx=Depends(require_permission("product.delet
 @api.get("/invoices")
 async def list_invoices(status: Optional[str] = None, type: Optional[str] = None,
                         party_id: Optional[str] = None, ctx=Depends(get_org_ctx)):
-    q = org_filter(ctx)
+    q = biz_filter(ctx)
     if status: q["status"] = status
     if type: q["type"] = type
     if party_id: q["party_id"] = party_id
@@ -2132,6 +2158,7 @@ async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
     return {
         "id": str(uuid.uuid4()),
         "org_id": ctx["org_id"],
+        "biz_type": ctx.get("biz_type"),
         "invoice_no": await next_invoice_number(ctx["org_id"], prefix),
         "party_id": body.party_id, "party_snapshot": party,
         "invoice_date": body.invoice_date, "due_date": body.due_date,
@@ -2500,7 +2527,7 @@ async def dismiss_purchase_upload(uid: str, ctx=Depends(get_org_ctx)):
 
 @api.get("/purchases")
 async def list_purchases(ctx=Depends(get_org_ctx)):
-    items = await db.purchases.find(org_filter(ctx), {"_id": 0}).sort("purchase_date", -1).to_list(500)
+    items = await db.purchases.find(biz_filter(ctx), {"_id": 0}).sort("purchase_date", -1).to_list(500)
     if not items: return items
     party_ids = list({i["party_id"] for i in items})
     pmap = {p["id"]: p["name"] async for p in db.parties.find(
@@ -2526,6 +2553,7 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
     totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state)
     doc = {
         "id": str(uuid.uuid4()), "org_id": ctx["org_id"],
+        "biz_type": ctx.get("biz_type"),
         "party_id": body.party_id, "party_snapshot": party,
         "bill_no": body.bill_no, "purchase_date": body.purchase_date,
         "items": totals["items"],
@@ -2600,14 +2628,14 @@ async def delete_payment(pid: str, ctx=Depends(require_permission("payment.delet
 # ---------------- EXPENSES ----------------
 @api.get("/expenses")
 async def list_expenses(ctx=Depends(get_org_ctx)):
-    return await db.expenses.find(org_filter(ctx), {"_id": 0}).sort("date", -1).to_list(1000)
+    return await db.expenses.find(biz_filter(ctx), {"_id": 0}).sort("date", -1).to_list(1000)
 
 
 @api.post("/expenses")
 async def create_expense(body: ExpenseIn, ctx=Depends(get_org_ctx)):
     await ensure_active_subscription(ctx)
     doc = {**body.model_dump(), "id": str(uuid.uuid4()),
-           "org_id": ctx["org_id"], "created_at": now_iso()}
+           "org_id": ctx["org_id"], "biz_type": ctx.get("biz_type"), "created_at": now_iso()}
     await db.expenses.insert_one(doc)
     return strip_id(doc)
 
