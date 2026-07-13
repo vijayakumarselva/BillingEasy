@@ -42,7 +42,7 @@ from starlette.middleware.cors import CORSMiddleware
 from pdf_invoice import generate_invoice_pdf
 from seed_data import seed_demo_data
 from rbac import (
-    PERMISSIONS, SYSTEM_ROLES, resolve_permissions, ensure_system_roles,
+    PERMISSIONS, SYSTEM_ROLES, resolve_permissions, resolve_allowed_modes, ensure_system_roles,
     audit_log, limiter, client_ip,
 )
 from plans import (
@@ -194,8 +194,9 @@ async def get_org_ctx(request: Request, user=Depends(get_current_user)) -> dict:
     if user.get("last_active_org_id") != org_id:
         await db.users.update_one({"id": user["id"]}, {"$set": {"last_active_org_id": org_id}})
     perms = await resolve_permissions(db, membership["role"], org_id)
+    allowed_modes = await resolve_allowed_modes(db, membership["role"], org_id)
     return {"user": user, "org_id": org_id, "role": membership["role"], "permissions": perms,
-            "request": request}
+            "allowed_modes": allowed_modes, "request": request}
 
 
 def require_permission(perm: str):
@@ -1186,7 +1187,8 @@ async def create_org(body: OrgCreateIn, user=Depends(get_current_user)):
 @api.get("/orgs/current")
 async def get_current_org(ctx=Depends(get_org_ctx)):
     org = await get_org_doc(ctx["org_id"])
-    return {**org, "role": ctx["role"], "subscription": subscription_status_summary(org)}
+    return {**org, "role": ctx["role"], "allowed_modes": ctx.get("allowed_modes", []),
+            "subscription": subscription_status_summary(org)}
 
 
 @api.put("/orgs/current")
@@ -1753,6 +1755,7 @@ class RoleIn(BaseModel):
     name: str
     description: str = ""
     permissions: List[str] = []
+    allowed_modes: List[str] = []  # empty = unrestricted; e.g. ["pos","b2c"] locks to POS only
 
 
 @api.get("/permissions")
@@ -1787,6 +1790,7 @@ async def create_role(body: RoleIn, request: Request, ctx=Depends(require_permis
         "id": str(uuid.uuid4()), "org_id": ctx["org_id"],
         "slug": slug, "name": body.name, "description": body.description,
         "permissions": [p for p in body.permissions if p in PERMISSIONS or p == "*" or p.endswith(".*")],
+        "allowed_modes": [m for m in body.allowed_modes if m in ("b2b", "b2c", "restaurant", "pos")],
         "is_system": False, "created_at": now_iso(),
     }
     await db.roles.insert_one(doc)
@@ -1805,9 +1809,10 @@ async def update_role(slug: str, body: RoleIn, request: Request,
     if role.get("is_system"):
         raise HTTPException(400, "System roles cannot be edited")
     new_perms = [p for p in body.permissions if p in PERMISSIONS or p == "*" or p.endswith(".*")]
+    new_modes = [m for m in body.allowed_modes if m in ("b2b", "b2c", "restaurant", "pos")]
     await db.roles.update_one({"_id": role["_id"]},
                                {"$set": {"name": body.name, "description": body.description,
-                                         "permissions": new_perms}})
+                                         "permissions": new_perms, "allowed_modes": new_modes}})
     await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="role.updated",
                     entity_type="role", entity_id=slug,
                     metadata={"name": body.name, "permissions": new_perms}, request=request)

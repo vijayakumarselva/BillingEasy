@@ -11,7 +11,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Edit, Trash2, ShieldCheck, Lock } from "lucide-react";
+import { Plus, Edit, Trash2, ShieldCheck, Lock, Globe } from "lucide-react";
+
+const ALL_MODES = [
+  { value: "b2b",        label: "B2B Billing",    emoji: "🏢", desc: "Invoices, purchases, ledgers" },
+  { value: "b2c",        label: "B2C Retail",      emoji: "🛒", desc: "Sales, POS, retail" },
+  { value: "restaurant", label: "Restaurant",      emoji: "🍽️", desc: "Table orders, KOT, menus" },
+  { value: "pos",        label: "POS / Counter",   emoji: "🖥️", desc: "Counter billing" },
+];
 
 export default function RolesPanel({ canManage }) {
   const [roles, setRoles] = useState([]);
@@ -35,8 +42,8 @@ export default function RolesPanel({ canManage }) {
     return Array.from(set);
   };
 
-  const startCreate = () => { setForm({ name: "", description: "", permissions: [], slug: null }); setOpen(true); };
-  const startEdit = (r) => { setForm({ name: r.name, description: r.description || "", permissions: expand(r.permissions), slug: r.slug }); setOpen(true); };
+  const startCreate = () => { setForm({ name: "", description: "", permissions: [], allowed_modes: [], slug: null }); setOpen(true); };
+  const startEdit = (r) => { setForm({ name: r.name, description: r.description || "", permissions: expand(r.permissions), allowed_modes: r.allowed_modes || [], slug: r.slug }); setOpen(true); };
   const togglePerm = (p) => {
     setForm(f => ({ ...f, permissions: f.permissions.includes(p) ? f.permissions.filter(x => x !== p) : [...f.permissions, p] }));
   };
@@ -50,8 +57,9 @@ export default function RolesPanel({ canManage }) {
   const save = async () => {
     if (!form.name) { toast.error("Role name is required"); return; }
     try {
-      if (form.slug) await api.put(`/roles/${form.slug}`, { name: form.name, description: form.description, permissions: form.permissions });
-      else await api.post("/roles", { name: form.name, description: form.description, permissions: form.permissions });
+      const payload = { name: form.name, description: form.description, permissions: form.permissions, allowed_modes: form.allowed_modes || [] };
+      if (form.slug) await api.put(`/roles/${form.slug}`, payload);
+      else await api.post("/roles", payload);
       toast.success("Saved"); setOpen(false); load();
     } catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
   };
@@ -83,6 +91,13 @@ export default function RolesPanel({ canManage }) {
                 {r.is_system && <Badge variant="secondary" className="text-[10px]"><Lock className="h-2.5 w-2.5 mr-1" /> System</Badge>}
                 <Badge variant="outline" className="text-[10px]">{r.member_count} member(s)</Badge>
                 <Badge variant="outline" className="text-[10px]">{expand(r.permissions).length} permissions</Badge>
+                {(r.allowed_modes || []).length > 0
+                  ? (r.allowed_modes || []).map(m => {
+                      const def = ALL_MODES.find(x => x.value === m);
+                      return def ? <Badge key={m} className="text-[10px] bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 border-0">{def.emoji} {def.label}</Badge> : null;
+                    })
+                  : <Badge variant="outline" className="text-[10px] text-green-700 border-green-300"><Globe className="h-2.5 w-2.5 mr-1" /> All modes</Badge>
+                }
               </div>
               <div className="text-xs text-muted-foreground mt-1">{r.description}</div>
             </div>
@@ -112,6 +127,45 @@ export default function RolesPanel({ canManage }) {
               <div className="space-y-1.5"><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Billing Operator" data-testid="role-name-input" /></div>
               <div className="space-y-1.5"><Label>Description</Label><Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="What this role does" data-testid="role-desc-input" /></div>
             </div>
+            {/* ── Business Mode Access ── */}
+            <div className="rounded-md border border-border p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Globe className="h-4 w-4 text-muted-foreground" />
+                <div>
+                  <div className="font-semibold text-sm">Business Mode Access</div>
+                  <div className="text-xs text-muted-foreground">Restrict this role to specific business modes. Leave all unchecked for unrestricted access (owner/accountant).</div>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {ALL_MODES.map(m => {
+                  const checked = (form.allowed_modes || []).includes(m.value);
+                  return (
+                    <label key={m.value} className={`flex items-center gap-3 p-2.5 rounded-lg border-2 cursor-pointer transition-colors
+                      ${checked ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30" : "border-border hover:border-blue-300"}`}>
+                      <Checkbox checked={checked} onCheckedChange={() => {
+                        const cur = form.allowed_modes || [];
+                        setForm(f => ({ ...f, allowed_modes: checked ? cur.filter(x => x !== m.value) : [...cur, m.value] }));
+                      }} />
+                      <div>
+                        <div className="text-sm font-medium">{m.emoji} {m.label}</div>
+                        <div className="text-[10px] text-muted-foreground">{m.desc}</div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              {(form.allowed_modes || []).length === 0 && (
+                <div className="text-xs text-muted-foreground bg-muted/50 rounded px-3 py-2">
+                  ✓ Unrestricted — this role can access all business modes (suitable for Owner / Accountant)
+                </div>
+              )}
+              {(form.allowed_modes || []).length > 0 && (
+                <div className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 rounded px-3 py-2">
+                  ⚠ Users with this role will only see {form.allowed_modes.join(" & ")} screens. Mode switcher will be hidden.
+                </div>
+              )}
+            </div>
+
             <div>
               <Label>Permissions ({form.permissions.length} selected)</Label>
               <div className="mt-2 space-y-3">

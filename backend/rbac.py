@@ -39,7 +39,8 @@ SYSTEM_ROLES: Dict[str, Dict[str, Any]] = {
     "owner": {
         "name": "Owner",
         "description": "Full control of the organization, billing, team, and data.",
-        "permissions": ["*"],  # all
+        "permissions": ["*"],
+        "allowed_modes": [],  # empty = unrestricted
         "is_system": True,
     },
     "accountant": {
@@ -51,6 +52,7 @@ SYSTEM_ROLES: Dict[str, Dict[str, Any]] = {
             "gst.view", "report.view", "data.export",
             "tds.*", "settings.view", "audit.view",
         ],
+        "allowed_modes": [],  # unrestricted
         "is_system": True,
     },
     "sales": {
@@ -63,6 +65,45 @@ SYSTEM_ROLES: Dict[str, Dict[str, Any]] = {
             "payment.view", "payment.create",
             "settings.view",
         ],
+        "allowed_modes": [],  # unrestricted
+        "is_system": True,
+    },
+    "pos-staff": {
+        "name": "POS Staff",
+        "description": "Counter billing only. Can only access POS & B2C screens. No accounting, GST or settings.",
+        "permissions": [
+            "invoice.view", "invoice.create",
+            "product.view",
+            "party.view", "party.create",
+            "payment.view", "payment.create",
+        ],
+        "allowed_modes": ["pos", "b2c"],  # locked to POS/B2C only
+        "is_system": True,
+    },
+    "restaurant-staff": {
+        "name": "Restaurant Staff",
+        "description": "Restaurant orders and KOT only. Cannot access B2B invoices, accounting or settings.",
+        "permissions": [
+            "invoice.view", "invoice.create",
+            "product.view",
+            "party.view",
+            "expense.view", "expense.create",
+        ],
+        "allowed_modes": ["restaurant"],  # locked to restaurant only
+        "is_system": True,
+    },
+    "b2b-staff": {
+        "name": "B2B Staff",
+        "description": "B2B invoicing and purchases only. Cannot access POS, Restaurant or accounting.",
+        "permissions": [
+            "invoice.view", "invoice.create", "invoice.edit",
+            "purchase.view", "purchase.create",
+            "party.view", "party.create",
+            "product.view",
+            "payment.view", "payment.create",
+            "settings.view",
+        ],
+        "allowed_modes": ["b2b"],  # locked to B2B only
         "is_system": True,
     },
 }
@@ -94,6 +135,16 @@ async def resolve_permissions(db, role_slug: str, org_id: str) -> set:
     return expand_permissions(custom.get("permissions", []))
 
 
+async def resolve_allowed_modes(db, role_slug: str, org_id: str) -> List[str]:
+    """Return allowed business modes for a role. Empty list = unrestricted (sees all modes)."""
+    if role_slug in SYSTEM_ROLES:
+        return SYSTEM_ROLES[role_slug].get("allowed_modes", [])
+    custom = await db.roles.find_one({"slug": role_slug, "org_id": org_id}, {"_id": 0})
+    if not custom:
+        return []
+    return custom.get("allowed_modes", [])
+
+
 async def ensure_system_roles(db, org_id: str):
     """Idempotently create system role rows for an org so the UI can list them."""
     for slug, role in SYSTEM_ROLES.items():
@@ -106,9 +157,16 @@ async def ensure_system_roles(db, org_id: str):
                 "name": role["name"],
                 "description": role["description"],
                 "permissions": role["permissions"],
+                "allowed_modes": role.get("allowed_modes", []),
                 "is_system": True,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
+        else:
+            # Keep allowed_modes up to date even for existing rows
+            await db.roles.update_one(
+                {"slug": slug, "org_id": org_id, "is_system": True},
+                {"$set": {"allowed_modes": role.get("allowed_modes", [])}}
+            )
 
 
 # ---------------- Audit log ----------------

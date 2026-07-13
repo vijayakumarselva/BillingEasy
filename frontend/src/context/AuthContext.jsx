@@ -73,11 +73,13 @@ export function AuthProvider({ children }) {
 
   const currentOrg = orgs.find(o => o.id === orgId);
   const currentRole = currentOrg?.role;
+  // allowed_modes: empty = unrestricted (owner/accountant); non-empty = locked to those modes
+  const allowedModes = currentOrg?.allowed_modes || [];
 
   return (
     <AuthCtx.Provider value={{
       user, loading, login, register, logout,
-      orgs, orgId, currentOrg, currentRole,
+      orgs, orgId, currentOrg, currentRole, allowedModes,
       switchOrg, refreshOrgs: loadOrgs, setUser,
     }}>
       {children}

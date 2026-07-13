@@ -15,7 +15,7 @@ import {
   Receipt, BookOpen, Landmark, Settings, LogOut, Moon, Sun, Building2,
   FileBarChart, ChevronDown, Plus, Bot, Wrench, FileSpreadsheet, Coins, Zap,
   UtensilsCrossed, Scan, SlidersHorizontal, Sparkles, Menu, X, ChevronRight,
-  Home, PlusCircle, MoreHorizontal,
+  Home, PlusCircle, MoreHorizontal, Lock,
 } from "lucide-react";
 import { STATES } from "@/pages/Parties";
 
@@ -70,7 +70,7 @@ const FKEYS = [
 ];
 
 export default function AppLayout() {
-  const { user, logout, orgs, orgId, currentOrg, switchOrg, refreshOrgs } = useAuth();
+  const { user, logout, orgs, orgId, currentOrg, switchOrg, refreshOrgs, allowedModes } = useAuth();
   const { theme, toggle } = useTheme();
   const nav = useNavigate();
   const loc = useLocation();
@@ -86,18 +86,27 @@ export default function AppLayout() {
     if (orgId) api.get("/wallet").then(r => setWallet(r.data)).catch(() => {});
   }, [orgId, loc.pathname]);
 
-  // Load business mode from backend org settings when org changes
+  // Load business mode — if role has allowed_modes, force first allowed mode
   useEffect(() => {
+    if (!orgId) return;
+    // Role is locked to specific modes
+    if (allowedModes.length > 0) {
+      const stored = localStorage.getItem(`biz_mode_${orgId}`);
+      // If stored mode isn't in allowed list, force the first allowed mode
+      const effective = allowedModes.includes(stored) ? stored : allowedModes[0];
+      setBusinessMode(effective);
+      localStorage.setItem(`biz_mode_${orgId}`, effective);
+      setShowModeSelect(false);
+      return;
+    }
     const stored = localStorage.getItem(`biz_mode_${orgId}`);
     if (stored) { setBusinessMode(stored); return; }
-    if (orgId) {
-      api.get("/business").then(r => {
-        const mode = r.data?.business_mode || "";
-        if (mode) { setBusinessMode(mode); localStorage.setItem(`biz_mode_${orgId}`, mode); }
-        else setShowModeSelect(true);
-      }).catch(() => {});
-    }
-  }, [orgId]);
+    api.get("/business").then(r => {
+      const mode = r.data?.business_mode || "";
+      if (mode) { setBusinessMode(mode); localStorage.setItem(`biz_mode_${orgId}`, mode); }
+      else setShowModeSelect(true);
+    }).catch(() => {});
+  }, [orgId, allowedModes]);
 
   const chooseMode = async (mode) => {
     setBusinessMode(mode);
@@ -111,8 +120,12 @@ export default function AppLayout() {
 
   // Split nav into primary (matches mode) and secondary (more)
   const effectiveMode = businessMode || "b2b";
-  const primaryNav = ALL_NAV.filter(n => n.modes.includes(effectiveMode));
-  const moreNav = ALL_NAV.filter(n => !n.modes.includes(effectiveMode));
+  // If role has allowed_modes, only show nav items that belong to ANY allowed mode
+  const visibleNav = allowedModes.length > 0
+    ? ALL_NAV.filter(n => n.modes.some(m => allowedModes.includes(m)))
+    : ALL_NAV;
+  const primaryNav = visibleNav.filter(n => n.modes.includes(effectiveMode));
+  const moreNav = visibleNav.filter(n => !n.modes.includes(effectiveMode));
 
   // Group primary nav by group label
   const groupedPrimary = primaryNav.reduce((acc, n) => {
@@ -256,11 +269,18 @@ export default function AppLayout() {
             <div className="flex items-center gap-1 mt-0.5">
               <div className="text-[10px] opacity-50 uppercase tracking-wider flex-1">{currentOrg?.role || "member"}</div>
               {businessMode && (
-                <button onClick={() => setShowModeSelect(true)}
-                  className="text-[9px] px-1.5 py-0.5 rounded font-bold tracking-wider bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-                  title="Change business mode">
-                  {BUSINESS_MODES.find(m => m.value === businessMode)?.emoji} {BUSINESS_MODES.find(m => m.value === businessMode)?.label}
-                </button>
+                allowedModes.length > 0
+                  ? /* Locked mode badge — non-clickable */
+                    <span className="text-[9px] px-1.5 py-0.5 rounded font-bold tracking-wider bg-slate-600 text-white flex items-center gap-1"
+                      title="Mode locked by your role">
+                      <Lock className="h-2 w-2" />
+                      {BUSINESS_MODES.find(m => m.value === businessMode)?.label}
+                    </span>
+                  : <button onClick={() => setShowModeSelect(true)}
+                      className="text-[9px] px-1.5 py-0.5 rounded font-bold tracking-wider bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                      title="Change business mode">
+                      {BUSINESS_MODES.find(m => m.value === businessMode)?.emoji} {BUSINESS_MODES.find(m => m.value === businessMode)?.label}
+                    </button>
               )}
             </div>
           </div>
