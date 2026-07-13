@@ -39,6 +39,7 @@ export default function Settings() {
   const [composition, setComposition] = useState(false);
   const [language, setLanguage] = useState("English");
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [changingRole, setChangingRole] = useState(null); // { membership_id, current_role, name }
   const [branches, setBranches] = useState([]);
   const [branchDialog, setBranchDialog] = useState({ open: false, branch: null });
   const EMPTY_BRANCH = { name: "", gstin: "", state: "Tamil Nadu", state_code: "33", address: "", active: true };
@@ -103,6 +104,13 @@ export default function Settings() {
     } catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
   };
   const delBranch = async (id) => { await api.delete(`/orgs/current/branches/${id}`); toast.success("Deleted"); load(); };
+  const changeRole = async (membership_id, newRole) => {
+    try {
+      await api.patch(`/orgs/current/members/${membership_id}/role`, { role: newRole });
+      toast.success("Role updated"); setChangingRole(null); load();
+    } catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
+  };
+
   const removeMember = async (mid) => {
     try { await api.delete(`/orgs/current/members/${mid}`); toast.success("Removed"); load(); }
     catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
@@ -285,19 +293,27 @@ export default function Settings() {
                 {members.map(u => (
                   <tr key={u.id} data-testid={`member-row-${u.email}`}>
                     <td className="font-medium">{u.name}</td>
-                    <td className="text-muted-foreground">{u.email}</td>
-                    <td><Badge variant={u.role === "owner" ? "default" : "secondary"} className="uppercase text-[10px]">{u.role}</Badge></td>
+                    <td className="text-muted-foreground text-sm">{u.email}</td>
+                    <td>
+                      <Badge variant={u.role === "owner" ? "default" : "secondary"} className="uppercase text-[10px]">{u.role}</Badge>
+                    </td>
                     <td className="text-right">
                       {currentRole === "owner" && u.role !== "owner" && (
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button size="icon" variant="ghost" data-testid={`remove-member-${u.email}`}><Trash2 className="h-4 w-4 text-rose-500" /></Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader><AlertDialogTitle>Remove {u.name}?</AlertDialogTitle><AlertDialogDescription>They'll lose access to {currentOrg?.name}.</AlertDialogDescription></AlertDialogHeader>
-                            <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => removeMember(u.membership_id)}>Remove</AlertDialogAction></AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
+                        <div className="flex items-center justify-end gap-1">
+                          <Button size="icon" variant="ghost" title="Change role"
+                            onClick={() => setChangingRole({ membership_id: u.membership_id, current_role: u.role, name: u.name })}>
+                            <Pencil className="h-4 w-4 text-blue-500" />
+                          </Button>
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button size="icon" variant="ghost" data-testid={`remove-member-${u.email}`}><Trash2 className="h-4 w-4 text-rose-500" /></Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader><AlertDialogTitle>Remove {u.name}?</AlertDialogTitle><AlertDialogDescription>They'll lose access to {currentOrg?.name}.</AlertDialogDescription></AlertDialogHeader>
+                              <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => removeMember(u.membership_id)}>Remove</AlertDialogAction></AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -613,6 +629,13 @@ export default function Settings() {
       </Tabs>
 
       <InviteDialog open={inviteOpen} onClose={() => setInviteOpen(false)} onSaved={load} />
+
+      {/* Change Role Dialog */}
+      <ChangeRoleDialog
+        target={changingRole}
+        onClose={() => setChangingRole(null)}
+        onSave={changeRole}
+      />
     </div>
   );
 }
@@ -662,6 +685,69 @@ function InviteDialog({ open, onClose, onSaved }) {
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button className="bg-blue-600 hover:bg-blue-700" onClick={save} disabled={saving} data-testid="invite-save">
             {saving ? "Adding…" : "Add member"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ChangeRoleDialog({ target, onClose, onSave }) {
+  const [roles, setRoles] = useState([]);
+  const [selectedRole, setSelectedRole] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (target) {
+      api.get("/roles").then(r => setRoles(r.data.filter(x => x.slug !== "owner")));
+      setSelectedRole(target.current_role);
+    }
+  }, [target]);
+
+  const handleSave = async () => {
+    if (!selectedRole || selectedRole === target?.current_role) { onClose(); return; }
+    setSaving(true);
+    await onSave(target.membership_id, selectedRole);
+    setSaving(false);
+  };
+
+  return (
+    <Dialog open={!!target} onOpenChange={onClose}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Change Role — {target?.name}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <div className="space-y-1.5">
+            <Label>New Role</Label>
+            <Select value={selectedRole} onValueChange={setSelectedRole}>
+              <SelectTrigger><SelectValue placeholder="Select role" /></SelectTrigger>
+              <SelectContent>
+                {roles.map(r => (
+                  <SelectItem key={r.slug} value={r.slug}>
+                    <div className="flex flex-col">
+                      <span className="font-medium">{r.name}</span>
+                      {(r.allowed_modes || []).length > 0 && (
+                        <span className="text-[10px] text-muted-foreground">
+                          Locked to: {r.allowed_modes.join(", ")}
+                        </span>
+                      )}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {selectedRole && selectedRole !== target?.current_role && (
+            <div className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 rounded px-3 py-2">
+              Changing from <strong>{target?.current_role}</strong> → <strong>{selectedRole}</strong>. This takes effect on their next login.
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button className="bg-blue-600 hover:bg-blue-700" onClick={handleSave} disabled={saving || selectedRole === target?.current_role}>
+            {saving ? "Saving…" : "Update Role"}
           </Button>
         </DialogFooter>
       </DialogContent>

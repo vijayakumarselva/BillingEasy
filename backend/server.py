@@ -1268,6 +1268,32 @@ async def invite_member(body: InviteIn, request: Request, ctx=Depends(require_pe
     return {"ok": True, "user_id": user["id"]}
 
 
+class MemberRoleIn(BaseModel):
+    role: str
+
+
+@api.patch("/orgs/current/members/{membership_id}/role")
+async def change_member_role(membership_id: str, body: MemberRoleIn, request: Request,
+                              ctx=Depends(require_permission("user.invite"))):
+    m = await db.memberships.find_one({"id": membership_id, "org_id": ctx["org_id"]})
+    if not m:
+        raise HTTPException(404, "Not found")
+    if m["role"] == "owner":
+        raise HTTPException(400, "Cannot change the owner's role")
+    if m["user_id"] == ctx["user"]["id"]:
+        raise HTTPException(400, "Cannot change your own role")
+    # Validate role exists (system or custom)
+    valid_system = list(SYSTEM_ROLES.keys())
+    custom = await db.roles.find_one({"slug": body.role, "org_id": ctx["org_id"]})
+    if body.role not in valid_system and not custom:
+        raise HTTPException(400, f"Role '{body.role}' does not exist")
+    await db.memberships.update_one({"id": membership_id}, {"$set": {"role": body.role}})
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="user.role_changed",
+                    entity_type="user", entity_id=m["user_id"],
+                    metadata={"old_role": m["role"], "new_role": body.role}, request=request)
+    return {"ok": True}
+
+
 @api.delete("/orgs/current/members/{membership_id}")
 async def remove_member(membership_id: str, request: Request, ctx=Depends(require_permission("user.remove"))):
     m = await db.memberships.find_one({"id": membership_id, "org_id": ctx["org_id"]})
