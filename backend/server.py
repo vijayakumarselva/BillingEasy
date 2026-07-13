@@ -1174,7 +1174,9 @@ async def list_my_orgs(user=Depends(get_current_user)):
     for m in memberships:
         org = await db.organizations.find_one({"id": m["org_id"]}, {"_id": 0})
         if org:
-            out.append({**org, "role": m["role"], "subscription": subscription_status_summary(org)})
+            allowed_modes = await resolve_allowed_modes(db, m["role"], m["org_id"])
+            out.append({**org, "role": m["role"], "allowed_modes": allowed_modes,
+                        "subscription": subscription_status_summary(org)})
     return out
 
 
