@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useNavigate, useLocation, Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
@@ -15,6 +15,7 @@ import {
   Receipt, BookOpen, Landmark, Settings, LogOut, Moon, Sun, Building2,
   FileBarChart, ChevronDown, Plus, Bot, Wrench, FileSpreadsheet, Coins, Zap,
   UtensilsCrossed, Scan, SlidersHorizontal, Sparkles, Menu, X, ChevronRight,
+  Home, PlusCircle, MoreHorizontal,
 } from "lucide-react";
 import { STATES } from "@/pages/Parties";
 
@@ -137,9 +138,27 @@ export default function AppLayout() {
     return () => window.removeEventListener("keydown", handler);
   }, [nav]);
 
+  // Close sidebar on route change (mobile)
+  useEffect(() => { setSidebarOpen(false); }, [loc.pathname]);
+
   const handleLogout = async () => { await logout(); nav("/login"); };
 
   const currentPageLabel = ALL_NAV.find(n => loc.pathname === n.to)?.label || "Dashboard";
+
+  // Bottom nav items (5 max — pick most used per mode)
+  const BOTTOM_NAV = [
+    { to: "/dashboard", label: "Home", icon: Home },
+    ...(effectiveMode === "restaurant"
+      ? [{ to: "/restaurant", label: "Orders", icon: UtensilsCrossed }]
+      : effectiveMode === "pos"
+      ? [{ to: "/pos", label: "POS", icon: Scan }]
+      : [{ to: "/sales", label: "Sales", icon: FileText }]
+    ),
+    null, // FAB placeholder
+    { to: "/parties", label: "Parties", icon: Users },
+    { to: "/products", label: "Stock", icon: Package },
+  ];
+  const FAB_ROUTE = effectiveMode === "b2b" || effectiveMode === "b2c" ? "/invoices/new" : null;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -316,7 +335,7 @@ export default function AppLayout() {
 
         {/* Main content */}
         <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto p-3 md:p-4">
+          <div className="flex-1 overflow-y-auto p-3 md:p-4 mobile-main-pad">
             <Outlet />
           </div>
 
@@ -365,6 +384,34 @@ export default function AppLayout() {
           </div>
         </div>
       )}
+
+      {/* ── Mobile Bottom Navigation ── */}
+      <nav className="mobile-bottom-nav">
+        {BOTTOM_NAV.map((item, i) => {
+          if (!item) {
+            // FAB center button
+            return (
+              <div key="fab" className="mobile-bottom-nav-fab">
+                <button className="mobile-bottom-nav-fab-btn" onClick={() => nav("/invoices/new")} aria-label="New Invoice">
+                  <PlusCircle className="h-5 w-5" />
+                </button>
+              </div>
+            );
+          }
+          const isActive = loc.pathname === item.to || loc.pathname.startsWith(item.to + "/");
+          return (
+            <Link key={item.to} to={item.to} className={`mobile-bottom-nav-item ${isActive ? "active" : ""}`}>
+              <item.icon className="h-5 w-5" />
+              <span>{item.label}</span>
+            </Link>
+          );
+        })}
+        {/* More — opens sidebar */}
+        <button className={`mobile-bottom-nav-item ${sidebarOpen ? "active" : ""}`} onClick={() => setSidebarOpen(v => !v)}>
+          <MoreHorizontal className="h-5 w-5" />
+          <span>More</span>
+        </button>
+      </nav>
 
       <CreateOrgDialog open={showCreateOrg} onClose={() => setShowCreateOrg(false)}
         onCreated={async (id) => {
