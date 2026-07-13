@@ -82,7 +82,7 @@ api = APIRouter(prefix="/api")
 @app.get("/health")
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "v": "2.3"}
+    return {"status": "ok", "v": "2.4"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("billeasy")
