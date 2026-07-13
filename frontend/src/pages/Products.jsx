@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Edit, AlertTriangle, QrCode, Upload, Package, RefreshCw, Barcode, DollarSign, Layers } from "lucide-react";
+import { Plus, Search, Trash2, Edit, AlertTriangle, QrCode, Upload, Package, RefreshCw, Barcode, DollarSign, Layers, Camera, Sparkles, Loader2 } from "lucide-react";
 import { inr } from "@/lib/format";
 import HsnSuggestButton from "@/components/HsnSuggestButton";
 import JsBarcode from "jsbarcode";
@@ -191,7 +191,9 @@ export default function Products() {
 function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, genSku }) {
   const inlineBarcodeRef = useRef(null);
   const imageInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
   const [imgDrag, setImgDrag] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
 
   // Render barcode live as SKU changes
   useEffect(() => {
@@ -217,6 +219,33 @@ function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, 
     reader.readAsDataURL(file);
   }, [setForm]);
 
+  const runAiSuggest = async () => {
+    if (!form.name && !form.image_b64) {
+      toast.error("Enter a product name or upload an image first");
+      return;
+    }
+    setAiLoading(true);
+    try {
+      const { data } = await api.post("/ai/product-suggest", {
+        name: form.name,
+        image_b64: form.image_b64,
+      });
+      setForm(prev => ({
+        ...prev,
+        name: data.name || prev.name,
+        category: data.category || prev.category,
+        hsn: data.hsn || prev.hsn,
+        gst_rate: data.gst_rate ?? prev.gst_rate,
+        unit: data.unit || prev.unit,
+      }));
+      toast.success("AI filled in product details");
+    } catch {
+      toast.error("AI suggest failed — try again");
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   const f = (key) => (v) => setForm(prev => ({ ...prev, [key]: v }));
 
   const barcodeVal = form.barcode || form.sku;
@@ -232,8 +261,8 @@ function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, 
           {/* ── Row 1: Image + Core Info ── */}
           <div className="flex gap-4">
             {/* Image Upload */}
-            <div className="flex-shrink-0">
-              <Label className="mb-2 block text-xs text-muted-foreground uppercase tracking-wide">Product Image</Label>
+            <div className="flex-shrink-0 flex flex-col items-center gap-1.5">
+              <Label className="mb-0.5 block text-xs text-muted-foreground uppercase tracking-wide self-start">Product Image</Label>
               <div
                 className={`w-28 h-28 rounded-xl border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-colors relative overflow-hidden
                   ${imgDrag ? "border-blue-400 bg-blue-50 dark:bg-blue-950" : "border-border hover:border-blue-400 hover:bg-muted/30"}`}
@@ -251,11 +280,34 @@ function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, 
                 }
                 <input ref={imageInputRef} type="file" accept="image/*" className="hidden"
                   onChange={(e) => handleImageFile(e.target.files[0])} />
+                {/* Camera capture — mobile only */}
+                <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden"
+                  onChange={(e) => handleImageFile(e.target.files[0])} />
               </div>
-              {form.image_b64 && (
-                <button className="mt-1 text-[10px] text-rose-500 hover:underline w-full text-center"
-                  onClick={() => setForm(f => ({ ...f, image_b64: "" }))}>Remove</button>
-              )}
+
+              {/* Camera + Remove buttons */}
+              <div className="flex gap-1.5 w-full justify-center">
+                <button type="button" title="Take Photo"
+                  onClick={(e) => { e.stopPropagation(); cameraInputRef.current?.click(); }}
+                  className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-border hover:border-blue-400 hover:text-blue-600 text-muted-foreground transition-colors">
+                  <Camera className="h-3 w-3" /> Camera
+                </button>
+                {form.image_b64 && (
+                  <button type="button" className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-rose-200 text-rose-500 hover:bg-rose-50 transition-colors"
+                    onClick={() => setForm(f => ({ ...f, image_b64: "" }))}>Remove</button>
+                )}
+              </div>
+
+              {/* AI Suggest button */}
+              <button type="button" onClick={runAiSuggest} disabled={aiLoading}
+                className="w-full flex items-center justify-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-lg
+                  bg-violet-600 hover:bg-violet-700 text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+                {aiLoading
+                  ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Filling…</>
+                  : <><Sparkles className="h-3.5 w-3.5" /> AI Fill</>
+                }
+              </button>
+              <p className="text-[9px] text-muted-foreground text-center">AI fills name, HSN, GST &amp; unit</p>
             </div>
 
             {/* Name + SKU + Category */}

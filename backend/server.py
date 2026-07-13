@@ -60,7 +60,7 @@ from launch_offer import (
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
-from ai_helpers import ai_chat_stream, ai_hsn_suggest, ai_categorize_expense
+from ai_helpers import ai_chat_stream, ai_hsn_suggest, ai_categorize_expense, ai_product_suggest
 
 # ---------------- Setup ----------------
 MONGO_URL = os.environ["MONGO_URL"]
@@ -1432,6 +1432,23 @@ async def ai_hsn_finder(body: AiHsnIn, ctx=Depends(get_org_ctx)):
         logger.warning("AI HSN suggest failed: %s", exc)
         ai = {"error": "ai_unavailable", "message": str(exc)}
     return {"query": desc, "bundled_matches": bundled, "ai_suggestion": ai}
+
+
+class AiProductSuggestIn(BaseModel):
+    name: str = ""
+    image_b64: str = ""
+
+
+@api.post("/ai/product-suggest")
+async def ai_product_suggest_endpoint(body: AiProductSuggestIn, ctx=Depends(get_org_ctx)):
+    if not body.name and not body.image_b64:
+        raise HTTPException(400, "Provide product name or image")
+    try:
+        result = await ai_product_suggest(name=body.name, image_b64=body.image_b64)
+    except Exception as exc:
+        logger.warning("AI product suggest failed: %s", exc)
+        raise HTTPException(503, f"AI service unavailable: {exc}")
+    return result
 
 
 class AiCategorizeIn(BaseModel):

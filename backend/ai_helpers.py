@@ -119,6 +119,59 @@ async def ai_categorize_expense(description: str, amount: Optional[float] = None
     return _parse_json(msg.content[0].text)
 
 
+PRODUCT_SUGGEST_SYSTEM = """You are an expert Indian product cataloguer and GST consultant.
+Given either a product image, a product name, or both, return structured product details.
+
+ALWAYS respond with a JSON object of this exact shape and nothing else:
+{
+  "name": "clean product name (e.g. 'Basmati Rice 1kg')",
+  "category": "product category (e.g. 'Groceries', 'Electronics', 'Clothing', 'Stationery')",
+  "hsn": "4-8 digit HSN code (e.g. '1006')",
+  "gst_rate": number (one of 0, 5, 12, 18, 28),
+  "unit": "standard unit (e.g. 'KGS', 'NOS', 'PCS', 'LTR', 'MTR', 'BOX')",
+  "brand": "brand name if visible or known, else empty string",
+  "confidence": number (0.0-1.0)
+}
+If unsure about a field, set it to a reasonable default. Always return valid JSON.
+"""
+
+
+async def ai_product_suggest(*, name: str = "", image_b64: str = "") -> Dict[str, Any]:
+    """Suggest product fields from image and/or name using Claude vision."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return {"error": "ANTHROPIC_API_KEY not configured"}
+
+    client = anthropic.AsyncAnthropic(api_key=key)
+    content: list = []
+
+    if image_b64:
+        # Strip data-URI prefix if present
+        if "," in image_b64:
+            media_type_part, data = image_b64.split(",", 1)
+            media_type = media_type_part.split(":")[1].split(";")[0] if ":" in media_type_part else "image/jpeg"
+        else:
+            data = image_b64
+            media_type = "image/jpeg"
+
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        })
+
+    user_text = f"Product: {name}" if name else "Identify this product from the image."
+    user_text += "\n\nReturn ONLY the JSON object."
+    content.append({"type": "text", "text": user_text})
+
+    msg = await client.messages.create(
+        model=MODEL_NAME,
+        max_tokens=512,
+        system=PRODUCT_SUGGEST_SYSTEM,
+        messages=[{"role": "user", "content": content}],
+    )
+    return _parse_json(msg.content[0].text)
+
+
 _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
 
 
