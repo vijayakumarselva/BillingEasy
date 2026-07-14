@@ -22,10 +22,15 @@ export default function Login() {
 
   const goToDashboard = async () => {
     try {
-      const me = await (await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/auth/me`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("be_token")}` }
-      })).json();
+      const token = localStorage.getItem("be_token");
+      const base = process.env.REACT_APP_BACKEND_URL;
+      const me = await (await fetch(`${base}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })).json();
       if (me?.is_super_admin) { window.location.href = "/super"; return; }
+      // Check role — POS staff go to fullscreen POS, no sidebar
+      const orgs = await (await fetch(`${base}/api/orgs`, { headers: { Authorization: `Bearer ${token}` } })).json();
+      const orgId = localStorage.getItem("be_org_id");
+      const org = Array.isArray(orgs) ? orgs.find(o => o.id === orgId) || orgs[0] : null;
+      if (org?.role === "pos-staff") { toast.success("Welcome!"); nav("/pos-screen"); return; }
     } catch {}
     toast.success("Welcome back!");
     nav("/dashboard");

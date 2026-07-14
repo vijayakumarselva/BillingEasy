@@ -244,7 +244,9 @@ export default function RetailPOS() {
       <Input
         value={selectedCustomer ? selectedCustomer.name : customerSearch}
         onChange={e => { setCustomerSearch(e.target.value); setSelectedCustomer(null); setCustomerId(null); setShowCustomerDD(true); }}
-        onFocus={() => setShowCustomerDD(true)}
+        onFocus={() => { setShowCustomerDD(true); }}
+        onClick={() => { if (!selectedCustomer) setShowCustomerDD(true); }}
+        readOnly={!!selectedCustomer}
         placeholder="Walk-in customer (optional)"
         className="pl-8 pr-8 h-10 text-sm"
       />

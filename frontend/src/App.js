@@ -50,6 +50,22 @@ function Protected({ children }) {
   return children;
 }
 
+// POS staff get a fullscreen POS with no sidebar/dashboard
+function POSStaffRoute({ children }) {
+  const { user, loading, currentRole } = useAuth();
+  if (loading) return <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading…</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  if (currentRole === "pos-staff") return <Navigate to="/pos-screen" replace />;
+  return children;
+}
+
+function POSOnlyRoute({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading…</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  return children;
+}
+
 function SuperOnly({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading…</div>;
@@ -105,7 +121,9 @@ export default function App() {
             <Route path="/quick-upload" element={<QuickUpload />} />
             <Route path="/super" element={<SuperOnly><SuperAdmin /></SuperOnly>} />
             <Route path="/billing/mock-checkout" element={<Protected><MockCheckout /></Protected>} />
-            <Route element={<Protected><AppLayout /></Protected>}>
+            {/* Fullscreen POS for pos-staff — no sidebar */}
+            <Route path="/pos-screen" element={<POSOnlyRoute><RetailPOS /></POSOnlyRoute>} />
+            <Route element={<POSStaffRoute><AppLayout /></POSStaffRoute>}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/ask-ai" element={<AskAi />} />
               <Route path="/tools" element={<Tools />} />
