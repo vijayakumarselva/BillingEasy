@@ -116,6 +116,14 @@ export default function Settings() {
     catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
   };
 
+  const [resetResult, setResetResult] = useState(null);
+  const resetPassword = async (mid) => {
+    try {
+      const { data } = await api.post(`/orgs/current/members/${mid}/reset-password`);
+      setResetResult(data);
+    } catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
+  };
+
   return (
     <div className="space-y-6" data-testid="settings-page">
       <div>
@@ -332,6 +340,11 @@ export default function Settings() {
                     <td className="text-right">
                       {currentRole === "owner" && u.role !== "owner" && (
                         <div className="flex items-center justify-end gap-1">
+                          <Button size="sm" variant="outline" title="Generate new password"
+                            onClick={() => resetPassword(u.membership_id)}
+                            className="text-xs h-7 px-2 text-amber-600 border-amber-300 hover:bg-amber-50">
+                            <KeyRound className="h-3 w-3 mr-1" /> Reset Password
+                          </Button>
                           <Button size="icon" variant="ghost" title="Change role"
                             onClick={() => setChangingRole({ membership_id: u.membership_id, current_role: u.role, name: u.name })}>
                             <Pencil className="h-4 w-4 text-blue-500" />
@@ -668,6 +681,41 @@ export default function Settings() {
         onClose={() => setChangingRole(null)}
         onSave={changeRole}
       />
+
+      {/* Reset Password Result Dialog */}
+      <Dialog open={!!resetResult} onOpenChange={() => setResetResult(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <KeyRound className="h-5 w-5 text-amber-500" /> Password Reset
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              New temporary password generated for <span className="font-semibold text-foreground">{resetResult?.name}</span>. Share it with them securely — they should change it after login.
+            </p>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between rounded-lg border bg-muted px-3 py-2">
+                <span className="text-xs text-muted-foreground">Email</span>
+                <span className="font-mono text-sm font-semibold">{resetResult?.email}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700 px-3 py-3">
+                <span className="text-xs text-amber-700 dark:text-amber-400">Temp Password</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-base font-bold text-amber-800 dark:text-amber-200 tracking-widest">{resetResult?.temp_password}</span>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(resetResult?.temp_password || ""); toast.success("Copied!"); }}
+                    className="text-xs bg-amber-600 text-white px-2 py-0.5 rounded hover:bg-amber-700">
+                    Copy
+                  </button>
+                </div>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">This password is shown only once. Generate a new one if needed.</p>
+          </div>
+          <Button onClick={() => setResetResult(null)} className="w-full">Done</Button>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

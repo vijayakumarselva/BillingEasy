@@ -1337,6 +1337,34 @@ async def remove_member(membership_id: str, request: Request, ctx=Depends(requir
     return {"ok": True}
 
 
+@api.post("/orgs/current/members/{membership_id}/reset-password")
+async def admin_reset_password(membership_id: str, ctx=Depends(get_org_ctx)):
+    """Owner can generate a new temporary password for any member in their org."""
+    if ctx["role"] != "owner":
+        raise HTTPException(403, "Only the org owner can reset member passwords")
+    m = await db.memberships.find_one({"id": membership_id, "org_id": ctx["org_id"]})
+    if not m:
+        raise HTTPException(404, "Member not found")
+    if m["role"] == "owner":
+        raise HTTPException(400, "Cannot reset owner password via this endpoint")
+    # Generate a random 10-char password: 2 upper + 2 digits + 6 lower
+    import random, string
+    chars = string.ascii_lowercase
+    uppers = string.ascii_uppercase
+    digits = string.digits
+    pwd = (
+        "".join(random.choices(uppers, k=2)) +
+        "".join(random.choices(digits, k=2)) +
+        "".join(random.choices(chars, k=6))
+    )
+    # Shuffle so uppers/digits aren't always first
+    pwd_list = list(pwd); random.shuffle(pwd_list); pwd = "".join(pwd_list)
+    hashed = hash_password(pwd)
+    await db.users.update_one({"id": m["user_id"]}, {"$set": {"password_hash": hashed}})
+    user = await db.users.find_one({"id": m["user_id"]}, {"_id": 0, "email": 1, "name": 1})
+    return {"ok": True, "email": user.get("email"), "name": user.get("name"), "temp_password": pwd}
+
+
 # ---------------- BILLING (Cashfree, MOCKED) ----------------
 @api.get("/billing/plans")
 async def get_plans():
