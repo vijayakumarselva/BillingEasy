@@ -155,7 +155,7 @@ export default function RetailPOS() {
     const q = search.trim().toLowerCase();
     if (!q) return;
     const product = products.find(
-      p => p.barcode?.toLowerCase() === q || p.sku?.toLowerCase() === q
+      p => p.upc === q || p.barcode?.toLowerCase() === q || p.sku?.toLowerCase() === q
     );
     if (product) {
       addToCart(product);

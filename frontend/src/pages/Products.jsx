@@ -23,7 +23,7 @@ const ALL_MODES = [
 ];
 
 const empty = {
-  name: "", sku: "", hsn: "", unit: "NOS", category: "General",
+  name: "", sku: "", hsn: "", unit: "NOS", category: "General", upc: "",
   purchase_price: 0, sale_price: 0, gst_rate: 18, stock: 0, low_stock_alert: 5,
   barcode: "", modes: ["b2b", "b2c", "restaurant", "pos"], image_b64: "",
 };
@@ -419,17 +419,29 @@ function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, 
           {/* ── Section: Barcode ── */}
           <div className="rounded-lg border p-4 space-y-3">
             <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground mb-1">
-              <Barcode className="h-4 w-4" /> Barcode
+              <Barcode className="h-4 w-4" /> Barcode & UPC
             </div>
             <div className="grid sm:grid-cols-2 gap-4 items-center">
-              <div className="space-y-1.5">
-                <Label>Barcode Value</Label>
-                <div className="flex gap-2">
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label>Barcode Value</Label>
                   <Input value={form.barcode} onChange={(e) => f("barcode")(e.target.value)}
                     placeholder={`Leave empty to use SKU (${form.sku})`} className="font-mono text-sm"
                     data-testid="product-barcode-input" />
+                  <p className="text-[10px] text-muted-foreground">Leave empty to auto-use the SKU as barcode</p>
                 </div>
-                <p className="text-[10px] text-muted-foreground">Leave empty to auto-use the SKU as barcode</p>
+                <div className="space-y-1.5">
+                  <Label className="flex items-center gap-1.5">
+                    UPC
+                    <span className="text-[10px] bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-semibold">POS</span>
+                  </Label>
+                  <Input value={form.upc || ""} onChange={(e) => f("upc")(e.target.value)}
+                    placeholder="e.g. 872347848472 (12 digits)"
+                    className="font-mono text-sm"
+                    maxLength={14}
+                    data-testid="product-upc-input" />
+                  <p className="text-[10px] text-muted-foreground">Universal Product Code — used for POS barcode scanning</p>
+                </div>
               </div>
               <div className="h-20 flex items-center justify-center overflow-hidden rounded bg-white dark:bg-zinc-900 border border-dashed border-border">
                 {barcodeVal
