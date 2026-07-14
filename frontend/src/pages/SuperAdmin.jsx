@@ -126,9 +126,10 @@ export default function SuperAdmin() {
                     <td className="num">{o.usage.invoices_this_month}</td>
                     <td className="text-xs text-muted-foreground">{fmtDate(o.subscription.current_period_end || o.subscription.trial_ends_at)}</td>
                     <td className="text-right whitespace-nowrap">
-                      {o.subscription_status === "suspended" ? (
-                        <Button size="sm" variant="outline" onClick={() => activate(o.id)} data-testid={`activate-org-${o.name}`}><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Activate</Button>
-                      ) : (
+                      {o.subscription_status !== "active" && (
+                        <Button size="sm" variant="outline" className="text-green-700 border-green-400 hover:bg-green-50 mr-1" onClick={() => activate(o.id)} data-testid={`activate-org-${o.name}`}><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Activate</Button>
+                      )}
+                      {o.subscription_status !== "suspended" && (
                         <Button size="sm" variant="outline" onClick={() => suspend(o.id)} data-testid={`suspend-org-${o.name}`}><Ban className="h-3.5 w-3.5 mr-1" /> Suspend</Button>
                       )}
                       <AlertDialog>
