@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Edit, AlertTriangle, QrCode, Upload, Package, RefreshCw, Barcode, DollarSign, Layers, Camera, Sparkles, Loader2 } from "lucide-react";
+import { Plus, Search, Trash2, Edit, AlertTriangle, QrCode, Upload, Package, RefreshCw, Barcode, DollarSign, Layers, Camera, Sparkles, Loader2, Download } from "lucide-react";
 import { inr } from "@/lib/format";
 import HsnSuggestButton from "@/components/HsnSuggestButton";
 import JsBarcode from "jsbarcode";
@@ -46,7 +46,19 @@ export default function Products() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [search, modeFilter]);
 
   const genSku = () => `PRD-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-  const startCreate = () => { setForm({ ...empty, sku: genSku() }); setEditId(null); setOpen(true); };
+
+  // GS1 India UPC-A: prefix 890 (India) + 8 random digits + check digit = 12 digits
+  const genUPC = () => {
+    const prefix = "890";
+    const rand = Math.floor(Math.random() * 99999999).toString().padStart(8, "0");
+    const digits = prefix + rand; // 11 digits
+    let sum = 0;
+    for (let i = 0; i < 11; i++) sum += parseInt(digits[i]) * (i % 2 === 0 ? 3 : 1);
+    const check = (10 - (sum % 10)) % 10;
+    return digits + check;
+  };
+
+  const startCreate = () => { setForm({ ...empty, sku: genSku(), upc: genUPC() }); setEditId(null); setOpen(true); };
   const startEdit = (p) => { setForm({ ...empty, ...p }); setEditId(p.id); setOpen(true); };
   const save = async () => {
     try {
@@ -89,6 +101,29 @@ export default function Products() {
       a.href = canvas.toDataURL(); a.click();
     };
     img.src = "data:image/svg+xml;base64," + btoa(data);
+  };
+
+  const downloadUPC = (p) => {
+    if (!p.upc || p.upc.length < 12) { toast.error("No valid UPC on this product"); return; }
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    try {
+      JsBarcode(svg, p.upc, { format: "upc", width: 2, height: 80, displayValue: true, fontSize: 14, margin: 10 });
+    } catch {
+      toast.error("Invalid UPC — cannot generate barcode"); return;
+    }
+    const data = new XMLSerializer().serializeToString(svg);
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = img.width || 200; canvas.height = img.height || 120;
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      const a = document.createElement("a");
+      a.download = `upc-${p.name.replace(/\s+/g, "-")}.png`;
+      a.href = canvas.toDataURL("image/png"); a.click();
+    };
+    img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(data)));
   };
 
   return (
@@ -162,6 +197,7 @@ export default function Products() {
                     </td>
                     <td className="text-right">
                       <Button size="icon" variant="ghost" onClick={() => setBarcodeProduct(p)} title="Show Barcode"><QrCode className="h-4 w-4" /></Button>
+                      {p.upc && <Button size="icon" variant="ghost" onClick={() => downloadUPC(p)} title="Download UPC barcode (GS1)"><Download className="h-4 w-4 text-indigo-500" /></Button>}
                       <Button size="icon" variant="ghost" onClick={() => startEdit(p)} data-testid={`product-edit-${p.name}`}><Edit className="h-4 w-4" /></Button>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
@@ -182,13 +218,13 @@ export default function Products() {
 
       <BarcodeDialog product={barcodeProduct} svgRef={barcodeDialogRef} onClose={() => setBarcodeProduct(null)} onPrint={printBarcode} onDownload={downloadPng} />
 
-      <ProductFormDialog open={open} onOpenChange={setOpen} form={form} setForm={setForm} editId={editId} onSave={save} genSku={genSku} />
+      <ProductFormDialog open={open} onOpenChange={setOpen} form={form} setForm={setForm} editId={editId} onSave={save} genSku={genSku} genUPC={genUPC} />
     </div>
   );
 }
 
 /* ─── Advanced Product Form Dialog ─── */
-function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, genSku }) {
+function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, genSku, genUPC }) {
   const inlineBarcodeRef = useRef(null);
   const imageInputRef = useRef(null);
   const cameraInputRef = useRef(null);
@@ -431,23 +467,33 @@ function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, 
                   <p className="text-[10px] text-muted-foreground">Leave empty to auto-use the SKU as barcode</p>
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="flex items-center gap-1.5">
-                    UPC
-                    <span className="text-[10px] bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-semibold">POS</span>
+                  <Label className="flex items-center justify-between gap-1.5">
+                    <span className="flex items-center gap-1.5">
+                      UPC
+                      <span className="text-[10px] bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-semibold">POS</span>
+                    </span>
+                    <button type="button" title="Auto-generate GS1 India UPC"
+                      onClick={() => setForm(prev => ({ ...prev, upc: genUPC() }))}
+                      className="text-indigo-500 hover:text-indigo-700">
+                      <RefreshCw className="h-3 w-3" />
+                    </button>
                   </Label>
                   <Input value={form.upc || ""} onChange={(e) => f("upc")(e.target.value)}
                     placeholder="e.g. 872347848472 (12 digits)"
                     className="font-mono text-sm"
                     maxLength={14}
                     data-testid="product-upc-input" />
-                  <p className="text-[10px] text-muted-foreground">Universal Product Code — used for POS barcode scanning</p>
+                  <p className="text-[10px] text-muted-foreground">GS1 India UPC-A (890 prefix) — for POS scanning & product packaging</p>
                 </div>
               </div>
-              <div className="h-20 flex items-center justify-center overflow-hidden rounded bg-white dark:bg-zinc-900 border border-dashed border-border">
-                {barcodeVal
-                  ? <svg ref={inlineBarcodeRef} className="max-w-full max-h-full" />
-                  : <span className="text-xs text-muted-foreground">Enter a SKU to preview</span>
-                }
+              <div className="space-y-2">
+                <div className="h-16 flex items-center justify-center overflow-hidden rounded bg-white dark:bg-zinc-900 border border-dashed border-border">
+                  {barcodeVal
+                    ? <svg ref={inlineBarcodeRef} className="max-w-full max-h-full" />
+                    : <span className="text-xs text-muted-foreground">Enter a SKU to preview</span>
+                  }
+                </div>
+                <UpcPreview upc={form.upc} />
               </div>
             </div>
           </div>
@@ -486,6 +532,26 @@ function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, 
 }
 
 /* ─── Barcode View Dialog ─── */
+/* ─── UPC barcode inline preview ─── */
+function UpcPreview({ upc }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    if (!upc || upc.length < 12) { ref.current.innerHTML = ""; return; }
+    try {
+      JsBarcode(ref.current, upc, { format: "upc", width: 1.5, height: 40, displayValue: true, fontSize: 10, margin: 4 });
+    } catch { ref.current.innerHTML = ""; }
+  }, [upc]);
+
+  if (!upc || upc.length < 12) return null;
+  return (
+    <div className="h-16 flex flex-col items-center justify-center overflow-hidden rounded bg-white dark:bg-zinc-900 border border-dashed border-indigo-300 dark:border-indigo-700">
+      <svg ref={ref} className="max-w-full max-h-full" />
+      <span className="text-[9px] text-indigo-500 font-medium -mt-1">UPC-A preview</span>
+    </div>
+  );
+}
+
 function BarcodeDialog({ product, svgRef, onClose, onPrint, onDownload }) {
   const sku = product?.sku || "";
   useEffect(() => {
