@@ -315,6 +315,7 @@ class OrgUpdateIn(BaseModel):
     email: str = ""
     logo_url: str = ""
     logo_b64: str = ""          # base64 encoded logo stored in DB
+    upi_qr_b64: str = ""        # base64 encoded UPI QR image for POS payments
     bank_name: str = ""
     bank_account: str = ""
     bank_ifsc: str = ""
@@ -2174,8 +2175,12 @@ async def list_invoices(status: Optional[str] = None, type: Optional[str] = None
 
 async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
     biz = await get_org_doc(ctx["org_id"])
-    party = await db.parties.find_one(org_filter(ctx, {"id": body.party_id}), {"_id": 0})
-    if not party: raise HTTPException(400, "Party not found")
+    party = None
+    if body.party_id:
+        party = await db.parties.find_one(org_filter(ctx, {"id": body.party_id}), {"_id": 0})
+        if not party: raise HTTPException(400, "Party not found")
+    if not party:
+        party = {"id": "", "name": "Walk-in Customer", "phone": "", "state_code": "33"}
     # Resolve branch — if branch_id given, use that branch's state for GST determination
     branch = None
     seller_state_code = biz.get("state_code", "33")

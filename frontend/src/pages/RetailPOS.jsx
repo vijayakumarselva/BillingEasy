@@ -41,6 +41,8 @@ export default function RetailPOS() {
   const [paymentModal, setPaymentModal] = useState(false);
   const [billing, setBilling] = useState(false);
   const [cashTendered, setCashTendered] = useState("");
+  const [addCustomerModal, setAddCustomerModal] = useState(false);
+  const [newCustomer, setNewCustomer] = useState({ name: "", phone: "" });
 
   const scanRef = useRef(null);
   const customerDDRef = useRef(null);
@@ -191,7 +193,12 @@ export default function RetailPOS() {
       setPaymentModal(false);
       setReceiptDialog({ open: true, invoice: res.data, paymentMethod });
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Billing failed");
+      console.error("Billing 422 detail:", JSON.stringify(err?.response?.data));
+      const detail = err?.response?.data?.detail;
+      const msg = Array.isArray(detail)
+        ? detail.map(d => d.msg + " @ " + (d.loc||[]).join(".")).join("; ")
+        : (typeof detail === "string" ? detail : err?.response?.data?.message || "Billing failed");
+      toast.error(msg);
     } finally {
       setBilling(false);
     }
@@ -210,6 +217,17 @@ export default function RetailPOS() {
       h2{margin:0;font-size:16px}p{margin:2px 0}
     </style></head><body>${el.innerHTML}<script>window.onload=()=>{window.print();window.close();}<\/script></body></html>`);
     win.document.close();
+  }
+
+  async function saveNewCustomer() {
+    if (!newCustomer.name.trim()) { toast.error("Name required"); return; }
+    try {
+      const { data } = await api.post("/parties", { name: newCustomer.name, phone: newCustomer.phone, role: "customer", type: "individual", opening_balance: 0 });
+      setCustomers(prev => [...prev, data]);
+      setSelectedCustomer(data); setCustomerId(data.id);
+      setCustomerSearch(""); setAddCustomerModal(false); setNewCustomer({ name: "", phone: "" });
+      toast.success("Customer added");
+    } catch { toast.error("Failed to add customer"); }
   }
 
   function newSale() {
@@ -237,7 +255,7 @@ export default function RetailPOS() {
         </button>
       )}
       {!selectedCustomer && <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 w-3.5 h-3.5 pointer-events-none" />}
-      {showCustomerDD && filteredCustomers.length > 0 && !selectedCustomer && (
+      {showCustomerDD && !selectedCustomer && (
         <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
           {filteredCustomers.map(c => (
             <button key={c.id}
@@ -249,6 +267,11 @@ export default function RetailPOS() {
               </div>
             </button>
           ))}
+          <button
+            onClick={() => { setNewCustomer({ name: customerSearch, phone: "" }); setAddCustomerModal(true); setShowCustomerDD(false); }}
+            className="w-full text-left px-3 py-2.5 text-sm text-indigo-600 font-semibold hover:bg-indigo-50 flex items-center gap-2">
+            <Plus className="w-3.5 h-3.5" /> Add "{customerSearch || "new customer"}"
+          </button>
         </div>
       )}
     </div>
@@ -588,6 +611,31 @@ export default function RetailPOS() {
                   {billing ? "Processing…" : "Confirm UPI"}
                 </Button>
               </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── ADD CUSTOMER MODAL ── */}
+      <Dialog open={addCustomerModal} onOpenChange={setAddCustomerModal}>
+        <DialogContent className="max-w-sm mx-4">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><User className="w-4 h-4" /> Add Customer</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 pt-1">
+            <div>
+              <label className="text-sm font-medium mb-1 block">Name *</label>
+              <Input value={newCustomer.name} onChange={e => setNewCustomer(p => ({ ...p, name: e.target.value }))}
+                placeholder="Customer name" autoFocus />
+            </div>
+            <div>
+              <label className="text-sm font-medium mb-1 block">Phone <span className="text-gray-400 font-normal">(optional)</span></label>
+              <Input value={newCustomer.phone} onChange={e => setNewCustomer(p => ({ ...p, phone: e.target.value }))}
+                placeholder="e.g. 9876543210" type="tel" />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" onClick={() => setAddCustomerModal(false)} className="flex-1">Cancel</Button>
+              <Button onClick={saveNewCustomer} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white">Add & Select</Button>
             </div>
           </div>
         </DialogContent>
