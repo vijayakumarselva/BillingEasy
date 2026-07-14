@@ -166,6 +166,38 @@ export default function Settings() {
                 <Label>Invoice Terms & Conditions</Label>
                 <Textarea value={biz.terms} onChange={(e) => setBiz({ ...biz, terms: e.target.value })} rows={3} data-testid="set-biz-terms" />
               </div>
+              {/* UPI QR for POS payments */}
+              <div className="sm:col-span-2 space-y-2">
+                <Label className="flex items-center gap-2">
+                  UPI Payment QR Code
+                  <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-semibold">POS</span>
+                </Label>
+                {biz.upi_qr_b64 ? (
+                  <div className="flex items-center gap-4 p-3 rounded-lg border bg-muted/30">
+                    <img src={biz.upi_qr_b64} alt="UPI QR" className="w-20 h-20 rounded-lg object-contain bg-white border" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">UPI QR uploaded</p>
+                      <p className="text-xs text-muted-foreground">Shown to customers during POS online payment</p>
+                    </div>
+                    <Button size="sm" variant="ghost" onClick={() => setBiz(b => ({ ...b, upi_qr_b64: "" }))} className="text-rose-500 shrink-0">
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <DropZone
+                    accept="image/*"
+                    onFile={(file) => {
+                      if (!file.type.startsWith("image/")) return;
+                      const reader = new FileReader();
+                      reader.onload = (e) => setBiz(b => ({ ...b, upi_qr_b64: e.target.result }));
+                      reader.readAsDataURL(file);
+                    }}
+                    label="Click or drag & drop your UPI QR image"
+                    hint="Screenshot from PhonePe, GPay, Paytm etc. — max 2 MB"
+                    icon={Upload}
+                  />
+                )}
+              </div>
             </div>
             <Button onClick={saveBiz} className="bg-blue-600 hover:bg-blue-700" disabled={currentRole !== "owner"} data-testid="set-biz-save">Save Business</Button>
             {currentRole !== "owner" && <div className="text-xs text-muted-foreground">Only the owner can edit business profile.</div>}
