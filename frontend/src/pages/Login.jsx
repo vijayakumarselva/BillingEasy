@@ -43,7 +43,11 @@ export default function Login() {
       await login(email, password);
       await goToDashboard();
     } catch (err) {
-      toast.error(formatApiErrorDetail(err?.response?.data?.detail) || "Invalid email or password");
+      const detail = err?.response?.data?.detail;
+      const status = err?.response?.status;
+      if (status === 401 || detail === "Invalid credentials") toast.error("Wrong email or password. Please try again.");
+      else if (status === 429) toast.error("Too many attempts. Wait 15 minutes and try again.");
+      else toast.error(detail || "Cannot reach server. Check your internet connection.");
     } finally { setLoading(false); }
   };
 
