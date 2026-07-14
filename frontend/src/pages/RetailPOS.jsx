@@ -164,19 +164,26 @@ export default function RetailPOS() {
     if (cart.length === 0) { toast.error("Cart is empty"); return; }
     setBilling(true);
     try {
+      // Spread discount evenly across items as discount_pct
+      const subtotal = cart.reduce((s, c) => s + c.qty * c.price, 0);
       const payload = {
-        party_id: customerId || null,
-        date: todayISO(), due_date: todayISO(),
+        party_id: customerId || "",
+        invoice_date: todayISO(),
+        due_date: todayISO(),
         notes: `POS sale — ${paymentMethod === "cash" ? "Cash" : "UPI/Online"}`,
-        discount: Math.round(totals.discountAmt * 100) / 100,
-        payment_method: paymentMethod,
+        type: "sale",
+        status: "finalized",
         items: cart.map(c => ({
-          product_id: c.product.id,
-          description: c.product.name,
+          product_id: c.product.id || "",
+          name: c.product.name,
+          hsn: c.product.hsn || "",
           qty: c.qty,
-          unit: c.product.unit || "Nos",
-          price: c.price,
-          tax_rate: c.product.gst_rate || c.product.tax_rate || 18,
+          unit: c.product.unit || "NOS",
+          rate: c.price,
+          gst_rate: c.product.gst_rate ?? c.product.tax_rate ?? 18,
+          discount_pct: subtotal > 0 && totals.discountAmt > 0
+            ? Math.min(((totals.discountAmt / subtotal) * 100), 100)
+            : 0,
         })),
       };
       const res = await api.post("/invoices", payload);
