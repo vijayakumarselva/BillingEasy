@@ -318,6 +318,23 @@ body {
   padding-right: env(safe-area-inset-right, 0px);
 }
 
+/* ── Mobile typography & touch optimizations ── */
+@media (max-width: 767px) {
+  html { font-size: 16px; }
+
+  /* Prevent iOS auto-zoom on input focus */
+  input, select, textarea { font-size: 16px !important; }
+
+  /* Bigger base text */
+  p, span, div, li { line-height: 1.55; }
+
+  /* Minimum tap target size */
+  button, a[role="button"], [role="button"] { min-height: 44px; }
+
+  /* Better card padding on mobile */
+  .mobile-main-pad { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px)); }
+}
+
 /* ── Bottom function-key bar (like Tally's F-key strip) ── */
 .fkey-bar {
   display: flex;

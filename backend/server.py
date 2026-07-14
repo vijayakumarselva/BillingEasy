@@ -196,6 +196,10 @@ async def get_org_ctx(request: Request, user=Depends(get_current_user)) -> dict:
     perms = await resolve_permissions(db, membership["role"], org_id)
     allowed_modes = await resolve_allowed_modes(db, membership["role"], org_id)
     biz_type = request.headers.get("X-Biz-Type") or None
+    # Server-side enforcement: if role is locked to specific modes, force biz_type
+    if allowed_modes:
+        if not biz_type or biz_type not in allowed_modes:
+            biz_type = allowed_modes[0]
     return {"user": user, "org_id": org_id, "role": membership["role"], "permissions": perms,
             "allowed_modes": allowed_modes, "biz_type": biz_type, "request": request}
 
