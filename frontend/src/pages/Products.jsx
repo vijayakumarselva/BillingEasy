@@ -500,48 +500,55 @@ function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, 
             </div>
           </div>
 
-          {/* ── Section: Barcode ── */}
-          <div className="rounded-lg border p-4 space-y-3">
-            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground mb-1">
+          {/* ── Section: Barcode & UPC ── */}
+          <div className="rounded-lg border p-4 space-y-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
               <Barcode className="h-4 w-4" /> Barcode & UPC
             </div>
-            <div className="grid sm:grid-cols-2 gap-4 items-center">
-              <div className="space-y-3">
-                <div className="space-y-1.5">
-                  <Label>Barcode Value</Label>
-                  <Input value={form.barcode} onChange={(e) => f("barcode")(e.target.value)}
-                    placeholder={`Leave empty to use SKU (${form.sku})`} className="font-mono text-sm"
-                    data-testid="product-barcode-input" />
-                  <p className="text-[10px] text-muted-foreground">Leave empty to auto-use the SKU as barcode</p>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="flex items-center justify-between gap-1.5">
-                    <span className="flex items-center gap-1.5">
-                      UPC
-                      <span className="text-[10px] bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-semibold">POS</span>
-                    </span>
-                    <button type="button" title="Auto-generate GS1 India UPC"
-                      onClick={() => setForm(prev => ({ ...prev, upc: genUPC() }))}
-                      className="text-indigo-500 hover:text-indigo-700">
-                      <RefreshCw className="h-3 w-3" />
-                    </button>
-                  </Label>
-                  <Input value={form.upc || ""} onChange={(e) => f("upc")(e.target.value)}
-                    placeholder="e.g. 872347848472 (12 digits)"
-                    className="font-mono text-sm"
-                    maxLength={14}
-                    data-testid="product-upc-input" />
-                  <p className="text-[10px] text-muted-foreground">GS1 India UPC-A (890 prefix) — for POS scanning & product packaging</p>
-                </div>
+
+            {/* UPC row — always visible, prominent */}
+            <div className="grid sm:grid-cols-2 gap-4 items-start">
+              <div className="space-y-1.5">
+                <Label className="flex items-center justify-between gap-1.5">
+                  <span className="flex items-center gap-1.5">
+                    UPC Code
+                    <span className="text-[10px] bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-semibold">POS</span>
+                  </span>
+                  <button type="button" title="Auto-generate GS1 India UPC"
+                    onClick={() => setForm(prev => ({ ...prev, upc: genUPC() }))}
+                    className="flex items-center gap-1 text-xs text-indigo-500 hover:text-indigo-700 font-medium">
+                    <RefreshCw className="h-3 w-3" /> Generate
+                  </button>
+                </Label>
+                <Input value={form.upc || ""} onChange={(e) => f("upc")(e.target.value)}
+                  placeholder="Auto-generated (click Generate →)"
+                  className="font-mono text-sm"
+                  maxLength={14}
+                  data-testid="product-upc-input" />
+                <p className="text-[10px] text-muted-foreground">GS1 India UPC-A (890 prefix) · 12 digits · for POS scanning</p>
               </div>
-              <div className="space-y-2">
-                <div className="h-16 flex items-center justify-center overflow-hidden rounded bg-white dark:bg-zinc-900 border border-dashed border-border">
-                  {barcodeVal
-                    ? <svg ref={inlineBarcodeRef} className="max-w-full max-h-full" />
-                    : <span className="text-xs text-muted-foreground">Enter a SKU to preview</span>
-                  }
-                </div>
-                <UpcPreview upc={form.upc} />
+              <div className="rounded bg-white dark:bg-zinc-900 border border-dashed border-indigo-300 dark:border-indigo-700 flex flex-col items-center justify-center min-h-[64px] overflow-hidden">
+                {form.upc && form.upc.length >= 12
+                  ? <UpcPreview upc={form.upc} />
+                  : <span className="text-xs text-muted-foreground py-4">UPC barcode preview</span>
+                }
+              </div>
+            </div>
+
+            {/* Barcode / SKU row */}
+            <div className="grid sm:grid-cols-2 gap-4 items-start">
+              <div className="space-y-1.5">
+                <Label>SKU Barcode</Label>
+                <Input value={form.barcode} onChange={(e) => f("barcode")(e.target.value)}
+                  placeholder={`Leave empty to use SKU (${form.sku})`} className="font-mono text-sm"
+                  data-testid="product-barcode-input" />
+                <p className="text-[10px] text-muted-foreground">Leave empty to auto-use the SKU as barcode</p>
+              </div>
+              <div className="h-16 flex items-center justify-center overflow-hidden rounded bg-white dark:bg-zinc-900 border border-dashed border-border">
+                {barcodeVal
+                  ? <svg ref={inlineBarcodeRef} className="max-w-full max-h-full" />
+                  : <span className="text-xs text-muted-foreground">SKU barcode preview</span>
+                }
               </div>
             </div>
           </div>
@@ -593,7 +600,7 @@ function UpcPreview({ upc }) {
 
   if (!upc || upc.length < 12) return null;
   return (
-    <div className="h-16 flex flex-col items-center justify-center overflow-hidden rounded bg-white dark:bg-zinc-900 border border-dashed border-indigo-300 dark:border-indigo-700">
+    <div className="flex flex-col items-center justify-center overflow-hidden">
       <svg ref={ref} className="max-w-full max-h-full" />
       <span className="text-[9px] text-indigo-500 font-medium -mt-1">UPC-A preview</span>
     </div>
