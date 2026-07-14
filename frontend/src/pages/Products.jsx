@@ -70,11 +70,14 @@ export default function Products() {
       toast.success("Saved"); setOpen(false); load();
     } catch (err) {
       const detail = err?.response?.data?.detail || "";
-      if (err?.response?.status === 400 && /sku/i.test(detail)) {
+      const status = err?.response?.status;
+      if (status === 400 && /sku/i.test(detail)) {
         toast.error("SKU already exists — a new one has been generated");
         setForm(f => ({ ...f, sku: genSku() }));
+      } else if (status === 402) {
+        toast.error("Subscription expired. Go to Settings → Billing to renew.");
       } else {
-        toast.error("Failed");
+        toast.error(detail || "Failed to save product");
       }
     }
   };

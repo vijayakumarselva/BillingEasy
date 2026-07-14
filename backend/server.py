@@ -1891,8 +1891,7 @@ async def update_role(slug: str, body: RoleIn, request: Request,
     role = await db.roles.find_one(org_filter(ctx, {"slug": slug}))
     if not role:
         raise HTTPException(404, "Role not found")
-    if role.get("is_system"):
-        raise HTTPException(400, "System roles cannot be edited")
+    # system roles can be customized per-org
     new_perms = [p for p in body.permissions if p in PERMISSIONS or p == "*" or p.endswith(".*")]
     new_modes = [m for m in body.allowed_modes if m in ("b2b", "b2c", "restaurant", "pos")]
     await db.roles.update_one({"_id": role["_id"]},
@@ -3086,6 +3085,15 @@ async def super_suspend_org(org_id: str, user=Depends(require_super_admin)):
 async def super_activate_org(org_id: str, user=Depends(require_super_admin)):
     await db.organizations.update_one({"id": org_id}, {"$set": {"subscription_status": "active"}})
     return {"ok": True}
+
+
+@api.post("/super/orgs/{org_id}/extend-trial")
+async def super_extend_trial(org_id: str, days: int = 30, user=Depends(require_super_admin)):
+    new_end = (now_dt() + timedelta(days=days)).isoformat()
+    await db.organizations.update_one({"id": org_id}, {
+        "$set": {"subscription_status": "trialing", "trial_ends_at": new_end}
+    })
+    return {"ok": True, "trial_ends_at": new_end}
 
 
 @api.delete("/super/orgs/{org_id}")

@@ -73,7 +73,7 @@ export default function RolesPanel({ canManage }) {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="font-semibold">Roles & Permissions</h3>
-          <p className="text-xs text-muted-foreground">System roles can't be edited. Create custom roles to fine-tune what each team member can do.</p>
+          <p className="text-xs text-muted-foreground">Edit any role's permissions, or create custom roles for specific needs.</p>
         </div>
         {canManage && (
           <Button className="bg-blue-600 hover:bg-blue-700" onClick={startCreate} data-testid="new-role-button">
@@ -101,16 +101,16 @@ export default function RolesPanel({ canManage }) {
               </div>
               <div className="text-xs text-muted-foreground mt-1">{r.description}</div>
             </div>
-            {canManage && !r.is_system && (
+            {canManage && (
               <div className="flex gap-1 shrink-0">
                 <Button size="icon" variant="ghost" onClick={() => startEdit(r)} data-testid={`role-edit-${r.slug}`}><Edit className="h-4 w-4" /></Button>
-                <AlertDialog>
+                {!r.is_system && <AlertDialog>
                   <AlertDialogTrigger asChild><Button size="icon" variant="ghost" data-testid={`role-del-${r.slug}`}><Trash2 className="h-4 w-4 text-rose-500" /></Button></AlertDialogTrigger>
                   <AlertDialogContent>
                     <AlertDialogHeader><AlertDialogTitle>Delete role {r.name}?</AlertDialogTitle><AlertDialogDescription>Members using this role must be reassigned first.</AlertDialogDescription></AlertDialogHeader>
                     <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => remove(r.slug)}>Delete</AlertDialogAction></AlertDialogFooter>
                   </AlertDialogContent>
-                </AlertDialog>
+                </AlertDialog>}
               </div>
             )}
           </div>
