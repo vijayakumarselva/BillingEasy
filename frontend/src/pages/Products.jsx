@@ -127,35 +127,80 @@ export default function Products() {
   };
 
   return (
-    <div className="space-y-6" data-testid="products-page">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+    <div className="space-y-0 md:space-y-6" data-testid="products-page">
+
+      {/* Mobile header */}
+      <div className="mobile-page-header mobile-only">
+        <div className="flex items-center gap-2">
+          <Package className="w-5 h-5 text-blue-600" />
+          <h2>Products & Stock</h2>
+        </div>
+        <Button size="sm" onClick={startCreate} className="bg-blue-600 hover:bg-blue-700 h-9 px-3" data-testid="product-new-button">
+          <Plus className="h-4 w-4 mr-1" /> Add
+        </Button>
+      </div>
+
+      {/* Desktop header */}
+      <div className="desktop-only flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Products & Stock</h1>
-          <p className="text-sm text-muted-foreground mt-1">What you sell — with GST rate and current stock. We'll warn you when stock runs low.</p>
+          <p className="text-sm text-muted-foreground mt-1">What you sell — with GST rate and current stock.</p>
         </div>
-        <Button onClick={startCreate} className="bg-blue-600 hover:bg-blue-700" data-testid="product-new-button">
+        <Button onClick={startCreate} className="bg-blue-600 hover:bg-blue-700" data-testid="product-new-button-desktop">
           <Plus className="h-4 w-4 mr-1.5" /> Add Product
         </Button>
       </div>
 
-      <div className="flex flex-wrap gap-3 items-center justify-between">
-        <div className="flex rounded-md border overflow-hidden text-xs">
+      {/* Filters */}
+      <div className="mobile-search md:px-0 flex flex-col sm:flex-row gap-2 items-stretch sm:items-center justify-between">
+        <div className="flex rounded-lg border overflow-hidden text-xs">
           {[{ value: "all", label: "All" }, ...ALL_MODES].map(m => (
-            <button key={m.value} type="button"
-              onClick={() => setModeFilter(m.value)}
-              className={`px-3 py-1.5 font-medium transition-colors border-l first:border-l-0 ${modeFilter === m.value ? "bg-blue-600 text-white" : "text-muted-foreground hover:bg-muted/50"}`}>
+            <button key={m.value} type="button" onClick={() => setModeFilter(m.value)}
+              className={`px-3 py-2 font-semibold transition-colors border-l first:border-l-0 ${modeFilter === m.value ? "bg-blue-600 text-white" : "text-muted-foreground hover:bg-muted/50"}`}>
               {m.label}
             </button>
           ))}
         </div>
-        <div className="relative w-full sm:w-64">
-          <Search className="h-4 w-4 absolute left-2.5 top-2.5 text-muted-foreground" />
+        <div className="relative flex-1 sm:max-w-64">
+          <Search className="h-4 w-4 absolute left-2.5 top-3 text-muted-foreground" />
           <Input className="pl-8" placeholder="Search products…" value={search}
             onChange={(e) => setSearch(e.target.value)} data-testid="product-search-input" />
         </div>
       </div>
 
-      <Card>
+      {/* Mobile card list */}
+      <div className="mobile-only mobile-list-gap">
+        {loading
+          ? [1,2,3].map(i => <div key={i} className="mobile-list-card"><Skeleton className="h-12 w-full" /></div>)
+          : list.length === 0
+            ? <div className="text-center text-muted-foreground py-12 text-sm">No products yet. Add one!</div>
+            : list.map(p => (
+              <div key={p.id} className="mobile-list-card" onClick={() => startEdit(p)}>
+                {p.image_b64
+                  ? <img src={p.image_b64} alt="" className="w-11 h-11 rounded-xl object-cover shrink-0 border" />
+                  : <div className="w-11 h-11 rounded-xl bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center shrink-0"><Package className="w-5 h-5 text-blue-400" /></div>
+                }
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-foreground truncate">{p.name}</p>
+                  <p className="text-xs text-muted-foreground">{p.sku} · GST {p.gst_rate}%</p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="mobile-amount text-foreground">{inr(p.sale_price)}</p>
+                  <p className={`text-xs font-semibold ${p.stock <= p.low_stock_alert ? "text-rose-500" : "text-muted-foreground"}`}>
+                    {p.stock <= p.low_stock_alert ? `⚠ ${p.stock}` : p.stock} {p.unit}
+                  </p>
+                </div>
+                <button onClick={(e) => { e.stopPropagation(); downloadUPC(p); }} title="Download UPC"
+                  className={`w-8 h-8 flex items-center justify-center rounded-lg shrink-0 ${p.upc ? "bg-indigo-50 dark:bg-indigo-900/20" : "opacity-0 pointer-events-none"}`}>
+                  {p.upc && <Download className="w-3.5 h-3.5 text-indigo-500" />}
+                </button>
+              </div>
+            ))
+        }
+      </div>
+
+      {/* Desktop table */}
+      <Card className="desktop-only">
         <div className="overflow-x-auto">
           <table className="app-table">
             <thead><tr><th>Product</th><th>HSN</th><th>Category</th><th>Used In</th><th className="text-right">Purchase</th><th className="text-right">Sale</th><th className="text-right">GST%</th><th className="text-right">Stock</th><th></th></tr></thead>

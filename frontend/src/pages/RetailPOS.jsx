@@ -45,11 +45,19 @@ export default function RetailPOS() {
   const scanRef = useRef(null);
   const customerDDRef = useRef(null);
 
-  useEffect(() => {
+  const loadProducts = () => {
     setLoadingProducts(true);
     api.get("/products").then(r => setProducts(r.data || [])).finally(() => setLoadingProducts(false));
+  };
+
+  useEffect(() => {
+    loadProducts();
     api.get("/parties", { params: { role: "customer" } }).then(r => setCustomers(r.data || []));
     api.get("/business").then(r => setBiz(r.data || {})).catch(() => {});
+    // Reload products when user returns to this tab (e.g. after editing prices)
+    const onVisible = () => { if (document.visibilityState === "visible") loadProducts(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
   useEffect(() => {

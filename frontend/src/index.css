@@ -318,21 +318,52 @@ body {
   padding-right: env(safe-area-inset-right, 0px);
 }
 
-/* ── Mobile typography & touch optimizations ── */
+/* ── Mobile: App-like UI ── */
 @media (max-width: 767px) {
-  html { font-size: 16px; }
-
-  /* Prevent iOS auto-zoom on input focus */
+  html { font-size: 15px; }
   input, select, textarea { font-size: 16px !important; }
-
-  /* Bigger base text */
-  p, span, div, li { line-height: 1.55; }
-
-  /* Minimum tap target size */
+  p, span, li { line-height: 1.55; }
   button, a[role="button"], [role="button"] { min-height: 44px; }
-
-  /* Better card padding on mobile */
   .mobile-main-pad { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px)); }
+
+  /* Hide desktop tables & verbose headings on mobile */
+  .desktop-only { display: none !important; }
+
+  /* Mobile page header */
+  .mobile-page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    background: hsl(var(--card));
+    border-bottom: 1px solid hsl(var(--border));
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+  .mobile-page-header h2 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin: 0;
+  }
+
+  /* Mobile list cards */
+  .mobile-list-card {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.75rem;
+    padding: 0.85rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-height: 64px;
+  }
+  .mobile-list-card:active { background: hsl(var(--muted)); }
+  .mobile-list-gap { display: flex; flex-direction: column; gap: 0.5rem; padding: 0 0.75rem 1rem; }
+  .mobile-search { padding: 0 0.75rem 0.75rem; }
+  .mobile-amount { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 0.95rem; }
+}
+@media (min-width: 768px) {
+  .mobile-only { display: none !important; }
 }
 
 /* ── Bottom function-key bar (like Tally's F-key strip) ── */

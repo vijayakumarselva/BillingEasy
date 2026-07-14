@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Edit, ScrollText } from "lucide-react";
+import { Plus, Search, Trash2, Edit, ScrollText, Users } from "lucide-react";
 import { inr, fmtDate } from "@/lib/format";
 import GstinField from "@/components/GstinField";
 import { useNavigate } from "react-router-dom";
@@ -55,49 +55,93 @@ export default function Parties() {
   };
 
   return (
-    <div className="space-y-6" data-testid="parties-page">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+    <div className="space-y-0 md:space-y-6" data-testid="parties-page">
+
+      {/* ── Mobile header ── */}
+      <div className="mobile-page-header mobile-only">
+        <div className="flex items-center gap-2">
+          <Users className="w-5 h-5 text-blue-600" />
+          <h2>{tab === "customer" ? "Customers" : "Suppliers"}</h2>
+        </div>
+        <Button size="sm" onClick={startCreate} className="bg-blue-600 hover:bg-blue-700 h-9 px-3" data-testid="party-new-button">
+          <Plus className="h-4 w-4 mr-1" /> Add
+        </Button>
+      </div>
+
+      {/* ── Desktop header ── */}
+      <div className="desktop-only flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Customers & Suppliers</h1>
-          <p className="text-sm text-muted-foreground mt-1">Save contact details once — used in every invoice and bill. Track outstanding money per party.</p>
+          <p className="text-sm text-muted-foreground mt-1">Save contact details once — used in every invoice and bill.</p>
         </div>
-        <Button onClick={startCreate} className="bg-blue-600 hover:bg-blue-700" data-testid="party-new-button">
+        <Button onClick={startCreate} className="bg-blue-600 hover:bg-blue-700" data-testid="party-new-button-desktop">
           <Plus className="h-4 w-4 mr-1.5" /> Add {tab === "customer" ? "Customer" : "Supplier"}
         </Button>
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <TabsList>
-            <TabsTrigger value="customer" data-testid="tab-customer">Customers</TabsTrigger>
-            <TabsTrigger value="supplier" data-testid="tab-supplier">Suppliers</TabsTrigger>
+        {/* Tab switcher + search */}
+        <div className="mobile-search md:px-0 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <TabsList className="w-full md:w-auto">
+            <TabsTrigger value="customer" className="flex-1 md:flex-none" data-testid="tab-customer">Customers</TabsTrigger>
+            <TabsTrigger value="supplier" className="flex-1 md:flex-none" data-testid="tab-supplier">Suppliers</TabsTrigger>
           </TabsList>
-          <div className="relative w-full sm:w-64">
-            <Search className="h-4 w-4 absolute left-2.5 top-2.5 text-muted-foreground" />
+          <div className="relative">
+            <Search className="h-4 w-4 absolute left-2.5 top-3 text-muted-foreground" />
             <Input className="pl-8" placeholder="Search by name…" value={search}
               onChange={(e) => setSearch(e.target.value)} data-testid="party-search-input" />
           </div>
         </div>
 
-        <TabsContent value={tab} className="mt-4">
-          <Card>
+        <TabsContent value={tab} className="mt-3 md:mt-4">
+          {/* Mobile cards */}
+          <div className="mobile-only mobile-list-gap">
+            {loading
+              ? [1,2,3].map(i => <div key={i} className="mobile-list-card"><Skeleton className="h-10 w-full" /></div>)
+              : list.length === 0
+                ? <div className="text-center text-muted-foreground py-12 text-sm">No {tab}s yet. Add one!</div>
+                : list.map(p => (
+                  <div key={p.id} className="mobile-list-card" onClick={() => nav(`/parties/${p.id}`)}>
+                    <div className="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center shrink-0 font-bold text-blue-600 text-base">
+                      {(p.name || "?")[0].toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold text-foreground truncate">{p.name}</p>
+                      <p className="text-xs text-muted-foreground">{p.phone || p.email || (p.gstin ? `GST: ${p.gstin}` : "No contact")}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      {p.balance > 0
+                        ? <p className="text-xs font-semibold text-rose-500">Due {inr(p.balance)}</p>
+                        : p.balance < 0
+                          ? <p className="text-xs font-semibold text-emerald-600">Advance {inr(Math.abs(p.balance))}</p>
+                          : <p className="text-xs text-muted-foreground">Settled</p>
+                      }
+                    </div>
+                    <div className="flex gap-1 shrink-0">
+                      <button onClick={(e) => { e.stopPropagation(); startEdit(p); }}
+                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-muted hover:bg-muted/80">
+                        <Edit className="w-3.5 h-3.5 text-muted-foreground" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+            }
+          </div>
+
+          {/* Desktop table */}
+          <Card className="desktop-only">
             <div className="overflow-x-auto">
               <table className="app-table">
-                <thead>
-                  <tr>
-                    <th>Name</th><th>Phone</th><th>GSTIN</th><th>State</th>
-                    <th className="text-right">Balance</th><th className="text-right">Credit Limit</th><th></th>
-                  </tr>
-                </thead>
+                <thead><tr>
+                  <th>Name</th><th>Phone</th><th>GSTIN</th><th>State</th>
+                  <th className="text-right">Balance</th><th className="text-right">Credit Limit</th><th></th>
+                </tr></thead>
                 <tbody>
                   {loading ? [1,2,3,4].map(i => <tr key={i}><td colSpan={7}><Skeleton className="h-8 w-full" /></td></tr>) :
                     list.length === 0 ? <tr><td colSpan={7} className="text-center text-muted-foreground py-8">No parties yet.</td></tr> :
                     list.map(p => (
                       <tr key={p.id} data-testid={`party-row-${p.name}`}>
-                        <td>
-                          <div className="font-medium">{p.name}</div>
-                          <div className="text-xs text-muted-foreground">{p.email || "—"}</div>
-                        </td>
+                        <td><div className="font-medium">{p.name}</div><div className="text-xs text-muted-foreground">{p.email || "—"}</div></td>
                         <td className="text-muted-foreground">{p.phone || "—"}</td>
                         <td className="font-mono-fin text-xs">{p.gstin || <Badge variant="secondary">No GST</Badge>}</td>
                         <td className="text-xs">{p.state}</td>
@@ -111,14 +155,8 @@ export default function Parties() {
                               <Button size="icon" variant="ghost" data-testid={`party-delete-${p.name}`}><Trash2 className="h-4 w-4 text-rose-500" /></Button>
                             </AlertDialogTrigger>
                             <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>Delete {p.name}?</AlertDialogTitle>
-                                <AlertDialogDescription>This cannot be undone. Historical transactions will remain.</AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                <AlertDialogAction onClick={() => remove(p.id)}>Delete</AlertDialogAction>
-                              </AlertDialogFooter>
+                              <AlertDialogHeader><AlertDialogTitle>Delete {p.name}?</AlertDialogTitle><AlertDialogDescription>This cannot be undone.</AlertDialogDescription></AlertDialogHeader>
+                              <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => remove(p.id)}>Delete</AlertDialogAction></AlertDialogFooter>
                             </AlertDialogContent>
                           </AlertDialog>
                         </td>
