@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAuth } from "@/context/AuthContext";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,6 +30,8 @@ const empty = {
 };
 
 export default function Products() {
+  const { currentRole } = useAuth();
+  const canEdit = currentRole !== "pos-staff" && currentRole !== "restaurant-staff";
   const [list, setList] = useState([]); const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState(""); const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty); const [editId, setEditId] = useState(null);
@@ -135,9 +138,9 @@ export default function Products() {
           <Package className="w-5 h-5 text-blue-600" />
           <h2>Products & Stock</h2>
         </div>
-        <Button size="sm" onClick={startCreate} className="bg-blue-600 hover:bg-blue-700 h-9 px-3" data-testid="product-new-button">
+        {canEdit && <Button size="sm" onClick={startCreate} className="bg-blue-600 hover:bg-blue-700 h-9 px-3" data-testid="product-new-button">
           <Plus className="h-4 w-4 mr-1" /> Add
-        </Button>
+        </Button>}
       </div>
 
       {/* Desktop header */}
@@ -146,9 +149,9 @@ export default function Products() {
           <h1 className="text-3xl font-semibold tracking-tight">Products & Stock</h1>
           <p className="text-sm text-muted-foreground mt-1">What you sell — with GST rate and current stock.</p>
         </div>
-        <Button onClick={startCreate} className="bg-blue-600 hover:bg-blue-700" data-testid="product-new-button-desktop">
+        {canEdit && <Button onClick={startCreate} className="bg-blue-600 hover:bg-blue-700" data-testid="product-new-button-desktop">
           <Plus className="h-4 w-4 mr-1.5" /> Add Product
-        </Button>
+        </Button>}
       </div>
 
       {/* Filters */}
@@ -175,7 +178,7 @@ export default function Products() {
           : list.length === 0
             ? <div className="text-center text-muted-foreground py-12 text-sm">No products yet. Add one!</div>
             : list.map(p => (
-              <div key={p.id} className="mobile-list-card" onClick={() => startEdit(p)}>
+              <div key={p.id} className="mobile-list-card" onClick={() => canEdit && startEdit(p)} style={canEdit ? {cursor:"pointer"} : {}}>
                 {p.image_b64
                   ? <img src={p.image_b64} alt="" className="w-11 h-11 rounded-xl object-cover shrink-0 border" />
                   : <div className="w-11 h-11 rounded-xl bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center shrink-0"><Package className="w-5 h-5 text-blue-400" /></div>
@@ -243,8 +246,8 @@ export default function Products() {
                     <td className="text-right">
                       <Button size="icon" variant="ghost" onClick={() => setBarcodeProduct(p)} title="Show Barcode"><QrCode className="h-4 w-4" /></Button>
                       {p.upc && <Button size="icon" variant="ghost" onClick={() => downloadUPC(p)} title="Download UPC barcode (GS1)"><Download className="h-4 w-4 text-indigo-500" /></Button>}
-                      <Button size="icon" variant="ghost" onClick={() => startEdit(p)} data-testid={`product-edit-${p.name}`}><Edit className="h-4 w-4" /></Button>
-                      <AlertDialog>
+                      {canEdit && <Button size="icon" variant="ghost" onClick={() => startEdit(p)} data-testid={`product-edit-${p.name}`}><Edit className="h-4 w-4" /></Button>}
+                      {canEdit && <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button size="icon" variant="ghost" data-testid={`product-delete-${p.name}`}><Trash2 className="h-4 w-4 text-rose-500" /></Button>
                         </AlertDialogTrigger>
@@ -252,7 +255,7 @@ export default function Products() {
                           <AlertDialogHeader><AlertDialogTitle>Delete {p.name}?</AlertDialogTitle><AlertDialogDescription>This cannot be undone.</AlertDialogDescription></AlertDialogHeader>
                           <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => remove(p.id)}>Delete</AlertDialogAction></AlertDialogFooter>
                         </AlertDialogContent>
-                      </AlertDialog>
+                      </AlertDialog>}
                     </td>
                   </tr>
                 ))}
