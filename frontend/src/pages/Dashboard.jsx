@@ -19,6 +19,14 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const nav = useNavigate();
   const { currentOrg } = useAuth();
+  const role = currentOrg?.role;
+
+  // POS staff should never see the dashboard — send them to their screen
+  useEffect(() => {
+    if (role === "pos-staff" || role === "restaurant-staff") {
+      nav(role === "pos-staff" ? "/pos-screen" : "/restaurant", { replace: true });
+    }
+  }, [role, nav]);
 
   useEffect(() => {
     api.get("/dashboard").then(r => setData(r.data)).finally(() => setLoading(false));
