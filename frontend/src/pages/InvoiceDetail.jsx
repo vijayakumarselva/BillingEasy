@@ -35,13 +35,19 @@ export default function InvoiceDetail() {
   const downloadPdf = async () => {
     try {
       const res = await api.get(`/invoices/${id}/pdf`, { responseType: "blob" });
-      const blob = new Blob([res.data], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `${inv.invoice_no}.pdf`;
+      const url = URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
       downloadFile(url, `${inv.invoice_no}.pdf`);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch { toast.error("PDF download failed"); }
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    } catch (err) {
+      // Try to read the error message from the blob response
+      try {
+        const text = await err?.response?.data?.text?.();
+        const detail = JSON.parse(text)?.detail || text;
+        toast.error(`PDF failed: ${String(detail).slice(0, 120)}`);
+      } catch {
+        toast.error("PDF download failed — backend error");
+      }
+    }
   };
 
   const generateEinvoice = async () => {
