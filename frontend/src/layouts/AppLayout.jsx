@@ -18,6 +18,7 @@ import {
   Home, Lock, ArrowLeftRight, Store,
 } from "lucide-react";
 import { STATES } from "@/pages/Parties";
+import SupportChat from "@/components/SupportChat";
 
 const ALL_NAV = [
   { to: "/parties",  label: "Parties",           icon: Users,           tid: "nav-parties",   shortcut: "Alt+P", group: "Masters",      modes: ["b2b","b2c","restaurant","pos"] },
@@ -35,7 +36,7 @@ const ALL_NAV = [
   { to: "/tds",            label: "TDS",             icon: Landmark,        tid: "nav-tds",               group: "Accounting", modes: ["b2b"] },
   { to: "/reports",        label: "Reports & Books", icon: BookOpen,        tid: "nav-accounting", shortcut: "Alt+R", group: "Accounting", modes: ["b2b","b2c","restaurant"] },
   { to: "/ask-ai", label: "Ask AI",    icon: Bot,    tid: "nav-ai",    badge: "AI",   group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos"] },
-  { to: "/tools",  label: "GST Tools", icon: Wrench, tid: "nav-tools", badge: "Free", group: "Tools & AI", modes: ["b2b","b2c"] },
+  { to: "/tools",  label: "Tax Toolkit", icon: Wrench, tid: "nav-tools", badge: "Free", group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos"] },
   { to: "/wallet",   label: "Wallet & Credits", icon: Coins,    tid: "nav-wallet",  group: "Account", modes: ["b2b","b2c","restaurant","pos"] },
   { to: "/credits",  label: "Buy Credits",      icon: Zap,      tid: "nav-credits", badge: "New", group: "Account", modes: ["b2b","b2c","restaurant","pos"] },
   { to: "/settings", label: "Settings",         icon: Settings, tid: "nav-settings", shortcut: "Alt+,", group: "Account", modes: ["b2b","b2c","restaurant","pos"] },
@@ -93,6 +94,8 @@ export default function AppLayout() {
   const chooseMode = async (mode) => {
     setBusinessMode(mode);
     localStorage.setItem(`biz_mode_${orgId}`, mode);
+    // Notify other components (Dashboard, etc.) that mode changed
+    window.dispatchEvent(new CustomEvent("be:mode-changed", { detail: { mode, orgId } }));
     setShowModeSelect(false);
     setDrawerOpen(false);
     try {
@@ -488,6 +491,8 @@ export default function AppLayout() {
           <span className="text-[10px] font-semibold">Menu</span>
         </button>
       </nav>
+
+      <SupportChat />
 
       {/* Business mode selector */}
       {showModeSelect && (

@@ -1,5 +1,5 @@
 import "@/App.css";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { ThemeProvider } from "@/context/ThemeContext";
@@ -45,8 +45,13 @@ import QuickUpload from "@/pages/QuickUpload";
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
+  const location = useLocation();
   if (loading) return <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading…</div>;
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) {
+    // Tools page is publicly accessible — redirect to free version instead of login
+    if (location.pathname === "/tools") return <Navigate to="/free/tools" replace />;
+    return <Navigate to="/login" replace />;
+  }
   return children;
 }
 
@@ -81,10 +86,29 @@ function LandingOrDashboard() {
 }
 
 function PublicTools() {
-  // Public (no-auth) wrapper around the Tools page — only shows GSTIN + HSN tabs.
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white dark:from-slate-950 dark:to-slate-900">
+      {/* Minimal nav */}
+      <nav className="border-b bg-white/80 dark:bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+          <a href="/" className="font-bold text-lg text-foreground flex items-center gap-1">
+            <span className="text-blue-600">Billings</span>Easy
+          </a>
+          <div className="flex items-center gap-3">
+            <a href="/login" className="text-sm text-muted-foreground hover:text-foreground transition-colors">Login</a>
+            <a href="/register" className="text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg font-medium transition-colors">Start Free</a>
+          </div>
+        </div>
+      </nav>
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-10">
+        {/* Sign-up nudge banner */}
+        <div className="mb-6 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 px-5 py-3 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+          <div>
+            <p className="text-sm font-semibold text-blue-800 dark:text-blue-300">These tools are 100% free — no login needed.</p>
+            <p className="text-xs text-blue-600 dark:text-blue-400 mt-0.5">Want GST invoicing, AI billing, POS and more? <a href="/register" className="underline font-medium">Create a free account →</a></p>
+          </div>
+          <a href="/register" className="shrink-0 text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors text-center">Start Free — 50 Credits</a>
+        </div>
         <Tools publicMode={true} />
       </div>
     </div>
@@ -123,6 +147,7 @@ export default function App() {
               <Route path="/products" element={<Products />} />
               <Route path="/sales" element={<Sales />} />
               <Route path="/sales/new" element={<InvoiceCreate />} />
+              <Route path="/sales/:id/edit" element={<InvoiceCreate />} />
               <Route path="/sales/:id" element={<InvoiceDetail />} />
               <Route path="/purchases" element={<Purchases />} />
               <Route path="/payments" element={<Payments />} />

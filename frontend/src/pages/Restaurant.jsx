@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import api from "@/lib/api";
+import { openPrintWindow } from "@/lib/mobile";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -120,14 +121,10 @@ export default function Restaurant() {
     const now = new Date().toLocaleTimeString();
     const lines = currentOrder.map((i) => `${i.name} x${i.qty}`).join("\n");
     const content = `KOT - Table ${activeTable}\nTime: ${now}\n${"─".repeat(28)}\n${lines}\n${"─".repeat(28)}`;
-    const win = window.open("", "_blank", "width=320,height=500");
-    win.document.write(`<html><head><title>KOT</title><style>
+    openPrintWindow(`<html><head><title>KOT</title><style>
       body { font-family: monospace; font-size: 14px; padding: 16px; white-space: pre; }
       @media print { body { margin: 0; } }
-    </style></head><body>${content}</body></html>`);
-    win.document.close();
-    win.focus();
-    win.print();
+    </style></head><body>${content}<script>window.onload=()=>{window.print();}<\/script></body></html>`);
   }
 
   async function generateBill() {
@@ -167,8 +164,7 @@ export default function Restaurant() {
   function printBill() {
     const el = billPrintRef.current;
     if (!el) return;
-    const win = window.open("", "_blank", "width=400,height=600");
-    win.document.write(`<html><head><title>Bill</title><style>
+    openPrintWindow(`<html><head><title>Bill</title><style>
       body { font-family: Arial, sans-serif; font-size: 13px; padding: 20px; color: #000; }
       table { width: 100%; border-collapse: collapse; }
       th, td { padding: 4px 6px; text-align: left; }
@@ -178,10 +174,7 @@ export default function Restaurant() {
       h2, h3 { margin: 4px 0; }
       .center { text-align: center; }
       @media print { body { margin: 0; } }
-    </style></head><body>${el.innerHTML}</body></html>`);
-    win.document.close();
-    win.focus();
-    win.print();
+    </style></head><body>${el.innerHTML}<script>window.onload=()=>{window.print();}<\/script></body></html>`);
   }
 
   const inv = billDialog.invoice;

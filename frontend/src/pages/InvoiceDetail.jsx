@@ -9,8 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, FileDown, Share2, Wallet, ArrowRightLeft, FileJson, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, FileDown, Share2, Wallet, ArrowRightLeft, FileJson, AlertTriangle, CheckCircle2, Pencil } from "lucide-react";
 import { inr, fmtDate, todayISO } from "@/lib/format";
+import { openExternalUrl, downloadFile } from "@/lib/mobile";
 
 export default function InvoiceDetail() {
   const { id } = useParams();
@@ -38,7 +39,7 @@ export default function InvoiceDetail() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url; a.download = `${inv.invoice_no}.pdf`;
-      document.body.appendChild(a); a.click(); a.remove();
+      downloadFile(url, `${inv.invoice_no}.pdf`);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch { toast.error("PDF download failed"); }
   };
@@ -57,15 +58,13 @@ export default function InvoiceDetail() {
     if (!eiResult?.payload) return;
     const blob = new Blob([JSON.stringify(eiResult.payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `EINV-${inv.invoice_no.replace(/[\/\s]+/g, '_')}.json`;
-    document.body.appendChild(a); a.click(); a.remove();
+    downloadFile(url, `EINV-${inv.invoice_no.replace(/[\/\s]+/g, '_')}.json`);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const shareWA = () => {
     const phone = (inv.party_snapshot?.phone || "").replace(/\D/g, "");
     const msg = encodeURIComponent(`Hi ${inv.party_snapshot?.name}, your invoice ${inv.invoice_no} for ₹${inv.totals.grand_total.toFixed(2)} is ready. Thank you!`);
-    window.open(phone ? `https://wa.me/${phone}?text=${msg}` : `https://wa.me/?text=${msg}`, "_blank");
+    openExternalUrl(phone ? `https://wa.me/${phone}?text=${msg}` : `https://wa.me/?text=${msg}`);
   };
   const recordPayment = async () => {
     try {
@@ -90,6 +89,7 @@ export default function InvoiceDetail() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <Button variant="ghost" onClick={() => nav(-1)}><ArrowLeft className="h-4 w-4 mr-1.5" /> Back</Button>
         <div className="flex gap-2 flex-wrap">
+          <Button variant="outline" onClick={() => nav(`/sales/${id}/edit`)} data-testid="edit-invoice-button"><Pencil className="h-4 w-4 mr-1.5" /> Edit</Button>
           {inv.type === "quotation" && <Button variant="outline" onClick={convertQuote} data-testid="convert-quote-button"><ArrowRightLeft className="h-4 w-4 mr-1.5" /> Convert to Invoice</Button>}
           {inv.due > 0 && inv.type === "sale" && <Button onClick={() => setPayOpen(true)} className="bg-emerald-600 hover:bg-emerald-700" data-testid="record-payment-button"><Wallet className="h-4 w-4 mr-1.5" /> Record Payment</Button>}
           <Button variant="outline" onClick={async () => {
@@ -123,7 +123,7 @@ export default function InvoiceDetail() {
           </div>
         </div>
 
-        <div className="grid sm:grid-cols-2 gap-6 mt-6 text-sm">
+        <div className="grid sm:grid-cols-3 gap-6 mt-6 text-sm">
           <div>
             <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1">Bill To</div>
             <div className="font-medium">{inv.party_snapshot?.name}</div>
@@ -131,9 +131,16 @@ export default function InvoiceDetail() {
             <div className="text-muted-foreground">GSTIN: {inv.party_snapshot?.gstin || "—"}</div>
             <div className="text-muted-foreground">{inv.party_snapshot?.phone}</div>
           </div>
+          {inv.shipping_address && (
+            <div>
+              <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1">Ship To</div>
+              <div className="text-muted-foreground whitespace-pre-line">{inv.shipping_address}</div>
+            </div>
+          )}
           <div className="text-sm sm:text-right">
             <div>Date: <span className="font-medium">{fmtDate(inv.invoice_date)}</span></div>
             <div>Due: <span className="font-medium">{fmtDate(inv.due_date)}</span></div>
+            {inv.po_number && <div>PO#: <span className="font-medium">{inv.po_number}</span></div>}
             <div>Place of Supply: <span className="font-medium">{inv.party_snapshot?.state}</span></div>
           </div>
         </div>

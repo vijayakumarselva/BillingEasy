@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Download } from "lucide-react";
+import { downloadFile } from "@/lib/mobile";
 import { inr } from "@/lib/format";
 
 function thisMonth() {
@@ -34,7 +35,7 @@ export default function GST() {
     const data = { month, gstr1, gstr3b };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = `gst-${month}.json`; a.click();
+    downloadFile(url, `gst-${month}.json`);
     URL.revokeObjectURL(url); toast.success("Exported");
   };
 

@@ -3,10 +3,11 @@
   "appName": "BillingsEasy",
   "webDir": "build",
   "server": {
-    "androidScheme": "https"
+    "url": "https://billingseasy.com",
+    "cleartext": false
   },
   "android": {
-    "allowMixedContent": true,
+    "allowMixedContent": false,
     "captureInput": true,
     "webContentsDebuggingEnabled": false
   },

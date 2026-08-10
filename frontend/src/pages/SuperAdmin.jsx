@@ -1,5 +1,5 @@
 // Super-Admin platform console.
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import { Card } from "@/components/ui/card";
@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { ShieldAlert, Building2, Users as UsersIcon, Activity, Ban, CheckCircle2, Trash2, UserCog, LogOut, CreditCard, Eye, EyeOff, AlertTriangle, Save, Plug, Sparkles } from "lucide-react";
+import { ShieldAlert, Building2, Users as UsersIcon, Activity, Ban, CheckCircle2, Trash2, UserCog, LogOut, CreditCard, Eye, EyeOff, AlertTriangle, Save, Plug, Sparkles, MessageCircle, Send, Loader2 } from "lucide-react";
 import { inr, inrShort, fmtDate } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
 
@@ -104,6 +104,9 @@ export default function SuperAdmin() {
             <TabsTrigger value="offer" data-testid="super-tab-offer">
               <Sparkles className="h-3.5 w-3.5 mr-1.5" /> Launch Offer
             </TabsTrigger>
+            <TabsTrigger value="chat" data-testid="super-tab-chat">
+              <MessageCircle className="h-3.5 w-3.5 mr-1.5" /> Support Chat
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="orgs">
@@ -182,6 +185,9 @@ export default function SuperAdmin() {
 
           <TabsContent value="offer">
             <LaunchOfferSettings />
+          </TabsContent>
+          <TabsContent value="chat">
+            <SuperAdminChat />
           </TabsContent>
         </Tabs>
       </main>
@@ -624,6 +630,156 @@ function LaunchOfferSettings() {
           <Row label="Duration" value={`${data?.duration_months || 0} cycles`} />
           <Row label="Updated" value={data?.updated_at ? fmtDate(data.updated_at) : "Never"} />
         </dl>
+      </Card>
+    </div>
+  );
+}
+
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function SuperAdminChat() {
+  const [threads, setThreads] = useState([]);
+  const [activeOrg, setActiveOrg] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [reply, setReply] = useState("");
+  const [sending, setSending] = useState(false);
+  const bottomRef = useRef(null);
+  const pollRef = useRef(null);
+
+  const loadThreads = async () => {
+    try { const { data } = await api.get("/super/chat/threads"); setThreads(data); } catch {}
+  };
+
+  const loadMessages = async (orgId) => {
+    try {
+      const { data } = await api.get(`/super/chat/messages/${orgId}`);
+      setMessages(data);
+      setThreads(prev => prev.map(t => t.org_id === orgId ? { ...t, unread: 0 } : t));
+    } catch {}
+  };
+
+  useEffect(() => { loadThreads(); }, []);
+
+  useEffect(() => {
+    if (!activeOrg) return;
+    loadMessages(activeOrg);
+    pollRef.current = setInterval(() => loadMessages(activeOrg), 4000);
+    return () => clearInterval(pollRef.current);
+  }, [activeOrg]);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  const sendReply = async () => {
+    const msg = reply.trim();
+    if (!msg || sending || !activeOrg) return;
+    setSending(true);
+    setReply("");
+    try {
+      const { data } = await api.post("/super/chat/reply", { org_id: activeOrg, message: msg });
+      setMessages(prev => [...prev, data]);
+    } catch { toast.error("Failed to send reply"); }
+    setSending(false);
+  };
+
+  const totalUnread = threads.reduce((s, t) => s + (t.unread || 0), 0);
+
+  return (
+    <div className="mt-3 flex gap-4" style={{ height: 560 }}>
+      {/* Thread list */}
+      <Card className="w-72 flex-shrink-0 flex flex-col overflow-hidden">
+        <div className="px-4 py-3 border-b flex items-center gap-2">
+          <MessageCircle className="h-4 w-4 text-blue-600" />
+          <span className="font-semibold text-sm">Support Inbox</span>
+          {totalUnread > 0 && <Badge className="ml-auto bg-red-500 text-white">{totalUnread}</Badge>}
+        </div>
+        <div className="flex-1 overflow-y-auto divide-y">
+          {threads.length === 0 && (
+            <p className="text-center text-muted-foreground text-sm py-10">No messages yet</p>
+          )}
+          {threads.map(t => (
+            <button
+              key={t.org_id}
+              onClick={() => setActiveOrg(t.org_id)}
+              className={`w-full text-left px-4 py-3 hover:bg-muted transition-colors ${activeOrg === t.org_id ? "bg-blue-50 dark:bg-blue-950/30" : ""}`}
+            >
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 flex items-center justify-center text-xs font-bold flex-shrink-0">
+                  {(t.user_name || t.user_email || "?")[0].toUpperCase()}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold truncate">{t.user_name || t.user_email}</p>
+                    {t.unread > 0 && <Badge className="bg-red-500 text-white text-[10px] ml-1">{t.unread}</Badge>}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground truncate">{t.last_message}</p>
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      {/* Message panel */}
+      <Card className="flex-1 flex flex-col overflow-hidden">
+        {!activeOrg ? (
+          <div className="flex-1 flex items-center justify-center text-muted-foreground">
+            <div className="text-center">
+              <MessageCircle className="h-12 w-12 mx-auto mb-3 text-blue-300" />
+              <p>Select a conversation</p>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="px-4 py-3 border-b">
+              {(() => {
+                const t = threads.find(x => x.org_id === activeOrg);
+                return (
+                  <div>
+                    <p className="font-semibold text-sm">{t?.user_name || t?.user_email}</p>
+                    <p className="text-xs text-muted-foreground">{t?.user_email}</p>
+                  </div>
+                );
+              })()}
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 bg-slate-50 dark:bg-slate-900">
+              {messages.map(m => (
+                <div key={m.id} className={`flex ${m.sender === "admin" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
+                    m.sender === "admin"
+                      ? "bg-blue-600 text-white rounded-br-sm"
+                      : "bg-white dark:bg-slate-800 border border-border rounded-bl-sm"
+                  }`}>
+                    <p className="whitespace-pre-wrap break-words">{m.message}</p>
+                    <p className={`text-[10px] mt-0.5 ${m.sender === "admin" ? "text-blue-100" : "text-muted-foreground"}`}>
+                      {fmtTime(m.created_at)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+              <div ref={bottomRef} />
+            </div>
+            <div className="flex items-center gap-2 px-3 py-3 border-t bg-background">
+              <input
+                value={reply}
+                onChange={e => setReply(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && !e.shiftKey && sendReply()}
+                placeholder="Type your reply…"
+                className="flex-1 rounded-full border border-input bg-muted px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                onClick={sendReply}
+                disabled={!reply.trim() || sending}
+                className="w-9 h-9 rounded-full bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white flex items-center justify-center"
+              >
+                {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              </button>
+            </div>
+          </>
+        )}
       </Card>
     </div>
   );

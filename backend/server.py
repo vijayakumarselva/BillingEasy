@@ -60,7 +60,7 @@ from launch_offer import (
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
-from ai_helpers import ai_chat_stream, ai_hsn_suggest, ai_categorize_expense, ai_product_suggest
+from ai_helpers import ai_chat_stream, ai_hsn_suggest, ai_categorize_expense, ai_product_suggest, ai_extract_invoice
 
 # ---------------- Setup ----------------
 MONGO_URL = os.environ["MONGO_URL"]
@@ -363,6 +363,8 @@ class ProductIn(BaseModel):
     stock: float = 0
     low_stock_alert: float = 5
     barcode: str = ""
+    upc: str = ""
+    unit_qty: str = ""  # size/weight value e.g. "500" (paired with unit "ML" → 500 ML)
     modes: List[str] = ["b2b", "b2c", "restaurant", "pos"]  # which business modes use this product
     image_b64: str = ""  # base64 data-URI of product image
 
@@ -398,6 +400,8 @@ class InvoiceIn(BaseModel):
     type: str = "sale"
     branch_id: str = ""
     invoice_category: str = "stock"   # "stock" | "service"
+    shipping_address: str = ""
+    po_number: str = ""
 
 
 class PurchaseIn(BaseModel):
@@ -1681,6 +1685,56 @@ async def ai_chat_sessions(ctx=Depends(get_org_ctx)):
     return out
 
 
+@api.post("/ai/invoice-draft")
+async def ai_invoice_draft(body: dict, ctx=Depends(get_org_ctx)):
+    """Extract invoice details from natural language, match parties/products, return a draft."""
+    from datetime import datetime, timezone
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "text is required")
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    extracted = await ai_extract_invoice(text, today)
+    if "error" in extracted:
+        raise HTTPException(500, extracted["error"])
+
+    # Try to match party by name
+    party_name = extracted.get("party_name", "")
+    party = None
+    if party_name:
+        party = await db.parties.find_one(
+            {"org_id": ctx["org_id"], "name": {"$regex": re.escape(party_name), "$options": "i"}},
+            {"_id": 0}
+        )
+
+    # Try to match each item to a product
+    matched_items = []
+    for item in (extracted.get("items") or []):
+        pname = item.get("name", "")
+        prod = None
+        if pname:
+            prod = await db.products.find_one(
+                {"org_id": ctx["org_id"], "name": {"$regex": re.escape(pname), "$options": "i"}},
+                {"_id": 0}
+            )
+        matched_items.append({
+            **item,
+            "product_id": prod["id"] if prod else "",
+            "matched_product_name": prod["name"] if prod else "",
+            "rate": item.get("rate") or (prod["sale_price"] if prod else 0),
+            "gst_rate": item.get("gst_rate") if item.get("gst_rate") is not None else (prod["gst_rate"] if prod else 18),
+            "hsn": item.get("hsn") or (prod["hsn"] if prod else ""),
+            "unit": item.get("unit") or (prod["unit"] if prod else "NOS"),
+        })
+
+    return {
+        "extracted": extracted,
+        "party": party,
+        "items": matched_items,
+        "today": today,
+    }
+
+
 # =========================================================================
 # E-INVOICE JSON GENERATOR (auth — schema 1.1 compliant)
 # =========================================================================
@@ -2133,7 +2187,13 @@ async def create_product(body: ProductIn, ctx=Depends(get_org_ctx)):
 @api.put("/products/{pid}")
 async def update_product(pid: str, body: ProductIn, ctx=Depends(get_org_ctx)):
     await ensure_active_subscription(ctx)
-    await db.products.update_one(org_filter(ctx, {"id": pid}), {"$set": body.model_dump()})
+    update_data = body.model_dump()
+    # Never overwrite an existing UPC with empty — UPC is permanent once set
+    if not update_data.get("upc"):
+        existing = await db.products.find_one(org_filter(ctx, {"id": pid}), {"_id": 0, "upc": 1})
+        if existing and existing.get("upc"):
+            update_data["upc"] = existing["upc"]
+    await db.products.update_one(org_filter(ctx, {"id": pid}), {"$set": update_data})
     return await db.products.find_one(org_filter(ctx, {"id": pid}), {"_id": 0})
 
 
@@ -2203,6 +2263,8 @@ async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
         "is_recurring": body.is_recurring, "same_state": same_state,
         "branch_id": body.branch_id, "branch_snapshot": branch,
         "invoice_category": getattr(body, "invoice_category", "stock"),
+        "shipping_address": getattr(body, "shipping_address", ""),
+        "po_number": getattr(body, "po_number", ""),
         "created_at": now_iso(),
     }
 
@@ -2239,6 +2301,35 @@ async def get_invoice(iid: str, ctx=Depends(get_org_ctx)):
     return inv
 
 
+@api.put("/invoices/{iid}")
+async def update_invoice(iid: str, body: InvoiceIn, request: Request, ctx=Depends(require_permission("invoice.create"))):
+    existing = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Invoice not found")
+    prefix = {"sale": "INV", "quotation": "QT", "credit_note": "CN", "sales_return": "SR"}.get(body.type, "INV")
+    doc = await _build_invoice_doc(body, ctx, prefix)
+    # Keep original invoice_no and id
+    doc["id"] = iid
+    doc["invoice_no"] = existing["invoice_no"]
+    doc["created_at"] = existing.get("created_at", doc["created_at"])
+    doc["updated_at"] = now_iso()
+    # Restore old stock if it was a stock sale — then re-deduct new quantities
+    if existing.get("type") == "sale" and existing.get("status") == "finalized" and existing.get("invoice_category", "stock") == "stock":
+        for it in existing.get("items", []):
+            pid = it.get("product_id")
+            if pid:
+                await db.products.update_one(org_filter(ctx, {"id": pid}), {"$inc": {"stock": it.get("qty", 0)}})
+    await db.invoices.replace_one(org_filter(ctx, {"id": iid}), doc)
+    if body.type == "sale" and body.status == "finalized" and body.invoice_category == "stock":
+        for it in body.items:
+            if it.product_id:
+                await db.products.update_one(org_filter(ctx, {"id": it.product_id}), {"$inc": {"stock": -it.qty}})
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="invoice.updated",
+                    entity_type="invoice", entity_id=iid,
+                    metadata={"invoice_no": doc["invoice_no"]}, request=request)
+    return strip_id(doc)
+
+
 @api.delete("/invoices/{iid}")
 async def delete_invoice(iid: str, request: Request, ctx=Depends(require_permission("invoice.delete"))):
     inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0, "invoice_no": 1})
@@ -2267,7 +2358,11 @@ async def invoice_pdf(iid: str, ctx=Depends(get_org_ctx)):
     inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
     if not inv: raise HTTPException(404, "Not found")
     biz = await get_org_doc(ctx["org_id"])
-    pdf_bytes = generate_invoice_pdf(inv, biz)
+    try:
+        pdf_bytes = generate_invoice_pdf(inv, biz)
+    except Exception as exc:
+        import traceback
+        raise HTTPException(500, f"PDF generation failed: {exc}\n{traceback.format_exc()}")
     return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf",
                              headers={"Content-Disposition": f'inline; filename="{inv["invoice_no"]}.pdf"',
                                       "X-Invoice-No": inv["invoice_no"]})
@@ -2623,7 +2718,11 @@ async def purchase_pdf(pid: str, ctx=Depends(get_org_ctx)):
     biz = await get_org_doc(ctx["org_id"])
     # Adapt purchase shape to the generator (uses invoice_no/invoice_date keys).
     adapted = {**p, "invoice_no": p["bill_no"], "invoice_date": p["purchase_date"]}
-    pdf_bytes = generate_invoice_pdf(adapted, biz, kind="purchase")
+    try:
+        pdf_bytes = generate_invoice_pdf(adapted, biz, kind="purchase")
+    except Exception as exc:
+        import traceback
+        raise HTTPException(500, f"PDF generation failed: {exc}\n{traceback.format_exc()}")
     safe_no = p["bill_no"].replace("/", "_").replace(" ", "_")
     return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf",
                              headers={"Content-Disposition": f'inline; filename="PB-{safe_no}.pdf"',
@@ -2902,6 +3001,64 @@ async def dashboard(ctx=Depends(get_org_ctx)):
         "gst_payable": round(gst_payable, 2), "net_profit": round(net_profit, 2),
         "expenses_total": round(expenses_total, 2), "chart": chart,
         "recent_invoices": recent, "top_customers": tc_list, "top_products": tp_list,
+    }
+
+
+@api.get("/dashboard/pos")
+async def dashboard_pos(ctx=Depends(get_org_ctx)):
+    """POS-specific dashboard: today's counters, cash/UPI split, top products."""
+    today_str = now_dt().strftime("%Y-%m-%d")
+    oid = ctx["org_id"]
+
+    # Today's POS invoices (notes contains "POS sale")
+    today_agg = await db.invoices.aggregate([
+        {"$match": {"org_id": oid, "type": "sale", "invoice_date": today_str, "notes": {"$regex": "POS sale", "$options": "i"}}},
+        {"$group": {"_id": None, "count": {"$sum": 1}, "total": {"$sum": "$totals.grand_total"}}},
+    ]).to_list(1)
+
+    # Cash vs UPI today
+    cash_agg = await db.payments.aggregate([
+        {"$match": {"org_id": oid, "payment_date": today_str, "method": "cash"}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
+    ]).to_list(1)
+    upi_agg = await db.payments.aggregate([
+        {"$match": {"org_id": oid, "payment_date": today_str, "method": {"$in": ["upi", "online"]}}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
+    ]).to_list(1)
+
+    # Top 5 products sold today (from POS invoices)
+    top_products = []
+    async for r in db.invoices.aggregate([
+        {"$match": {"org_id": oid, "type": "sale", "invoice_date": today_str, "notes": {"$regex": "POS sale", "$options": "i"}}},
+        {"$unwind": "$items"},
+        {"$group": {"_id": "$items.name", "qty": {"$sum": "$items.qty"}, "amount": {"$sum": "$items.total"}}},
+        {"$sort": {"amount": -1}}, {"$limit": 5},
+    ]):
+        top_products.append({"name": r["_id"], "qty": round(r["qty"], 2), "amount": round(r["amount"], 2)})
+
+    # Recent 5 POS bills today
+    recent = await db.invoices.find(
+        {"org_id": oid, "type": "sale", "invoice_date": today_str, "notes": {"$regex": "POS sale", "$options": "i"}},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(5)
+    for r in recent:
+        r["party_name"] = r.get("party_snapshot", {}).get("name") or "Walk-in"
+
+    # Low stock alert
+    low_stock = await db.products.find(
+        {"org_id": oid, "$expr": {"$lte": ["$stock", "$low_stock_alert"]}},
+        {"_id": 0, "name": 1, "stock": 1, "unit": 1}
+    ).to_list(10)
+
+    today_data = today_agg[0] if today_agg else {"count": 0, "total": 0}
+    return {
+        "today_count": today_data.get("count", 0),
+        "today_total": round(today_data.get("total", 0), 2),
+        "cash_today": round(cash_agg[0]["total"] if cash_agg else 0, 2),
+        "upi_today": round(upi_agg[0]["total"] if upi_agg else 0, 2),
+        "top_products": top_products,
+        "recent_bills": recent,
+        "low_stock": low_stock,
     }
 
 
@@ -3371,6 +3528,121 @@ async def cash_flow(month: Optional[str] = None, ctx=Depends(get_org_ctx)):
         "in_by_mode": {k: round(v, 2) for k, v in in_by_mode.items()},
         "out_by_mode": {k: round(v, 2) for k, v in out_by_mode.items()},
     }
+
+
+# ---------------- Support Chat ----------------
+
+@api.get("/chat/messages")
+async def get_chat_messages(ctx=Depends(get_org_ctx)):
+    msgs = []
+    async for m in db.chat_messages.find({"org_id": ctx["org_id"]}, {"_id": 0}).sort("created_at", 1):
+        msgs.append(m)
+    # Mark user messages as read by user (admin replies)
+    await db.chat_messages.update_many(
+        {"org_id": ctx["org_id"], "sender": "admin", "read_by_user": False},
+        {"$set": {"read_by_user": True}}
+    )
+    return msgs
+
+@api.post("/chat/messages")
+async def send_chat_message(body: dict, ctx=Depends(get_org_ctx)):
+    text = (body.get("message") or "").strip()
+    if not text:
+        raise HTTPException(400, "Message required")
+    msg = {
+        "id": str(uuid.uuid4()),
+        "org_id": ctx["org_id"],
+        "user_email": ctx["user"]["email"],
+        "user_name": ctx["user"].get("name", ctx["user"]["email"]),
+        "message": text,
+        "sender": "user",
+        "read_by_admin": False,
+        "read_by_user": True,
+        "created_at": now_iso(),
+    }
+    await db.chat_messages.insert_one(msg)
+    return {k: v for k, v in msg.items() if k != "_id"}
+
+@api.get("/chat/unread")
+async def get_unread_count(ctx=Depends(get_org_ctx)):
+    count = await db.chat_messages.count_documents(
+        {"org_id": ctx["org_id"], "sender": "admin", "read_by_user": False}
+    )
+    return {"count": count}
+
+# Super admin: get all threads
+@api.get("/super/chat/threads")
+async def super_chat_threads(user=Depends(get_current_user)):
+    if not user.get("is_super_admin"):
+        raise HTTPException(403, "Super admin only")
+    pipeline = [
+        {"$sort": {"created_at": -1}},
+        {"$group": {
+            "_id": "$org_id",
+            "last_message": {"$first": "$message"},
+            "last_sender": {"$first": "$sender"},
+            "last_at": {"$first": "$created_at"},
+            "user_email": {"$first": "$user_email"},
+            "user_name": {"$first": "$user_name"},
+            "unread": {"$sum": {"$cond": [{"$eq": ["$read_by_admin", False]}, 1, 0]}},
+        }},
+        {"$sort": {"last_at": -1}},
+    ]
+    threads = []
+    async for t in db.chat_messages.aggregate(pipeline):
+        threads.append({
+            "org_id": t["_id"],
+            "user_email": t["user_email"],
+            "user_name": t["user_name"],
+            "last_message": t["last_message"],
+            "last_sender": t["last_sender"],
+            "last_at": t["last_at"],
+            "unread": t["unread"],
+        })
+    return threads
+
+@api.get("/super/chat/messages/{org_id}")
+async def super_get_thread(org_id: str, user=Depends(get_current_user)):
+    if not user.get("is_super_admin"):
+        raise HTTPException(403, "Super admin only")
+    msgs = []
+    async for m in db.chat_messages.find({"org_id": org_id}, {"_id": 0}).sort("created_at", 1):
+        msgs.append(m)
+    # Mark as read by admin
+    await db.chat_messages.update_many(
+        {"org_id": org_id, "sender": "user", "read_by_admin": False},
+        {"$set": {"read_by_admin": True}}
+    )
+    return msgs
+
+@api.post("/super/chat/reply")
+async def super_chat_reply(body: dict, user=Depends(get_current_user)):
+    if not user.get("is_super_admin"):
+        raise HTTPException(403, "Super admin only")
+    org_id = (body.get("org_id") or "").strip()
+    text = (body.get("message") or "").strip()
+    if not org_id or not text:
+        raise HTTPException(400, "org_id and message required")
+    msg = {
+        "id": str(uuid.uuid4()),
+        "org_id": org_id,
+        "user_email": "admin",
+        "user_name": "BillingsEasy Support",
+        "message": text,
+        "sender": "admin",
+        "read_by_admin": True,
+        "read_by_user": False,
+        "created_at": now_iso(),
+    }
+    await db.chat_messages.insert_one(msg)
+    return {k: v for k, v in msg.items() if k != "_id"}
+
+@api.get("/super/chat/unread")
+async def super_unread(user=Depends(get_current_user)):
+    if not user.get("is_super_admin"):
+        raise HTTPException(403, "Super admin only")
+    count = await db.chat_messages.count_documents({"sender": "user", "read_by_admin": False})
+    return {"count": count}
 
 
 # ---------------- Seed ----------------

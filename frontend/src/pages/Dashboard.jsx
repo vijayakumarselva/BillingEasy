@@ -10,7 +10,8 @@ import {
 import {
   TrendingUp, ShoppingCart, ArrowDownToLine, ArrowUpFromLine,
   Plus, FileText, Wallet, Receipt, Landmark, PiggyBank,
-  Users, Package, ChevronRight, Scan,
+  Users, Package, ChevronRight, Scan, Banknote, Smartphone,
+  AlertTriangle, ShoppingBag,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
@@ -20,6 +21,18 @@ export default function Dashboard() {
   const nav = useNavigate();
   const { currentOrg } = useAuth();
   const role = currentOrg?.role;
+  const orgId = currentOrg?.id || localStorage.getItem("be_org_id");
+  const [bizMode, setBizMode] = useState(() => localStorage.getItem(`biz_mode_${orgId}`) || "b2b");
+
+  // Keep bizMode in sync when AppLayout changes it
+  useEffect(() => {
+    const handler = (e) => {
+      const newMode = e.detail?.mode || localStorage.getItem(`biz_mode_${orgId}`) || "b2b";
+      setBizMode(newMode);
+    };
+    window.addEventListener("be:mode-changed", handler);
+    return () => window.removeEventListener("be:mode-changed", handler);
+  }, [orgId]);
 
   // POS staff should never see the dashboard — send them to their screen
   useEffect(() => {
@@ -29,8 +42,9 @@ export default function Dashboard() {
   }, [role, nav]);
 
   useEffect(() => {
-    api.get("/dashboard").then(r => setData(r.data)).finally(() => setLoading(false));
-  }, []);
+    const endpoint = bizMode === "pos" ? "/dashboard/pos" : "/dashboard";
+    api.get(endpoint).then(r => setData(r.data)).finally(() => setLoading(false));
+  }, [bizMode]);
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
@@ -51,6 +65,8 @@ export default function Dashboard() {
     { label: "Expense",     icon: Receipt,    to: "/expenses",   color: "bg-amber-500" },
     { label: "POS / Counter",icon: Scan,      to: "/pos",        color: "bg-indigo-500" },
   ];
+
+  if (bizMode === "pos") return <POSDashboard data={data} loading={loading} orgName={currentOrg?.name} today={today} greeting={greeting} nav={nav} />;
 
   return (
     <div data-testid="dashboard-page">
@@ -337,6 +353,100 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ─── POS Dashboard ─── */
+function POSDashboard({ data, loading, orgName, today, greeting, nav }) {
+  const skel = <Skeleton className="h-7 w-24" />;
+
+  return (
+    <div className="space-y-5" data-testid="pos-dashboard">
+
+      {/* Header */}
+      <div className="bg-gradient-to-br from-indigo-600 to-violet-700 rounded-2xl p-5 text-white flex items-center justify-between">
+        <div>
+          <p className="text-sm opacity-80">{greeting} 👋</p>
+          <h1 className="text-xl font-bold mt-0.5">{orgName || "POS Counter"}</h1>
+          <p className="text-xs opacity-60 mt-1">{today}</p>
+        </div>
+        <button onClick={() => nav("/pos")}
+          className="bg-white/20 hover:bg-white/30 transition px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2">
+          <Scan className="h-4 w-4" /> Open POS
+        </button>
+      </div>
+
+      {/* Today's stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: "Bills Today",   value: loading ? skel : <span className="text-2xl font-bold">{data?.today_count ?? 0}</span>,     icon: ShoppingBag, color: "bg-indigo-50 dark:bg-indigo-950/40", text: "text-indigo-600" },
+          { label: "Today's Sales", value: loading ? skel : <span className="text-2xl font-bold">{inrShort(data?.today_total ?? 0)}</span>, icon: TrendingUp,  color: "bg-emerald-50 dark:bg-emerald-950/40", text: "text-emerald-600" },
+          { label: "Cash Collected",value: loading ? skel : <span className="text-2xl font-bold">{inrShort(data?.cash_today ?? 0)}</span>,  icon: Banknote,    color: "bg-amber-50 dark:bg-amber-950/40",   text: "text-amber-600" },
+          { label: "UPI Collected", value: loading ? skel : <span className="text-2xl font-bold">{inrShort(data?.upi_today ?? 0)}</span>,   icon: Smartphone,  color: "bg-blue-50 dark:bg-blue-950/40",     text: "text-blue-600" },
+        ].map(({ label, value, icon: Icon, color, text }) => (
+          <div key={label} className={`rounded-2xl p-4 ${color}`}>
+            <Icon className={`h-5 w-5 mb-2 ${text}`} />
+            {value}
+            <p className={`text-xs font-medium mt-1 ${text}`}>{label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-4">
+        {/* Top products today */}
+        <div className="rounded-2xl border bg-card p-4">
+          <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><Package className="h-4 w-4 text-indigo-500" /> Top Products Today</h3>
+          {loading ? [1,2,3].map(i => <Skeleton key={i} className="h-8 w-full mb-2" />) :
+            !data?.top_products?.length
+              ? <p className="text-sm text-muted-foreground py-4 text-center">No sales yet today</p>
+              : data.top_products.map((p, i) => (
+                <div key={i} className="flex justify-between items-center py-1.5 border-b last:border-0 text-sm">
+                  <span className="truncate max-w-[60%]">{p.name}</span>
+                  <div className="text-right shrink-0">
+                    <div className="font-semibold">{inr(p.amount)}</div>
+                    <div className="text-[10px] text-muted-foreground">{p.qty} units</div>
+                  </div>
+                </div>
+              ))
+          }
+        </div>
+
+        {/* Recent bills */}
+        <div className="rounded-2xl border bg-card p-4">
+          <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><Receipt className="h-4 w-4 text-violet-500" /> Recent Bills</h3>
+          {loading ? [1,2,3].map(i => <Skeleton key={i} className="h-8 w-full mb-2" />) :
+            !data?.recent_bills?.length
+              ? <p className="text-sm text-muted-foreground py-4 text-center">No bills today</p>
+              : data.recent_bills.map((b, i) => (
+                <div key={i} className="flex justify-between items-center py-1.5 border-b last:border-0 text-sm cursor-pointer hover:bg-muted/30 rounded px-1"
+                  onClick={() => nav(`/sales/${b.id}`)}>
+                  <div>
+                    <div className="font-medium">{b.party_name}</div>
+                    <div className="text-[10px] text-muted-foreground font-mono">{b.invoice_number}</div>
+                  </div>
+                  <span className="font-semibold">{inr(b.totals?.grand_total)}</span>
+                </div>
+              ))
+          }
+        </div>
+      </div>
+
+      {/* Low stock */}
+      {(data?.low_stock?.length > 0) && (
+        <div className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/20 p-4">
+          <h3 className="font-semibold text-sm mb-3 flex items-center gap-2 text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-4 w-4" /> Low Stock Alert
+          </h3>
+          <div className="flex flex-wrap gap-2">
+            {data.low_stock.map((p, i) => (
+              <span key={i} className="text-xs bg-white dark:bg-zinc-900 border border-amber-200 rounded-full px-3 py-1 font-medium">
+                {p.name} — {p.stock} {p.unit}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -9,8 +9,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Eye, FileDown, Share2, ChevronRight, FileText } from "lucide-react";
+import { Plus, Search, Trash2, Eye, FileDown, Share2, ChevronRight, FileText, Pencil } from "lucide-react";
 import { inr, fmtDate } from "@/lib/format";
+import { openExternalUrl, downloadFile } from "@/lib/mobile";
 
 const STATUS_COLOR = {
   finalized: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
@@ -50,7 +51,7 @@ export default function Sales() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url; a.download = `${inv.invoice_no}.pdf`;
-      document.body.appendChild(a); a.click(); a.remove();
+      downloadFile(url, `${inv.invoice_no}.pdf`);
       setTimeout(() => window.URL.revokeObjectURL(url), 1000);
     } catch { toast.error("PDF download failed"); }
   };
@@ -59,7 +60,7 @@ export default function Sales() {
     const phone = (inv.party_snapshot?.phone || "").replace(/\D/g, "");
     const msg = encodeURIComponent(`Hi ${inv.party_name}, your invoice ${inv.invoice_no} for ₹${inv.totals?.grand_total?.toFixed(2)} is ready. Thank you!`);
     const url = phone ? `https://wa.me/${phone}?text=${msg}` : `https://wa.me/?text=${msg}`;
-    window.open(url, "_blank");
+    openExternalUrl(url);
   };
 
   return (
@@ -179,7 +180,8 @@ export default function Sales() {
                     <td className="num">{inv.due > 0 ? <span className="text-rose-600 font-semibold">{inr(inv.due)}</span> : <Badge className="bg-emerald-600">Paid</Badge>}</td>
                     <td><Badge variant={inv.status === "finalized" ? "default" : "secondary"}>{inv.status}</Badge></td>
                     <td className="text-right whitespace-nowrap">
-                      <Button size="icon" variant="ghost" onClick={() => nav(`/sales/${inv.id}`)}><Eye className="h-4 w-4" /></Button>
+                      <Button size="icon" variant="ghost" onClick={() => nav(`/sales/${inv.id}`)} title="View"><Eye className="h-4 w-4" /></Button>
+                      <Button size="icon" variant="ghost" onClick={() => nav(`/sales/${inv.id}/edit`)} title="Edit"><Pencil className="h-4 w-4 text-blue-500" /></Button>
                       <Button size="icon" variant="ghost" onClick={() => downloadPdf(inv)}><FileDown className="h-4 w-4" /></Button>
                       <Button size="icon" variant="ghost" onClick={() => shareWhatsApp(inv)}><Share2 className="h-4 w-4" /></Button>
                       <AlertDialog>

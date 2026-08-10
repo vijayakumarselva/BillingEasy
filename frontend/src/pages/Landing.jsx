@@ -156,6 +156,12 @@ export default function Landing() {
               >
                 Contact
               </Link>
+              <Link
+                to="/free/tools"
+                className="hover:text-blue-600 transition-colors text-emerald-600 font-semibold"
+              >
+                Free Tools
+              </Link>
             </nav>
 
             {/* Desktop CTA */}

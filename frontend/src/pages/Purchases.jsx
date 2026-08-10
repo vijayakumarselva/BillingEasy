@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { Plus, Trash2, FileDown, ScanLine, Upload, Loader2, Smartphone, Copy, CheckCircle2, Bell } from "lucide-react";
+import { downloadFile } from "@/lib/mobile";
 import DropZone from "@/components/DropZone";
 import PartySelect from "@/components/PartySelect";
 import { inr, fmtDate, todayISO } from "@/lib/format";
@@ -177,9 +178,8 @@ export default function Purchases() {
       const blob = new Blob([res.data], { type: "application/pdf" });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url; a.download = `PB-${(p.bill_no || "purchase").replace(/[\/\s]+/g, "_")}.pdf`;
-      document.body.appendChild(a); a.click();
-      a.remove(); window.URL.revokeObjectURL(url);
+      downloadFile(url, `PB-${(p.bill_no || "purchase").replace(/[\/\s]+/g, "_")}.pdf`);
+      window.URL.revokeObjectURL(url);
     } catch { toast.error("PDF download failed"); }
   };
 

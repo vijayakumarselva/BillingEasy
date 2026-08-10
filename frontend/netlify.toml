@@ -6,3 +6,17 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Prevent index.html from being cached so Capacitor webview always gets the latest JS
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+    Pragma = "no-cache"
+    Expires = "0"
+
+# Static assets with hash in filename can be cached forever
+[[headers]]
+  for = "/static/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

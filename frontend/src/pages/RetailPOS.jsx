@@ -1,5 +1,6 @@
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import api from "@/lib/api";
+import { openPrintWindow } from "@/lib/mobile";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,8 +10,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Scan, ShoppingCart, Trash2, Plus, Minus, X, Printer,
   Tag, User, Search, Package, ChevronDown, LayoutGrid, Receipt,
-  Banknote, Smartphone, CheckCircle2, IndianRupee, Edit2
+  Banknote, Smartphone, CheckCircle2, IndianRupee, Edit2, Camera
 } from "lucide-react";
+import { BrowserMultiFormatReader } from "@zxing/browser";
 import { todayISO } from "@/lib/format";
 
 const inr = (n) =>
@@ -46,6 +48,7 @@ export default function RetailPOS() {
 
   const scanRef = useRef(null);
   const customerDDRef = useRef(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
 
   const loadProducts = () => {
     setLoadingProducts(true);
@@ -156,17 +159,31 @@ export default function RetailPOS() {
     const q = search.trim().toLowerCase();
     if (!q) return;
     const product = products.find(
-      p => p.upc === q || p.barcode?.toLowerCase() === q || p.sku?.toLowerCase() === q
+      p => p.upc === q || p.upc?.toLowerCase() === q || p.barcode?.toLowerCase() === q || p.sku?.toLowerCase() === q
     );
     if (product) { addToCart(product); toast.success(`Added: ${product.name}`); setSearch(""); }
     else toast.error("Product not found for: " + search);
   }
 
+  const handleScannedCode = useCallback((code) => {
+    const q = code.trim().toLowerCase();
+    const product = products.find(
+      p => p.upc === code.trim() || p.upc?.toLowerCase() === q || p.barcode?.toLowerCase() === q || p.sku?.toLowerCase() === q
+    );
+    if (product) { addToCart(product); toast.success(`Added: ${product.name}`); setCameraOpen(false); }
+    else { toast.error("No product found for: " + code); }
+  }, [products]);
+
   async function handleBill(paymentMethod) {
     if (cart.length === 0) { toast.error("Cart is empty"); return; }
+    // Warn if any item has ₹0 price — likely product not set up
+    const zeroItems = cart.filter(c => !c.price || c.price <= 0);
+    if (zeroItems.length > 0) {
+      toast.error(`${zeroItems.map(c => c.product.name).join(", ")} has ₹0 price — please edit the product and set a sale price first.`);
+      return;
+    }
     setBilling(true);
     try {
-      // Spread discount evenly across items as discount_pct
       const subtotal = cart.reduce((s, c) => s + c.qty * c.price, 0);
       const payload = {
         party_id: customerId || "",
@@ -193,11 +210,23 @@ export default function RetailPOS() {
       setPaymentModal(false);
       setReceiptDialog({ open: true, invoice: res.data, paymentMethod });
     } catch (err) {
-      console.error("Billing 422 detail:", JSON.stringify(err?.response?.data));
-      const detail = err?.response?.data?.detail;
-      const msg = Array.isArray(detail)
-        ? detail.map(d => d.msg + " @ " + (d.loc||[]).join(".")).join("; ")
-        : (typeof detail === "string" ? detail : err?.response?.data?.message || "Billing failed");
+      console.error("Billing error:", err?.response?.status, JSON.stringify(err?.response?.data));
+      const data = err?.response?.data;
+      const detail = data?.detail;
+      let msg;
+      if (err?.response?.status === 402) {
+        msg = "Subscription required — go to Settings → Billing to renew.";
+      } else if (Array.isArray(detail)) {
+        msg = detail.map(d => d.msg + (d.loc ? " (" + d.loc.slice(-1) + ")" : "")).join("; ");
+      } else if (typeof detail === "string") {
+        msg = detail;
+      } else if (data?.message) {
+        msg = data.message;
+      } else if (!err?.response) {
+        msg = "Network error — check internet connection and try again.";
+      } else {
+        msg = `Billing failed (${err?.response?.status || "unknown error"})`;
+      }
       toast.error(msg);
     } finally {
       setBilling(false);
@@ -207,16 +236,14 @@ export default function RetailPOS() {
   function printReceipt() {
     const el = document.getElementById("pos-receipt-print");
     if (!el) return;
-    const win = window.open("", "_blank", "width=400,height=700");
-    win.document.write(`<!DOCTYPE html><html><head><title>Receipt</title><style>
+    openPrintWindow(`<!DOCTYPE html><html><head><title>Receipt</title><style>
       @page{size:80mm auto;margin:0}*{box-sizing:border-box;font-family:'Courier New',monospace}
       body{width:80mm;margin:0;padding:8px;font-size:12px;color:#000}
       .center{text-align:center}.bold{font-weight:bold}
       .divider{border-top:1px dashed #000;margin:6px 0}.row{display:flex;justify-content:space-between}
       .total-row{display:flex;justify-content:space-between;font-weight:bold;font-size:14px}
       h2{margin:0;font-size:16px}p{margin:2px 0}
-    </style></head><body>${el.innerHTML}<script>window.onload=()=>{window.print();window.close();}<\/script></body></html>`);
-    win.document.close();
+    </style></head><body>${el.innerHTML}<script>window.onload=()=>{window.print();}<\/script></body></html>`);
   }
 
   async function saveNewCustomer() {
@@ -409,16 +436,23 @@ export default function RetailPOS() {
         </div>
 
         <div className="px-4 pt-3 pb-2 shrink-0">
-          <div className="relative">
-            <Scan className="absolute left-3 top-1/2 -translate-y-1/2 text-indigo-500 w-5 h-5" />
-            <Input ref={scanRef} value={search} onChange={e => setSearch(e.target.value)}
-              onKeyDown={handleScanEnter} placeholder="Search product or scan barcode…"
-              className="pl-10 pr-10 h-11 text-base border-indigo-200 focus:border-indigo-500" autoFocus />
-            {search && (
-              <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
-                <X className="w-4 h-4" />
-              </button>
-            )}
+          <div className="relative flex gap-2">
+            <div className="relative flex-1">
+              <Scan className="absolute left-3 top-1/2 -translate-y-1/2 text-indigo-500 w-5 h-5" />
+              <Input ref={scanRef} value={search} onChange={e => setSearch(e.target.value)}
+                onKeyDown={handleScanEnter} placeholder="Search or scan barcode…"
+                className="pl-10 pr-10 h-11 text-base border-indigo-200 focus:border-indigo-500" autoFocus />
+              {search && (
+                <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            <button onClick={() => setCameraOpen(true)}
+              className="h-11 w-11 shrink-0 flex items-center justify-center rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 transition-colors"
+              title="Scan barcode with camera">
+              <Camera className="w-5 h-5" />
+            </button>
           </div>
         </div>
 
@@ -721,6 +755,88 @@ export default function RetailPOS() {
           </div>
         </DialogContent>
       </Dialog>
+      {/* Camera Scanner Dialog */}
+      <CameraScanner open={cameraOpen} onClose={() => setCameraOpen(false)} onDetected={handleScannedCode} />
     </div>
+  );
+}
+
+function CameraScanner({ open, onClose, onDetected }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const readerRef = useRef(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setError("");
+    let cancelled = false;
+
+    async function start() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
+        streamRef.current = stream;
+
+        // Wait for the video element to be in the DOM
+        await new Promise(r => setTimeout(r, 100));
+        if (cancelled || !videoRef.current) return;
+
+        const video = videoRef.current;
+        video.srcObject = stream;
+        await video.play().catch(() => {});
+
+        const reader = new BrowserMultiFormatReader();
+        readerRef.current = reader;
+
+        reader.decodeFromVideoElement(video, (result, err) => {
+          if (result) onDetected(result.getText());
+        });
+      } catch {
+        if (!cancelled) setError("Camera access denied. Please allow camera permission and try again.");
+      }
+    }
+
+    start();
+
+    return () => {
+      cancelled = true;
+      try { readerRef.current?.reset(); } catch {}
+      streamRef.current?.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    };
+  }, [open]); // eslint-disable-line
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-sm p-0 overflow-hidden">
+        <DialogHeader className="px-4 pt-4 pb-2">
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <Camera className="h-4 w-4 text-indigo-500" /> Scan Barcode
+          </DialogTitle>
+        </DialogHeader>
+        <div className="relative bg-black" style={{ aspectRatio: "1/1" }}>
+          {error
+            ? <div className="flex items-center justify-center h-full text-white text-sm text-center px-6">{error}</div>
+            : <>
+                <video ref={videoRef} className="w-full h-full object-cover" autoPlay muted playsInline />
+                {/* Aim guide */}
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="w-48 h-28 border-2 border-indigo-400 rounded-lg opacity-70" />
+                </div>
+              </>
+          }
+        </div>
+        <p className="text-xs text-muted-foreground text-center py-3 px-4">
+          Point the camera at a barcode — it scans automatically
+        </p>
+        <div className="px-4 pb-4">
+          <Button variant="outline" className="w-full" onClick={onClose}>Cancel</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

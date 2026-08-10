@@ -11,10 +11,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Edit, AlertTriangle, QrCode, Upload, Package, RefreshCw, Barcode, DollarSign, Layers, Camera, Sparkles, Loader2, Download } from "lucide-react";
+import { Plus, Search, Trash2, Edit, AlertTriangle, QrCode, Upload, Package, RefreshCw, Barcode, DollarSign, Layers, Camera, Sparkles, Loader2, Download, Lock, X } from "lucide-react";
 import { inr } from "@/lib/format";
 import HsnSuggestButton from "@/components/HsnSuggestButton";
 import JsBarcode from "jsbarcode";
+import { openPrintWindow, downloadOrShowPng } from "@/lib/mobile";
 
 const ALL_MODES = [
   { value: "b2b", label: "B2B", color: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" },
@@ -23,8 +24,10 @@ const ALL_MODES = [
   { value: "pos", label: "POS", color: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" },
 ];
 
+const UNITS = ["NOS", "PCS", "KG", "G", "L", "ML", "MTR", "CM", "BOX", "PACK", "SET", "BAG", "BTL", "CAN", "DZN"];
+
 const empty = {
-  name: "", sku: "", hsn: "", unit: "NOS", category: "General", upc: "",
+  name: "", sku: "", hsn: "", unit: "NOS", unit_qty: "", category: "General", upc: "",
   purchase_price: 0, sale_price: 0, gst_rate: 18, stock: 0, low_stock_alert: 5,
   barcode: "", modes: ["b2b", "b2c", "restaurant", "pos"], image_b64: "",
 };
@@ -35,8 +38,11 @@ export default function Products() {
   const [list, setList] = useState([]); const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState(""); const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty); const [editId, setEditId] = useState(null);
+  const originalUpcRef = useRef(""); // cache the original UPC so saves never accidentally clear it
   const [barcodeProduct, setBarcodeProduct] = useState(null);
   const [modeFilter, setModeFilter] = useState("all");
+  const [upcDlOpen, setUpcDlOpen] = useState(false);
+  const [upcSelected, setUpcSelected] = useState([]);
   const barcodeDialogRef = useRef(null);
 
   const load = async () => {
@@ -61,12 +67,20 @@ export default function Products() {
     return digits + check;
   };
 
-  const startCreate = () => { setForm({ ...empty, sku: genSku(), upc: genUPC() }); setEditId(null); setOpen(true); };
-  const startEdit = (p) => { setForm({ ...empty, ...p }); setEditId(p.id); setOpen(true); };
+  const startCreate = () => { originalUpcRef.current = ""; setForm({ ...empty, sku: genSku(), upc: genUPC() }); setEditId(null); setOpen(true); };
+  const startEdit = (p) => {
+    originalUpcRef.current = p.upc || "";
+    setForm({ ...empty, ...p, upc: p.upc || "" });
+    setEditId(p.id); setOpen(true);
+  };
   const save = async () => {
     try {
-      if (editId) await api.put(`/products/${editId}`, form);
-      else await api.post("/products", form);
+      if (editId) {
+        const payload = { ...form };
+        // Always preserve the original UPC — never let a save clear it
+        if (!payload.upc && originalUpcRef.current) payload.upc = originalUpcRef.current;
+        await api.put(`/products/${editId}`, payload);
+      } else await api.post("/products", form);
       toast.success("Saved"); setOpen(false); load();
     } catch (err) {
       const detail = err?.response?.data?.detail || "";
@@ -87,9 +101,7 @@ export default function Products() {
     const svg = barcodeDialogRef.current;
     if (!svg) return;
     const svgData = new XMLSerializer().serializeToString(svg);
-    const win = window.open("", "_blank");
-    win.document.write(`<html><body style="margin:0;display:flex;justify-content:center;align-items:center;height:100vh">${svgData}</body></html>`);
-    win.document.close(); win.print();
+    openPrintWindow(`<html><head><style>@media print{body{margin:0}}</style></head><body style="margin:0;display:flex;justify-content:center;align-items:center;height:100vh">${svgData}<script>window.onload=()=>{window.print();}<\/script></body></html>`);
   };
 
   const downloadPng = () => {
@@ -102,11 +114,57 @@ export default function Products() {
     img.onload = () => {
       canvas.width = img.width; canvas.height = img.height;
       ctx.drawImage(img, 0, 0);
-      const a = document.createElement("a");
-      a.download = `barcode-${barcodeProduct?.sku}.png`;
-      a.href = canvas.toDataURL(); a.click();
+      downloadOrShowPng(canvas.toDataURL(), `barcode-${barcodeProduct?.sku}.png`);
     };
     img.src = "data:image/svg+xml;base64," + btoa(data);
+  };
+
+  const openUpcDownload = () => {
+    const withUpc = list.filter(p => p.upc && p.upc.length >= 12);
+    if (withUpc.length === 0) { toast.error("No products with UPC codes yet"); return; }
+    setUpcSelected(withUpc.map(p => p.id));
+    setUpcDlOpen(true);
+  };
+
+  const printUpcSheet = (ids) => {
+    const products = list.filter(p => ids.includes(p.id) && p.upc && p.upc.length >= 12);
+    if (products.length === 0) { toast.error("Select at least one product"); return; }
+    openPrintWindow(`<!DOCTYPE html><html><head><meta charset="utf-8">
+      <title>UPC Sticker Sheet</title>
+      <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"><\/script>
+      <style>
+        body { margin: 0; background: #fff; font-family: sans-serif; }
+        .grid { display: flex; flex-wrap: wrap; gap: 0; }
+        .sticker { width: 200px; height: 120px; border: 1px dashed #ccc; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 6px; box-sizing: border-box; page-break-inside: avoid; }
+        .name { font-size: 9px; font-weight: 700; text-align: center; max-width: 190px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-bottom: 2px; }
+        .sku { font-size: 8px; color: #666; font-family: monospace; }
+        svg { max-width: 190px; height: 60px; }
+        @media print { body { margin: 0; } .no-print { display: none; } }
+      </style>
+    </head><body>
+      <div class="no-print" style="padding:12px;background:#f5f5f5;display:flex;align-items:center;gap:12px;">
+        <strong>UPC Sticker Sheet — ${products.length} product(s)</strong>
+        <button onclick="window.print()" style="padding:6px 16px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;">Print / Save PDF</button>
+      </div>
+      <div class="grid" id="grid"></div>
+      <script>
+        const products = ${JSON.stringify(products.map(p => ({ name: p.name, sku: p.sku, upc: p.upc })))};
+        const grid = document.getElementById('grid');
+        products.forEach(p => {
+          const div = document.createElement('div');
+          div.className = 'sticker';
+          const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+          div.innerHTML = '<div class="name">' + p.name + '</div>';
+          div.appendChild(svg);
+          const skuEl = document.createElement('div');
+          skuEl.className = 'sku';
+          skuEl.textContent = p.sku;
+          div.appendChild(skuEl);
+          grid.appendChild(div);
+          try { JsBarcode(svg, p.upc, { format: 'upc', width: 1.5, height: 50, displayValue: true, fontSize: 10, margin: 2 }); } catch(e) {}
+        });
+      <\/script>
+    </body></html>`);
   };
 
   const downloadUPC = (p) => {
@@ -125,9 +183,7 @@ export default function Products() {
       canvas.width = img.width || 200; canvas.height = img.height || 120;
       ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
-      const a = document.createElement("a");
-      a.download = `upc-${p.name.replace(/\s+/g, "-")}.png`;
-      a.href = canvas.toDataURL("image/png"); a.click();
+      downloadOrShowPng(canvas.toDataURL("image/png"), `upc-${p.name.replace(/\s+/g, "-")}.png`);
     };
     img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(data)));
   };
@@ -152,9 +208,14 @@ export default function Products() {
           <h1 className="text-3xl font-semibold tracking-tight">Products & Stock</h1>
           <p className="text-sm text-muted-foreground mt-1">What you sell — with GST rate and current stock.</p>
         </div>
-        {canEdit && <Button onClick={startCreate} className="bg-blue-600 hover:bg-blue-700" data-testid="product-new-button-desktop">
-          <Plus className="h-4 w-4 mr-1.5" /> Add Product
-        </Button>}
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={openUpcDownload} title="Download UPC sticker sheet">
+            <Download className="h-4 w-4 mr-1.5" /> Download UPCs
+          </Button>
+          {canEdit && <Button onClick={startCreate} className="bg-blue-600 hover:bg-blue-700" data-testid="product-new-button-desktop">
+            <Plus className="h-4 w-4 mr-1.5" /> Add Product
+          </Button>}
+        </div>
       </div>
 
       {/* Filters */}
@@ -188,7 +249,7 @@ export default function Products() {
                 }
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-bold text-foreground truncate">{p.name}</p>
-                  <p className="text-xs text-muted-foreground">{p.sku} · GST {p.gst_rate}%</p>
+                  <p className="text-xs text-muted-foreground">{p.sku} · {p.unit_qty ? `${p.unit_qty} ${p.unit}` : p.unit} · GST {p.gst_rate}%</p>
                 </div>
                 <div className="text-right shrink-0">
                   <p className="mobile-amount text-foreground">{inr(p.sale_price)}</p>
@@ -242,13 +303,18 @@ export default function Products() {
                     <td className="num">{p.gst_rate}%</td>
                     <td className="num">
                       <span className={p.stock <= p.low_stock_alert ? "text-rose-600 font-semibold" : ""}>
-                        {p.stock} {p.unit}
+                        {p.stock} {p.unit_qty ? `${p.unit_qty} ${p.unit}` : p.unit}
                       </span>
                       {p.stock <= p.low_stock_alert && <AlertTriangle className="inline h-3 w-3 text-rose-500 ml-1" />}
                     </td>
                     <td className="text-right">
                       <Button size="icon" variant="ghost" onClick={() => setBarcodeProduct(p)} title="Show Barcode"><QrCode className="h-4 w-4" /></Button>
-                      {p.upc && <Button size="icon" variant="ghost" onClick={() => downloadUPC(p)} title="Download UPC barcode (GS1)"><Download className="h-4 w-4 text-indigo-500" /></Button>}
+                      <Button size="icon" variant="ghost"
+                        onClick={() => p.upc ? downloadUPC(p) : toast.info("No UPC — edit this product and click Generate to assign one")}
+                        title={p.upc ? `Download UPC: ${p.upc}` : "No UPC yet — edit product to generate"}
+                        className={p.upc ? "" : "opacity-30"}>
+                        <Download className={`h-4 w-4 ${p.upc ? "text-indigo-500" : ""}`} />
+                      </Button>
                       {canEdit && <Button size="icon" variant="ghost" onClick={() => startEdit(p)} data-testid={`product-edit-${p.name}`}><Edit className="h-4 w-4" /></Button>}
                       {canEdit && <AlertDialog>
                         <AlertDialogTrigger asChild>
@@ -268,9 +334,69 @@ export default function Products() {
       </Card>
 
       <BarcodeDialog product={barcodeProduct} svgRef={barcodeDialogRef} onClose={() => setBarcodeProduct(null)} onPrint={printBarcode} onDownload={downloadPng} />
+      <UpcDownloadDialog
+        open={upcDlOpen} onOpenChange={setUpcDlOpen}
+        products={list.filter(p => p.upc && p.upc.length >= 12)}
+        selected={upcSelected} setSelected={setUpcSelected}
+        onPrint={printUpcSheet}
+      />
 
       <ProductFormDialog open={open} onOpenChange={setOpen} form={form} setForm={setForm} editId={editId} onSave={save} genSku={genSku} genUPC={genUPC} />
     </div>
+  );
+}
+
+/* ─── UPC Download Dialog ─── */
+function UpcDownloadDialog({ open, onOpenChange, products, selected, setSelected, onPrint }) {
+  const allIds = products.map(p => p.id);
+  const allChecked = allIds.length > 0 && allIds.every(id => selected.includes(id));
+  const toggleAll = () => setSelected(allChecked ? [] : allIds);
+  const toggle = (id) => setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Download className="h-4 w-4 text-indigo-500" /> Download UPC Stickers</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-2">
+          {/* Select All row */}
+          <label className="flex items-center gap-3 px-3 py-2 rounded-lg bg-muted/50 cursor-pointer select-none">
+            <input type="checkbox" checked={allChecked} onChange={toggleAll} className="rounded" />
+            <span className="text-sm font-semibold">Select All ({products.length})</span>
+            <span className="ml-auto text-xs text-muted-foreground">{selected.length} selected</span>
+          </label>
+
+          {/* Product list */}
+          <div className="max-h-64 overflow-y-auto space-y-1 rounded-lg border p-2">
+            {products.length === 0
+              ? <p className="text-sm text-muted-foreground text-center py-4">No products with UPC codes yet.</p>
+              : products.map(p => (
+                <label key={p.id} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-muted/50 cursor-pointer select-none">
+                  <input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggle(p.id)} className="rounded" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{p.name}</p>
+                    <p className="text-[10px] text-muted-foreground font-mono">{p.upc} · {p.sku}</p>
+                  </div>
+                </label>
+              ))
+            }
+          </div>
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button
+            className="bg-indigo-600 hover:bg-indigo-700"
+            disabled={selected.length === 0}
+            onClick={() => { onPrint(selected); onOpenChange(false); }}
+          >
+            <Download className="h-4 w-4 mr-1.5" /> Print {selected.length} Sticker{selected.length !== 1 ? "s" : ""}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -345,8 +471,11 @@ function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col p-0 gap-0 overflow-hidden" data-testid="product-form-dialog">
-        <DialogHeader className="px-6 pt-6 pb-3 border-b shrink-0">
+        <DialogHeader className="px-6 pt-4 pb-3 border-b shrink-0 flex-row items-center justify-between">
           <DialogTitle className="text-xl">{editId ? "Edit Product" : "New Product"}</DialogTitle>
+          <button onClick={() => onOpenChange(false)} className="rounded-full p-1.5 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
+            <X className="h-5 w-5" />
+          </button>
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
@@ -437,8 +566,18 @@ function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div className="space-y-1.5">
                 <Label>Unit</Label>
-                <Input value={form.unit} onChange={(e) => f("unit")(e.target.value)}
-                  placeholder="NOS" data-testid="product-unit-input" />
+                <Select value={form.unit} onValueChange={f("unit")}>
+                  <SelectTrigger data-testid="product-unit-input"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {UNITS.map(u => <SelectItem key={u} value={u}>{u}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Size / Weight</Label>
+                <Input value={form.unit_qty} onChange={(e) => f("unit_qty")(e.target.value)}
+                  placeholder={form.unit === "KG" ? "e.g. 1" : form.unit === "ML" ? "e.g. 500" : form.unit === "L" ? "e.g. 1" : "e.g. 250"}
+                  type="number" min="0" />
               </div>
               <div className="space-y-1.5">
                 <Label>GST Rate</Label>
@@ -512,23 +651,34 @@ function ProductFormDialog({ open, onOpenChange, form, setForm, editId, onSave, 
             {/* UPC row — always visible, prominent */}
             <div className="grid sm:grid-cols-2 gap-4 items-start">
               <div className="space-y-1.5">
-                <Label className="flex items-center justify-between gap-1.5">
-                  <span className="flex items-center gap-1.5">
-                    UPC Code
-                    <span className="text-[10px] bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-semibold">POS</span>
-                  </span>
-                  <button type="button" title="Auto-generate GS1 India UPC"
-                    onClick={() => setForm(prev => ({ ...prev, upc: genUPC() }))}
-                    className="flex items-center gap-1 text-xs text-indigo-500 hover:text-indigo-700 font-medium">
-                    <RefreshCw className="h-3 w-3" /> Generate
-                  </button>
-                </Label>
-                <Input value={form.upc || ""} onChange={(e) => f("upc")(e.target.value)}
-                  placeholder="Auto-generated (click Generate →)"
-                  className="font-mono text-sm"
-                  maxLength={14}
-                  data-testid="product-upc-input" />
-                <p className="text-[10px] text-muted-foreground">GS1 India UPC-A (890 prefix) · 12 digits · for POS scanning</p>
+                {(() => {
+                  const upcLocked = !!(editId && form.upc);
+                  return <>
+                    <Label className="flex items-center justify-between gap-1.5">
+                      <span className="flex items-center gap-1.5">
+                        UPC Code
+                        <span className="text-[10px] bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-semibold">POS</span>
+                        {upcLocked && <span className="text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 rounded flex items-center gap-0.5"><Lock className="h-2.5 w-2.5" /> Locked</span>}
+                      </span>
+                      {!upcLocked && (
+                        <button type="button" title="Auto-generate GS1 India UPC"
+                          onClick={() => setForm(prev => ({ ...prev, upc: genUPC() }))}
+                          className="flex items-center gap-1 text-xs text-indigo-500 hover:text-indigo-700 font-medium">
+                          <RefreshCw className="h-3 w-3" /> Generate
+                        </button>
+                      )}
+                    </Label>
+                    <Input value={form.upc || ""} onChange={(e) => !upcLocked && f("upc")(e.target.value)}
+                      readOnly={upcLocked}
+                      placeholder="Auto-generated (click Generate →)"
+                      className={`font-mono text-sm ${upcLocked ? "bg-muted cursor-not-allowed text-muted-foreground" : ""}`}
+                      maxLength={14}
+                      data-testid="product-upc-input" />
+                    <p className="text-[10px] text-muted-foreground">
+                      {upcLocked ? "UPC is permanent — cannot be changed once assigned." : "GS1 India UPC-A (890 prefix) · 12 digits · for POS scanning"}
+                    </p>
+                  </>;
+                })()}
               </div>
               <div className="rounded bg-white dark:bg-zinc-900 border border-dashed border-indigo-300 dark:border-indigo-700 flex flex-col items-center justify-center min-h-[64px] overflow-hidden">
                 {form.upc && form.upc.length >= 12

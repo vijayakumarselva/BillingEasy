@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { LogoMark } from "@/components/Logo";
 import { inr, fmtDate } from "@/lib/format";
 import { FileDown } from "lucide-react";
+import { downloadFile } from "@/lib/mobile";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -42,9 +43,7 @@ export default function PublicInvoice() {
     const res = await axios.get(`${API}/public/invoices/${token}/pdf`, { responseType: "blob" });
     const blob = new Blob([res.data], { type: "application/pdf" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `${invoice.invoice_no}.pdf`;
-    document.body.appendChild(a); a.click(); a.remove();
+    downloadFile(url, `${invoice.invoice_no}.pdf`);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 

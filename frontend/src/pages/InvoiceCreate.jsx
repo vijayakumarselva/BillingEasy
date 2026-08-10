@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,8 @@ import { inr, todayISO, addDaysISO } from "@/lib/format";
 
 export default function InvoiceCreate() {
   const nav = useNavigate();
+  const { id: editId } = useParams(); // present when editing
+  const isEdit = !!editId;
   const [biz, setBiz] = useState({});
   const [parties, setParties] = useState([]);
   const [products, setProducts] = useState([]);
@@ -23,10 +25,12 @@ export default function InvoiceCreate() {
   const [dueDate, setDueDate] = useState(addDaysISO(30));
   const [type, setType] = useState("sale");
   const [status, setStatus] = useState("finalized");
-  const [invoiceCategory, setInvoiceCategory] = useState("stock"); // "stock" | "service"
-  const [taxMode, setTaxMode] = useState("exclusive"); // "exclusive" | "inclusive"
+  const [invoiceCategory, setInvoiceCategory] = useState("stock");
+  const [taxMode, setTaxMode] = useState("exclusive");
   const [items, setItems] = useState([blankItem()]);
   const [notes, setNotes] = useState("Thank you for your business!");
+  const [shippingAddress, setShippingAddress] = useState("");
+  const [poNumber, setPoNumber] = useState("");
   const [saving, setSaving] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [banks, setBanks] = useState([]);
@@ -44,7 +48,35 @@ export default function InvoiceCreate() {
     api.get("/products", { params: { mode } }).then(r => setProducts(r.data));
     api.get("/bank-accounts").then(r => setBanks(r.data));
     api.get("/orgs/current/branches").then(r => setBranches((r.data || []).filter(b => b.active))).catch(() => {});
-  }, []);
+
+    // If editing, load existing invoice data
+    if (editId) {
+      api.get(`/invoices/${editId}`).then(r => {
+        const inv = r.data;
+        setPartyId(inv.party_id || "");
+        setInvoiceDate(inv.invoice_date || todayISO());
+        setDueDate(inv.due_date || addDaysISO(30));
+        setType(inv.type || "sale");
+        setStatus(inv.status || "finalized");
+        setInvoiceCategory(inv.invoice_category || "stock");
+        setNotes(inv.notes || "");
+        setShippingAddress(inv.shipping_address || "");
+        setPoNumber(inv.po_number || "");
+        setBranchId(inv.branch_id || "");
+        // Map stored items back to form items
+        setItems((inv.items || []).map(it => ({
+          product_id: it.product_id || "",
+          name: it.name,
+          hsn: it.hsn || "",
+          qty: it.qty,
+          unit: it.unit || "NOS",
+          rate: it.rate,
+          discount_pct: it.discount_pct || 0,
+          gst_rate: it.gst_rate ?? 18,
+        })));
+      }).catch(() => toast.error("Failed to load invoice"));
+    }
+  }, [editId]);
 
   function blankItem() {
     return { product_id: "", name: "", hsn: "", qty: 1, unit: "NOS", rate: 0, discount_pct: 0, gst_rate: 18 };
@@ -98,18 +130,23 @@ export default function InvoiceCreate() {
     if (!items.length || items.some(it => !it.name)) { toast.error("Add at least one item"); return; }
     setSaving(true);
     try {
-      const { data } = await api.post("/invoices", {
+      const payload = {
         party_id: partyId, invoice_date: invoiceDate, due_date: dueDate,
         items, notes, status, type, is_recurring: false,
         bank_account_id: (bankId && bankId !== "__none__") ? bankId : null,
         branch_id: (branchId && branchId !== "__none__") ? branchId : "",
         invoice_category: invoiceCategory,
         tax_mode: taxMode,
-      });
-      toast.success("Invoice created");
+        shipping_address: shippingAddress,
+        po_number: poNumber,
+      };
+      const { data } = isEdit
+        ? await api.put(`/invoices/${editId}`, payload)
+        : await api.post("/invoices", payload);
+      toast.success(isEdit ? "Invoice updated" : "Invoice created");
       nav(`/sales/${data.id}`);
     } catch (e) {
-      toast.error("Failed to create");
+      toast.error(isEdit ? "Failed to update invoice" : "Failed to create invoice");
     } finally { setSaving(false); }
   };
 
@@ -119,7 +156,7 @@ export default function InvoiceCreate() {
     <div className="space-y-6" data-testid="invoice-create-page">
       <Button variant="ghost" onClick={() => nav(-1)} data-testid="invoice-create-back"><ArrowLeft className="h-4 w-4 mr-1.5" /> Back</Button>
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-3xl font-semibold tracking-tight">New {TYPE_LABEL[type]}</h1>
+        <h1 className="text-3xl font-semibold tracking-tight">{isEdit ? "Edit" : "New"} {TYPE_LABEL[type]}</h1>
         <div className="flex gap-2 flex-wrap items-center">
           <div className="flex rounded-md border overflow-hidden text-xs">
             <button type="button" onClick={() => setInvoiceCategory("stock")}
@@ -274,9 +311,21 @@ export default function InvoiceCreate() {
       </Card>
 
       <div className="grid lg:grid-cols-2 gap-4">
-        <Card className="p-5">
-          <Label>Notes / Terms</Label>
-          <Textarea className="mt-1.5" rows={6} value={notes} onChange={(e) => setNotes(e.target.value)} data-testid="inv-notes-input" />
+        <Card className="p-5 space-y-3">
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>PO / Reference Number</Label>
+              <Input placeholder="e.g. PO-2024-001" value={poNumber} onChange={e => setPoNumber(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Shipping Address</Label>
+              <Textarea rows={2} placeholder="Ship-to address (if different from billing)" value={shippingAddress} onChange={e => setShippingAddress(e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <Label>Notes / Terms</Label>
+            <Textarea className="mt-1.5" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} data-testid="inv-notes-input" />
+          </div>
         </Card>
         <Card className="p-5 space-y-2">
           <Row label="Subtotal" value={totals.subtotal} />
@@ -297,7 +346,7 @@ export default function InvoiceCreate() {
       <div className="flex justify-end gap-2">
         <Button variant="outline" onClick={() => nav(-1)}>Cancel</Button>
         <Button className="bg-blue-600 hover:bg-blue-700" onClick={save} disabled={saving} data-testid="inv-save-button">
-          {saving ? "Saving…" : "Save Invoice"}
+          {saving ? "Saving…" : isEdit ? "Update Invoice" : "Save Invoice"}
         </Button>
       </div>
 

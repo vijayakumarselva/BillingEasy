@@ -172,6 +172,53 @@ async def ai_product_suggest(*, name: str = "", image_b64: str = "") -> Dict[str
     return _parse_json(msg.content[0].text)
 
 
+INVOICE_EXTRACT_SYSTEM = """You are a billing assistant for an Indian business. The user wants to create an invoice by describing it in plain text or Hindi/Hinglish.
+
+Extract the invoice details and return ONLY a JSON object with this exact structure:
+{
+  "type": "sale" or "purchase",
+  "party_name": "customer or vendor name (string)",
+  "party_phone": "phone number if mentioned, else ''",
+  "invoice_date": "YYYY-MM-DD (use today if not specified)",
+  "items": [
+    {
+      "name": "product/service name",
+      "qty": number,
+      "unit": "NOS/KGS/LTR/PCS/BOX etc",
+      "rate": number (price per unit, excluding GST),
+      "gst_rate": number (0/5/12/18/28 — guess from item type if not mentioned),
+      "hsn": "HSN code if known, else ''"
+    }
+  ],
+  "notes": "any extra notes",
+  "payment_method": "cash/upi/credit (default: credit)",
+  "confidence": 0.0-1.0
+}
+
+Rules:
+- If qty or rate missing from any item, set to 0.
+- Infer GST rate from product category (food/agriculture=5, services=18, etc.)
+- If type not clear, default to "sale".
+- Return ONLY the JSON, no explanation.
+"""
+
+
+async def ai_extract_invoice(user_text: str, today: str) -> Dict[str, Any]:
+    """Extract structured invoice data from a natural language description."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return {"error": "ANTHROPIC_API_KEY not configured"}
+
+    client = anthropic.AsyncAnthropic(api_key=key)
+    msg = await client.messages.create(
+        model=MODEL_NAME,
+        max_tokens=1024,
+        system=INVOICE_EXTRACT_SYSTEM,
+        messages=[{"role": "user", "content": f"Today's date: {today}\n\n{user_text}\n\nReturn ONLY the JSON."}],
+    )
+    return _parse_json(msg.content[0].text)
+
+
 _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
 
 
