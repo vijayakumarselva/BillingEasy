@@ -175,12 +175,18 @@ export default function Purchases() {
   const downloadPdf = async (p) => {
     try {
       const res = await api.get(`/purchases/${p.id}/pdf`, { responseType: "blob" });
-      const blob = new Blob([res.data], { type: "application/pdf" });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
       downloadFile(url, `PB-${(p.bill_no || "purchase").replace(/[\/\s]+/g, "_")}.pdf`);
-      window.URL.revokeObjectURL(url);
-    } catch { toast.error("PDF download failed"); }
+      setTimeout(() => window.URL.revokeObjectURL(url), 3000);
+    } catch (err) {
+      try {
+        const text = await err?.response?.data?.text?.();
+        const detail = JSON.parse(text)?.detail || text;
+        toast.error(`PDF failed: ${String(detail).slice(0, 120)}`);
+      } catch {
+        toast.error("PDF download failed — check backend logs");
+      }
+    }
   };
 
   return (
