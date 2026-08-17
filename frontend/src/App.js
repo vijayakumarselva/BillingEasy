@@ -128,7 +128,7 @@ export default function App() {
             <Route path="/forgot-password" element={<Public><ForgotPassword /></Public>} />
             <Route path="/reset-password" element={<Public><ResetPassword /></Public>} />
             <Route path="/p/invoice/:token" element={<PublicInvoice />} />
-            <Route path="/play/sv2026" element={<CouplesGame />} />
+            <Route path="/play/sv2026" element={<CouplesGame />} />{/* couples-game-v1 */}
             <Route path="/free/tools" element={<PublicTools />} />
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
