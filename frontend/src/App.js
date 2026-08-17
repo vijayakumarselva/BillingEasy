@@ -27,6 +27,7 @@ import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
 import SuperAdmin from "@/pages/SuperAdmin";
 import PublicInvoice from "@/pages/PublicInvoice";
+import CouplesGame from "@/pages/CouplesGame";
 import Tools from "@/pages/Tools";
 import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
@@ -127,6 +128,7 @@ export default function App() {
             <Route path="/forgot-password" element={<Public><ForgotPassword /></Public>} />
             <Route path="/reset-password" element={<Public><ResetPassword /></Public>} />
             <Route path="/p/invoice/:token" element={<PublicInvoice />} />
+            <Route path="/play/sv2026" element={<CouplesGame />} />
             <Route path="/free/tools" element={<PublicTools />} />
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
