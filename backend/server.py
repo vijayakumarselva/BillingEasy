@@ -3687,6 +3687,235 @@ async def on_shutdown():
 
 
 app.include_router(api)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 🃏  COUPLES POKER — multiplayer Texas Hold'em (in-memory, no auth needed)
+# ═══════════════════════════════════════════════════════════════════════════
+import random as _random
+from itertools import combinations as _combs
+
+_POKER_ROOMS: dict = {}          # room_id -> room dict (in-memory is fine for a fun game)
+_P_NAMES = ["Subhi", "Viju"]
+_HAND_NAMES = [
+    "High Card","One Pair","Two Pair","Three of a Kind",
+    "Straight","Flush","Full House","Four of a Kind","Straight Flush","Royal Flush",
+]
+_VAL = {str(i):i for i in range(2,11)}
+_VAL.update({"J":11,"Q":12,"K":13,"A":14})
+
+def _make_deck():
+    d = [{"s":s,"r":r,"v":_VAL[r]} for s in ["S","H","D","C"] for r in list(_VAL.keys())]
+    _random.shuffle(d)
+    return d
+
+def _sc5(h):
+    vs = sorted([c["v"] for c in h], reverse=True)
+    is_f = len({c["s"] for c in h}) == 1
+    is_s = len(set(vs)) == 5 and vs[0]-vs[4] == 4
+    is_w = vs == [14,5,4,3,2]
+    f: dict = {}
+    for v in vs: f[v] = f.get(v,0)+1
+    gs = sorted(f.items(), key=lambda x:(-x[1],-x[0]))
+    v1,c1 = int(gs[0][0]), gs[0][1]
+    v2,c2 = (int(gs[1][0]), gs[1][1]) if len(gs)>1 else (0,0)
+    top = 5 if is_w else vs[0]
+    if is_f and (is_s or is_w): return [9 if vs[0]==14 and is_s else 8, top]
+    if c1==4: return [7,v1,v2]
+    if c1==3 and c2==2: return [6,v1,v2]
+    if is_f: return [5]+vs
+    if is_s or is_w: return [4,top]
+    if c1==3: return [3,v1,v2,int(gs[2][0])]
+    if c1==2 and c2==2: return [2,max(v1,v2),min(v1,v2),int(gs[2][0])]
+    if c1==2: return [1,v1]+[v for v in vs if v!=v1][:3]
+    return [0]+vs
+
+def _best_hand(hole, comm):
+    all_cards = list(hole) + list(comm)
+    best = None
+    for combo in _combs(all_cards, 5):
+        sc = _sc5(list(combo))
+        if best is None: best = sc; continue
+        for a,b in zip(sc, best+[0]*10):
+            if a>b: best=sc; break
+            if a<b: break
+    return best or [0]
+
+def _cmp(a,b):
+    for x,y in zip(a, b+[0]*10):
+        if x!=y: return x-y
+    return 0
+
+SB_BLIND, BB_BLIND = 10, 20
+
+def _new_poker_game(chips=None, dealer="Subhi"):
+    chips = chips or {"Subhi":1000,"Viju":1000}
+    other = "Viju" if dealer=="Subhi" else "Subhi"
+    sb,bb = dealer, other
+    d = _make_deck()
+    return {
+        "comm":     d[4:9],
+        "revealed": 0,
+        "pot":      SB_BLIND+BB_BLIND,
+        "players": {
+            sb: {"chips": chips[sb]-SB_BLIND, "hole": d[0:2], "folded": False, "roundBet": SB_BLIND},
+            bb: {"chips": chips[bb]-BB_BLIND, "hole": d[2:4], "folded": False, "roundBet": BB_BLIND},
+        },
+        "currentBet": BB_BLIND,
+        "actor": sb,
+        "acted":  {sb: False, bb: False},
+        "stage":  "preflop",
+        "winner": None,
+        "winHand": "",
+        "dealer": dealer,
+        "msg": f"Pre-flop: {sb} posts SB ₹{SB_BLIND} · {bb} posts BB ₹{BB_BLIND}. {sb} to act first.",
+    }
+
+def _advance_poker(game):
+    p = game["players"]
+    other = "Viju" if game["actor"]=="Subhi" else "Subhi"
+    # Check if round is over
+    if p[other]["folded"] or (
+        game["acted"]["Subhi"] and game["acted"]["Viju"] and
+        p["Subhi"]["roundBet"] == p["Viju"]["roundBet"]
+    ):
+        _next_stage(game)
+    else:
+        game["actor"] = other
+        game["msg"] = f"{other}'s turn 🎴"
+
+def _next_stage(game):
+    NEXT = {"preflop":"flop","flop":"turn","turn":"river","river":"showdown"}
+    REVEAL = {"flop":3,"turn":4,"river":5}
+    nxt = NEXT.get(game["stage"])
+    if not nxt or nxt=="showdown":
+        _do_showdown(game); return
+    game["stage"] = nxt
+    game["revealed"] = REVEAL[nxt]
+    game["currentBet"] = 0
+    for pd in game["players"].values(): pd["roundBet"] = 0
+    game["acted"] = {"Subhi": False, "Viju": False}
+    bb = "Viju" if game["dealer"]=="Subhi" else "Subhi"
+    game["actor"] = bb
+    game["msg"] = f"{nxt.capitalize()} 🎴 {bb} to act first."
+
+def _do_showdown(game):
+    game["stage"] = "showdown"; game["revealed"] = 5
+    p = game["players"]
+    s0 = _best_hand(p["Subhi"]["hole"], game["comm"])
+    s1 = _best_hand(p["Viju"]["hole"],  game["comm"])
+    c  = _cmp(s0, s1)
+    hn = _HAND_NAMES
+    if c>0:
+        p["Subhi"]["chips"]+=game["pot"]; game["winner"]="Subhi"; game["winHand"]=hn[s0[0]]
+        game["msg"]=f"🎉 Subhi wins ₹{game['pot']} with {hn[s0[0]]}!"
+    elif c<0:
+        p["Viju"]["chips"]+=game["pot"];  game["winner"]="Viju";  game["winHand"]=hn[s1[0]]
+        game["msg"]=f"🎉 Viju wins ₹{game['pot']} with {hn[s1[0]]}!"
+    else:
+        half=game["pot"]//2
+        p["Subhi"]["chips"]+=half; p["Viju"]["chips"]+=game["pot"]-half
+        game["winner"]="tie"; game["winHand"]=hn[s0[0]]
+        game["msg"]=f"🤝 Tie! {hn[s0[0]]} — pot split."
+    game["pot"]=0
+
+# ── Poker HTTP endpoints ────────────────────────────────────────────────────
+@app.get("/poker/{room_id}/join")
+async def poker_join(room_id: str, player: str):
+    if player not in _P_NAMES:
+        raise HTTPException(400, "Player must be Subhi or Viju")
+    if room_id not in _POKER_ROOMS:
+        _POKER_ROOMS[room_id] = {"game": None, "connected": [], "chips": {"Subhi":1000,"Viju":1000}}
+    room = _POKER_ROOMS[room_id]
+    if player not in room["connected"]:
+        room["connected"].append(player)
+    if len(room["connected"]) == 2 and room["game"] is None:
+        room["game"] = _new_poker_game(room["chips"])
+    return {"ok": True, "connected": room["connected"], "ready": len(room["connected"]) >= 2}
+
+@app.get("/poker/{room_id}/state")
+async def poker_state(room_id: str, player: str):
+    if room_id not in _POKER_ROOMS:
+        return {"ok": False, "msg": "Room not found"}
+    room = _POKER_ROOMS[room_id]
+    game = room.get("game")
+    if game is None:
+        return {"ok": True, "game": None, "connected": room["connected"]}
+    # Filter opponent hole cards (hidden until showdown)
+    fp = {}
+    for pname, pd in game["players"].items():
+        fd = {**pd}
+        if pname != player and game["stage"] != "showdown":
+            fd["hole"] = None
+        fp[pname] = fd
+    out = {**game, "players": fp, "commVisible": game["comm"][:game["revealed"]]}
+    out.pop("comm", None)
+    return {"ok": True, "game": out, "connected": room["connected"]}
+
+@app.post("/poker/{room_id}/action")
+async def poker_action(room_id: str, player: str, action: str, amount: int = 0):
+    if room_id not in _POKER_ROOMS:
+        raise HTTPException(404, "Room not found")
+    room  = _POKER_ROOMS[room_id]
+    game  = room.get("game")
+    if game is None:         raise HTTPException(400, "Game not started yet")
+    if game["winner"] is not None: raise HTTPException(400, "Hand is over")
+    if game["actor"] != player:
+        raise HTTPException(400, f"Not your turn — {game['actor']} to act")
+
+    p     = game["players"]
+    other = "Viju" if player=="Subhi" else "Subhi"
+
+    if action == "fold":
+        p[player]["folded"] = True
+        p[other]["chips"] += game["pot"]
+        game["winner"] = other; game["pot"] = 0
+        game["stage"]  = "showdown"; game["revealed"] = 5
+        game["msg"]    = f"{player} folds 🏳️  {other} wins the pot!"
+
+    elif action in ("check","call"):
+        amt = min(game["currentBet"]-p[player]["roundBet"], p[player]["chips"])
+        if amt > 0:
+            game["pot"] += amt; p[player]["chips"] -= amt
+            p[player]["roundBet"] = game["currentBet"]
+        game["acted"][player] = True
+        _advance_poker(game)
+
+    elif action == "raise":
+        call_amt = game["currentBet"] - p[player]["roundBet"]
+        pay = min(call_amt + amount, p[player]["chips"])
+        game["pot"]              += pay
+        p[player]["chips"]       -= pay
+        game["currentBet"]       += amount
+        p[player]["roundBet"]     = game["currentBet"]
+        game["acted"]             = {player: True, other: False}
+        game["actor"]             = other
+        game["msg"]               = f"{player} raises to ₹{game['currentBet']}. {other} to respond."
+
+    return {"ok": True}
+
+@app.post("/poker/{room_id}/deal")
+async def poker_deal(room_id: str):
+    if room_id not in _POKER_ROOMS:
+        raise HTTPException(404)
+    room = _POKER_ROOMS[room_id]
+    game = room.get("game")
+    if game is None or game.get("winner") is None:
+        raise HTTPException(400, "Hand not finished")
+    chips  = {p: d["chips"] for p,d in game["players"].items()}
+    dealer = "Viju" if game["dealer"]=="Subhi" else "Subhi"
+    room["chips"] = chips
+    room["game"]  = _new_poker_game(chips, dealer)
+    return {"ok": True}
+
+@app.delete("/poker/{room_id}/leave")
+async def poker_leave(room_id: str, player: str):
+    if room_id in _POKER_ROOMS:
+        room = _POKER_ROOMS[room_id]
+        if player in room["connected"]:
+            room["connected"].remove(player)
+        if not room["connected"]:
+            del _POKER_ROOMS[room_id]
+    return {"ok": True}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

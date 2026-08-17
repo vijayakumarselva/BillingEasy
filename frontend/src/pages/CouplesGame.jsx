@@ -3,12 +3,23 @@
  * URL: /play/sv2026   Password: SubhiViju26
  */
 import { useState, useEffect } from "react";
+import PokerGame from "@/games/PokerGame";
 
 const SECRET_PASSWORD = "SubhiViju26";
 const SESSION_KEY = "cg_auth_sv";
 
 // ── Mood / game modes ──────────────────────────────────────────────────────
 const MODES = [
+  {
+    id: "poker",
+    emoji: "🃏",
+    title: "Poker Night",
+    desc: "Texas Hold'em — 1000 chips each. Who's the real card shark?",
+    color: "#f59e0b",
+    bg: "linear-gradient(135deg,#f59e0b22,#fcd34d11)",
+    border: "#f59e0b44",
+    coming: false,
+  },
   {
     id: "romantic",
     emoji: "💕",
@@ -192,6 +203,7 @@ function GameHub({ onLogout }) {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
+  if (selected?.id === "poker") return <PokerGame onBack={() => setSelected(null)} />;
   if (selected) return <GameScreen mode={selected} onBack={() => setSelected(null)} />;
 
   return (
