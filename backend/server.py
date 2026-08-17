@@ -3686,10 +3686,9 @@ async def on_shutdown():
     client.close()
 
 
-app.include_router(api)
-
 # ═══════════════════════════════════════════════════════════════════════════
 # 🃏  COUPLES POKER — multiplayer Texas Hold'em (in-memory, no auth needed)
+# Registered BEFORE include_router so FastAPI picks up the routes correctly.
 # ═══════════════════════════════════════════════════════════════════════════
 import random as _random
 from itertools import combinations as _combs
@@ -3818,8 +3817,8 @@ def _do_showdown(game):
         game["msg"]=f"🤝 Tie! {hn[s0[0]]} — pot split."
     game["pot"]=0
 
-# ── Poker HTTP endpoints ────────────────────────────────────────────────────
-@api.get("/poker/{room_id}/join")
+# ── Poker HTTP endpoints (registered directly on app with /api prefix) ─────
+@app.get("/api/poker/{room_id}/join")
 async def poker_join(room_id: str, player: str):
     if player not in _P_NAMES:
         raise HTTPException(400, "Player must be Subhi or Viju")
@@ -3832,7 +3831,7 @@ async def poker_join(room_id: str, player: str):
         room["game"] = _new_poker_game(room["chips"])
     return {"ok": True, "connected": room["connected"], "ready": len(room["connected"]) >= 2}
 
-@api.get("/poker/{room_id}/state")
+@app.get("/api/poker/{room_id}/state")
 async def poker_state(room_id: str, player: str):
     if room_id not in _POKER_ROOMS:
         return {"ok": False, "msg": "Room not found"}
@@ -3851,7 +3850,7 @@ async def poker_state(room_id: str, player: str):
     out.pop("comm", None)
     return {"ok": True, "game": out, "connected": room["connected"]}
 
-@api.post("/poker/{room_id}/action")
+@app.post("/api/poker/{room_id}/action")
 async def poker_action(room_id: str, player: str, action: str, amount: int = 0):
     if room_id not in _POKER_ROOMS:
         raise HTTPException(404, "Room not found")
@@ -3893,7 +3892,7 @@ async def poker_action(room_id: str, player: str, action: str, amount: int = 0):
 
     return {"ok": True}
 
-@api.post("/poker/{room_id}/deal")
+@app.post("/api/poker/{room_id}/deal")
 async def poker_deal(room_id: str):
     if room_id not in _POKER_ROOMS:
         raise HTTPException(404)
@@ -3907,7 +3906,7 @@ async def poker_deal(room_id: str):
     room["game"]  = _new_poker_game(chips, dealer)
     return {"ok": True}
 
-@api.delete("/poker/{room_id}/leave")
+@app.delete("/api/poker/{room_id}/leave")
 async def poker_leave(room_id: str, player: str):
     if room_id in _POKER_ROOMS:
         room = _POKER_ROOMS[room_id]
@@ -3916,6 +3915,8 @@ async def poker_leave(room_id: str, player: str):
         if not room["connected"]:
             del _POKER_ROOMS[room_id]
     return {"ok": True}
+
+app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
