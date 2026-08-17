@@ -4,8 +4,7 @@
  */
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const API = process.env.REACT_APP_BACKEND_URL || "https://billingeasy-backend-production.up.railway.app/api";
-const POKER_API = API.replace(/\/api$/, ""); // poker routes are on root, not /api
+const API = (process.env.REACT_APP_BACKEND_URL || "https://billingeasy-backend-production.up.railway.app/api").replace(/\/$/, "");
 const ROOM = "sv2026";
 const RED = new Set(["H","D"]);
 const SUIT_SYM = { S:"♠", H:"♥", D:"♦", C:"♣" };
@@ -16,8 +15,8 @@ const PLAYER_INFO = {
 };
 
 // ── API helpers ────────────────────────────────────────────────────────────
-const pget  = (path) => fetch(`${POKER_API}${path}`).then(r=>r.json());
-const ppost = (path) => fetch(`${POKER_API}${path}`,{method:"POST"}).then(r=>r.json());
+const pget  = (path) => fetch(`${API}${path}`).then(r=>r.json());
+const ppost = (path) => fetch(`${API}${path}`,{method:"POST"}).then(r=>r.json());
 
 // ── Card component ─────────────────────────────────────────────────────────
 function Card({ card, faceDown, small }) {
@@ -158,7 +157,7 @@ export default function PokerGame({ onBack }) {
   };
 
   const leaveGame = async () => {
-    await fetch(`${POKER_API}/poker/${ROOM}/leave?player=${me}`,{method:"DELETE"}).catch(()=>{});
+    await fetch(`${API}/poker/${ROOM}/leave?player=${me}`,{method:"DELETE"}).catch(()=>{});
     setMe(null); setGame(null); setConn([]);
   };
 
