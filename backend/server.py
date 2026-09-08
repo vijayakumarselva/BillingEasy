@@ -3629,15 +3629,18 @@ async def get_open_items(party_id: str = Query(None), direction: str = Query("re
             total = pur.get("totals", {}).get("grand_total", 0)
             paid = pur_paid_map.get(pur["id"], 0)
             outstanding = round(total - paid, 2)
-            if outstanding > 0.5:
-                result_invoices.append({
-                    "id": pur["id"],
-                    "invoice_no": f"PO-{pur.get('bill_no', '')}",
-                    "total": total, "paid": paid, "outstanding": outstanding,
-                    "date": pur.get("purchase_date", ""),
-                    "party_name": pmap.get(pur.get("party_id", ""), ""),
-                    "item_type": "invoice",
-                })
+            # Always include — don't filter by outstanding.
+            # When editing an existing payment the purchase may appear "fully paid"
+            # because this payment itself is already counted; filtering it out causes
+            # the "No open purchases" message on edit. Let the user re-link freely.
+            result_invoices.append({
+                "id": pur["id"],
+                "invoice_no": f"PO-{pur.get('bill_no', '')}",
+                "total": total, "paid": paid, "outstanding": outstanding,
+                "date": pur.get("purchase_date", ""),
+                "party_name": pmap.get(pur.get("party_id", ""), ""),
+                "item_type": "invoice",
+            })
 
     # Expenses (only for money-out)
     result_expenses = []
