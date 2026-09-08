@@ -136,10 +136,17 @@ export default function Products() {
   const applyBulkModes = async () => {
     if (!bulkModes || selectedIds.length === 0) return;
     try {
-      await api.put("/products/bulk-modes", { ids: selectedIds, modes: bulkModes });
-      toast.success(`Updated ${selectedIds.length} product(s)`);
+      // Send in batches of 50 to avoid large payloads
+      const batchSize = 50;
+      for (let i = 0; i < selectedIds.length; i += batchSize) {
+        const batch = selectedIds.slice(i, i + batchSize);
+        await api.put("/products/bulk-modes", { ids: batch, modes: bulkModes });
+      }
+      toast.success(`Updated ${selectedIds.length} product(s) → ${bulkModes.join(", ") || "no modes"}`);
       setSelectedIds([]); setBulkModes(null); load();
-    } catch { toast.error("Failed to update"); }
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to update modes");
+    }
   };
 
   const applyBulkEntity = async (entityId) => {

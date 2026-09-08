@@ -207,6 +207,16 @@ export default function Sales() {
                     <td className="num">{inr(inv.paid)}</td>
                     <td className="num">{inv.due > 0 ? <span className="text-rose-600 font-semibold">{inr(inv.due)}</span> : <Badge className="bg-emerald-600">Paid</Badge>}</td>
                     <td>
+                      {/* Payment status badge */}
+                      {inv.status !== "cancelled" && inv.status !== "void" && inv.status !== "draft" && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold mr-1 ${
+                          inv.due <= 0 ? "bg-emerald-100 text-emerald-700" :
+                          inv.paid > 0 ? "bg-amber-100 text-amber-700" :
+                          "bg-rose-100 text-rose-700"
+                        }`}>
+                          {inv.due <= 0 ? "Paid" : inv.paid > 0 ? "Partial" : "Unpaid"}
+                        </span>
+                      )}
                       {inv.status === "cancelled" || inv.status === "void" ? (
                         <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLOR[inv.status] || "bg-muted text-muted-foreground"}`}>
                           {inv.status}
