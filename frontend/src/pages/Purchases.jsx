@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Textarea } from "@/components/ui/textarea";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Trash2, FileDown, ScanLine, Upload, Loader2, Smartphone, Copy, CheckCircle2, Bell } from "lucide-react";
+import { Plus, Ban, Pencil, Trash2, FileDown, ScanLine, Upload, Loader2, Smartphone, Copy, CheckCircle2, Bell, AlertTriangle, Info, Warehouse, PackageCheck, Paperclip, Eye, X } from "lucide-react";
 import { downloadFile } from "@/lib/mobile";
 import DropZone from "@/components/DropZone";
 import PartySelect from "@/components/PartySelect";
@@ -171,7 +171,35 @@ export default function Purchases() {
   };
 
   useEffect(() => { load(); loadPendingUploads(); }, []);
-  const remove = async (id) => { await api.delete(`/purchases/${id}`); toast.success("Deleted"); load(); };
+  const [editPurchase, setEditPurchase] = useState(null); // purchase doc to edit
+  const [attachTarget, setAttachTarget] = useState(null); // {id, name} of purchase to attach vendor invoice
+  const [viewAttachment, setViewAttachment] = useState(null); // {b64, name} to view
+  const cancelPurchase = async (id) => {
+    try {
+      await api.patch(`/purchases/${id}/cancel`);
+      toast.success("Purchase bill cancelled");
+      load();
+    } catch (e) { toast.error(e?.response?.data?.detail || "Failed to cancel"); }
+  };
+  const openEdit = (p) => { setPrefill(null); setEditPurchase(p); setOpen(true); };
+
+  const attachVendorInvoice = async (purchaseId, file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      await api.post(`/purchases/${purchaseId}/attach-invoice`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+      toast.success("Vendor invoice attached ✓");
+      load();
+    } catch { toast.error("Upload failed"); }
+  };
+
+  const removeAttachment = async (purchaseId) => {
+    try {
+      await api.delete(`/purchases/${purchaseId}/attach-invoice`);
+      toast.success("Attachment removed");
+      load();
+    } catch { toast.error("Failed"); }
+  };
   const downloadPdf = async (p) => {
     try {
       const res = await api.get(`/purchases/${p.id}/pdf`, { responseType: "blob" });
@@ -270,7 +298,7 @@ export default function Purchases() {
       <Card>
         <div className="overflow-x-auto">
           <table className="app-table">
-            <thead><tr><th>Bill #</th><th>Supplier</th><th>Date</th><th>Type</th><th className="text-right">Taxable</th><th className="text-right">GST</th><th className="text-right">Total</th><th></th></tr></thead>
+            <thead><tr><th>Bill #</th><th>Supplier</th><th>Date</th><th>Warehouse</th><th>Type</th><th className="text-right">Taxable</th><th className="text-right">GST</th><th className="text-right">Total</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={8}><Skeleton className="h-8 w-full" /></td></tr>) :
                 list.length === 0 ? <tr><td colSpan={8} className="text-center text-muted-foreground py-8">No purchases yet.</td></tr> :
@@ -279,23 +307,73 @@ export default function Purchases() {
                     <td className="font-mono-fin text-blue-600 font-medium">{p.bill_no}</td>
                     <td className="font-medium">{p.party_name}</td>
                     <td className="text-muted-foreground">{fmtDate(p.purchase_date)}</td>
+                    <td className="text-muted-foreground text-sm">
+                      {p.warehouse_name ? <span className="flex items-center gap-1"><Warehouse className="h-3 w-3" />{p.warehouse_name}</span> : "—"}
+                    </td>
                     <td><Badge variant="secondary">{p.type}</Badge></td>
                     <td className="num">{inr(p.totals.taxable_amount)}</td>
                     <td className="num">{inr(p.totals.cgst + p.totals.sgst + p.totals.igst)}</td>
                     <td className="num font-semibold">{inr(p.totals.grand_total)}</td>
+                    <td>
+                      {p.status === "paid" ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-violet-100 text-violet-700">✓ Paid</span>
+                      ) : p.status === "cancelled" ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">cancelled</span>
+                      ) : p.due > 0 ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-rose-100 text-rose-600">Due {inr(p.due)}</span>
+                      ) : p.paid > 0 ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-violet-100 text-violet-700">✓ Paid</span>
+                      ) : (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700">Unpaid</span>
+                      )}
+                    </td>
                     <td className="text-right whitespace-nowrap">
                       <Button size="icon" variant="ghost" onClick={() => downloadPdf(p)} title="Download PDF">
                         <FileDown className="h-4 w-4" />
                       </Button>
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button size="icon" variant="ghost"><Trash2 className="h-4 w-4 text-rose-500" /></Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader><AlertDialogTitle>Delete {p.bill_no}?</AlertDialogTitle><AlertDialogDescription>This cannot be undone.</AlertDialogDescription></AlertDialogHeader>
-                          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => remove(p.id)}>Delete</AlertDialogAction></AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
+                      {/* Vendor invoice attachment */}
+                      {p.vendor_invoice_b64 ? (
+                        <span className="inline-flex items-center gap-0.5">
+                          <Button size="icon" variant="ghost" title="View vendor invoice"
+                            onClick={() => setViewAttachment({ b64: p.vendor_invoice_b64, name: p.vendor_invoice_name || "invoice" })}>
+                            <Eye className="h-4 w-4 text-indigo-500" />
+                          </Button>
+                          <Button size="icon" variant="ghost" title="Remove attachment" onClick={() => removeAttachment(p.id)}>
+                            <X className="h-3 w-3 text-muted-foreground" />
+                          </Button>
+                        </span>
+                      ) : (
+                        <Button size="icon" variant="ghost" title="Attach vendor invoice (PDF/image)"
+                          onClick={() => { const inp = document.createElement("input"); inp.type="file"; inp.accept="application/pdf,image/*"; inp.onchange = e => { if(e.target.files[0]) attachVendorInvoice(p.id, e.target.files[0]); }; inp.click(); }}>
+                          <Paperclip className="h-4 w-4 text-muted-foreground" />
+                        </Button>
+                      )}
+                      {p.status !== "cancelled" && (
+                        <Button size="icon" variant="ghost" onClick={() => openEdit(p)} title="Edit"><Pencil className="h-4 w-4 text-blue-500" /></Button>
+                      )}
+                      {p.type === "purchase" && p.purchase_category !== "service" && p.status !== "cancelled" && (
+                        <Button size="icon" variant="ghost" title="Create GRN from this bill"
+                          onClick={() => nav("/grn", { state: { fromPurchase: p } })}>
+                          <PackageCheck className="h-4 w-4 text-emerald-600" />
+                        </Button>
+                      )}
+                      {p.status !== "cancelled" && (
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button size="icon" variant="ghost" title="Cancel bill"><Ban className="h-4 w-4 text-rose-500" /></Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Cancel {p.bill_no}?</AlertDialogTitle>
+                              <AlertDialogDescription>The bill will be marked as cancelled. It will remain in your records but stock and GST changes will not be reversed automatically.</AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Keep it</AlertDialogCancel>
+                              <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={() => cancelPurchase(p.id)}>Yes, Cancel Bill</AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -306,10 +384,38 @@ export default function Purchases() {
 
       <PurchaseDialog
         open={open}
-        onClose={() => { setOpen(false); setPrefill(null); }}
+        onClose={() => { setOpen(false); setPrefill(null); setEditPurchase(null); }}
         onSaved={load}
         prefill={prefill}
+        editDoc={editPurchase}
       />
+
+      {/* Vendor invoice viewer */}
+      <Dialog open={!!viewAttachment} onOpenChange={() => setViewAttachment(null)}>
+        <DialogContent className="max-w-3xl h-[80vh] flex flex-col p-0">
+          <DialogHeader className="p-4 pb-0">
+            <DialogTitle className="flex items-center gap-2">
+              <Paperclip className="h-4 w-4 text-indigo-500" />
+              Vendor Invoice — {viewAttachment?.name}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto p-4">
+            {viewAttachment?.b64?.startsWith("data:application/pdf") ? (
+              <iframe src={viewAttachment.b64} className="w-full h-full min-h-96 rounded border" title="Vendor Invoice" />
+            ) : (
+              <img src={viewAttachment?.b64} alt="Vendor Invoice" className="max-w-full mx-auto rounded border" />
+            )}
+          </div>
+          <DialogFooter className="p-4 pt-0">
+            <Button variant="outline" onClick={() => setViewAttachment(null)}>Close</Button>
+            {viewAttachment && (
+              <a href={viewAttachment.b64} download={viewAttachment.name}>
+                <Button><FileDown className="h-4 w-4 mr-1.5" />Download</Button>
+              </a>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -317,11 +423,12 @@ export default function Purchases() {
 /* ─────────────────────────────────────────────
    Purchase form dialog
 ───────────────────────────────────────────── */
-function PurchaseDialog({ open, onClose, onSaved, prefill }) {
+function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
   const [suppliers, setSuppliers] = useState([]);
   const [products, setProducts] = useState([]);
   const [banks, setBanks] = useState([]);
   const [branches, setBranches] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
 
   const [partyId, setPartyId] = useState("");
   const [billNo, setBillNo] = useState("");
@@ -331,11 +438,17 @@ function PurchaseDialog({ open, onClose, onSaved, prefill }) {
   const [notes, setNotes] = useState("");
   const [bankId, setBankId] = useState("__none__");
   const [branchId, setBranchId] = useState("__none__");
+  const [warehouseId, setWarehouseId] = useState("__none__");
   const [gstMode, setGstMode] = useState("exclusive"); // "exclusive" | "inclusive"
   const [showScan, setShowScan] = useState(false);
   const [ewayBillNo, setEwayBillNo] = useState("");
   const [vehicleNo, setVehicleNo] = useState("");
   const [purchaseCategory, setPurchaseCategory] = useState("stock"); // "stock" | "service"
+
+  // TDS state
+  const [tdsInfo,    setTdsInfo]    = useState(null);   // vendor YTD info from backend
+  const [tdsRate,    setTdsRate]    = useState(0.1);    // default 0.1% (Sec 194Q)
+  const [tdsEnabled, setTdsEnabled] = useState(false);  // manual toggle
 
   useEffect(() => {
     if (!open) return;
@@ -345,7 +458,35 @@ function PurchaseDialog({ open, onClose, onSaved, prefill }) {
     api.get("/products", { params: { mode } }).then(r => setProducts(r.data));
     api.get("/bank-accounts").then(r => setBanks(r.data));
     api.get("/orgs/current/branches").then(r => setBranches((r.data || []).filter(b => b.active))).catch(() => {});
+    api.get("/warehouses").then(r => setWarehouses((r.data || []).filter(w => w.active !== false))).catch(() => {});
   }, [open]);
+
+  // Apply editDoc when editing an existing purchase
+  useEffect(() => {
+    if (!editDoc || !open) return;
+    setPartyId(editDoc.party_id || "");
+    setBillNo(editDoc.bill_no || "");
+    setDate(editDoc.purchase_date || todayISO());
+    setType(editDoc.type || "purchase");
+    setNotes(editDoc.notes || "");
+    setBranchId(editDoc.branch_id || "__none__");
+    setWarehouseId(editDoc.warehouse_id || "__none__");
+    setEwayBillNo(editDoc.eway_bill_no || "");
+    setVehicleNo(editDoc.vehicle_no || "");
+    setPurchaseCategory(editDoc.purchase_category || "stock");
+    if (editDoc.items?.length) {
+      setItems(editDoc.items.map(it => ({
+        product_id: it.product_id || "",
+        name: it.name || "",
+        hsn: it.hsn || "",
+        qty: it.qty || 1,
+        unit: it.unit || "NOS",
+        rate: it.rate || 0,
+        discount_pct: it.discount_pct || 0,
+        gst_rate: it.gst_rate ?? 18,
+      })));
+    }
+  }, [editDoc, open]);
 
   // Apply prefill from AI scan
   useEffect(() => {
@@ -379,12 +520,32 @@ function PurchaseDialog({ open, onClose, onSaved, prefill }) {
     setItem(i, { product_id: p.id, name: p.name, hsn: p.hsn, unit: p.unit, rate: p.purchase_price, gst_rate: p.gst_rate });
   };
 
+  // Fetch vendor TDS info when supplier changes
+  useEffect(() => {
+    if (!partyId) { setTdsInfo(null); setTdsEnabled(false); return; }
+    api.get(`/purchases/vendor-ytd/${partyId}`)
+      .then(r => {
+        setTdsInfo(r.data);
+        // Auto-enable if already over threshold
+        if (r.data.tds_applicable) setTdsEnabled(true);
+      })
+      .catch(() => setTdsInfo(null));
+  }, [partyId]);
+
   const totals = useMemo(() => {
     return items.reduce((acc, it) => {
       const { taxable, gst, total } = calcLine(it, gstMode);
       return { taxable: acc.taxable + taxable, gst: acc.gst + gst, total: acc.total + total };
     }, { taxable: 0, gst: 0, total: 0 });
   }, [items, gstMode]);
+
+  // TDS computed on taxable amount (excl. GST) per Sec 194Q
+  const tdsAmount = useMemo(() => {
+    if (!tdsEnabled) return 0;
+    return Math.round((totals.taxable * tdsRate) / 100 * 100) / 100;
+  }, [tdsEnabled, tdsRate, totals.taxable]);
+
+  const netPayable = totals.total - tdsAmount;
 
   const applyAiData = (data) => {
     if (data.bill_no) setBillNo(data.bill_no);
@@ -418,27 +579,37 @@ function PurchaseDialog({ open, onClose, onSaved, prefill }) {
       }
       return it;
     });
+    const payload = {
+      party_id: partyId, bill_no: billNo, purchase_date: date,
+      items: normalizedItems, notes, type,
+      bank_account_id: (bankId && bankId !== "__none__") ? bankId : null,
+      branch_id: (branchId && branchId !== "__none__") ? branchId : "",
+      warehouse_id: (warehouseId && warehouseId !== "__none__") ? warehouseId : "",
+      eway_bill_no: ewayBillNo || "",
+      vehicle_no: vehicleNo || "",
+      purchase_category: purchaseCategory,
+      tds_rate: tdsEnabled ? tdsRate : 0,
+      tds_amount: tdsEnabled ? tdsAmount : 0,
+    };
     try {
-      await api.post("/purchases", {
-        party_id: partyId, bill_no: billNo, purchase_date: date,
-        items: normalizedItems, notes, type,
-        bank_account_id: (bankId && bankId !== "__none__") ? bankId : null,
-        branch_id: (branchId && branchId !== "__none__") ? branchId : "",
-        eway_bill_no: ewayBillNo || "",
-        vehicle_no: vehicleNo || "",
-        purchase_category: purchaseCategory,
-      });
-      toast.success("Purchase bill saved");
+      if (editDoc) {
+        await api.put(`/purchases/${editDoc.id}`, payload);
+        toast.success("Purchase bill updated");
+      } else {
+        await api.post("/purchases", payload);
+        toast.success("Purchase bill saved");
+      }
       handleClose();
       onSaved();
-    } catch { toast.error("Failed to save"); }
+    } catch (e) { toast.error(e?.response?.data?.detail || "Failed to save"); }
   };
 
   const handleClose = () => {
     setPartyId(""); setBillNo(""); setDate(todayISO()); setType("purchase");
-    setItems([blank()]); setNotes(""); setBankId("__none__"); setBranchId("__none__");
+    setItems([blank()]); setNotes(""); setBankId("__none__"); setBranchId("__none__"); setWarehouseId("__none__");
     setGstMode("exclusive"); setShowScan(false);
     setEwayBillNo(""); setVehicleNo(""); setPurchaseCategory("stock");
+    setTdsInfo(null); setTdsEnabled(false); setTdsRate(0.1);
     onClose();
   };
 
@@ -447,7 +618,7 @@ function PurchaseDialog({ open, onClose, onSaved, prefill }) {
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto" data-testid="purchase-dialog">
         <DialogHeader>
           <div className="flex items-center justify-between">
-            <DialogTitle>New Purchase Bill</DialogTitle>
+            <DialogTitle>{editDoc ? `Edit Bill — ${editDoc.bill_no}` : "New Purchase Bill"}</DialogTitle>
             {!showScan && (
               <Button size="sm" variant="outline" onClick={() => setShowScan(true)} className="gap-1.5 text-xs mr-6">
                 <ScanLine className="h-3.5 w-3.5" /> Upload & Scan Bill
@@ -511,6 +682,23 @@ function PurchaseDialog({ open, onClose, onSaved, prefill }) {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+          )}
+          {/* Warehouse — always shown for stock purchases */}
+          {purchaseCategory === "stock" && (
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label className="flex items-center gap-1.5"><Warehouse className="h-3.5 w-3.5" /> Receiving Warehouse</Label>
+              <Select value={warehouseId} onValueChange={setWarehouseId}>
+                <SelectTrigger><SelectValue placeholder="Select warehouse (optional)" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">— No specific warehouse —</SelectItem>
+                  {warehouses.length === 0
+                    ? <SelectItem value="_loading" disabled>Loading warehouses…</SelectItem>
+                    : warehouses.map(w => <SelectItem key={w.id} value={w.id}>{w.name}{w.branch_name ? ` · ${w.branch_name}` : ""}</SelectItem>)
+                  }
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Selecting a warehouse enables quick GRN creation from this purchase bill.</p>
             </div>
           )}
           {purchaseCategory === "stock" && (<>
@@ -630,11 +818,77 @@ function PurchaseDialog({ open, onClose, onSaved, prefill }) {
           </Button>
         </div>
 
+        {/* TDS Banner */}
+        {partyId && tdsInfo && (
+          <div className={`rounded-lg border px-4 py-3 text-sm ${
+            tdsInfo.tds_applicable
+              ? "bg-amber-50 border-amber-300 dark:bg-amber-950/30 dark:border-amber-700"
+              : "bg-blue-50 border-blue-200 dark:bg-blue-950/20 dark:border-blue-800"
+          }`}>
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="flex items-start gap-2">
+                {tdsInfo.tds_applicable
+                  ? <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+                  : <Info className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />}
+                <div>
+                  {tdsInfo.tds_applicable ? (
+                    <>
+                      <p className="font-semibold text-amber-800 dark:text-amber-300">
+                        TDS Applicable — Sec 194Q
+                      </p>
+                      <p className="text-amber-700 dark:text-amber-400 text-xs mt-0.5">
+                        This vendor's YTD purchases: <strong>{inr(tdsInfo.ytd_total)}</strong>
+                        {tdsInfo.tds_opening_balance > 0 && (
+                          <span className="ml-1">(incl. ₹{inr(tdsInfo.tds_opening_balance)} opening balance)</span>
+                        )}
+                        — exceeds ₹50 Lakhs. TDS @ {tdsRate}% will be deducted.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="font-medium text-blue-700 dark:text-blue-300">
+                        TDS threshold not yet reached
+                      </p>
+                      <p className="text-blue-600 dark:text-blue-400 text-xs mt-0.5">
+                        YTD: <strong>{inr(tdsInfo.ytd_total)}</strong>
+                        {tdsInfo.tds_opening_balance > 0 && (
+                          <span className="ml-1">(incl. {inr(tdsInfo.tds_opening_balance)} opening)</span>
+                        )}
+                        · ₹{inr(tdsInfo.remaining_to_threshold)} more to reach ₹50L threshold.
+                      </p>
+                    </>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-xs text-muted-foreground">TDS Rate %</span>
+                <input
+                  type="number" step="0.01" min="0" max="10"
+                  value={tdsRate}
+                  onChange={e => setTdsRate(parseFloat(e.target.value) || 0)}
+                  className="w-16 text-sm border rounded px-2 py-1 text-right"
+                  disabled={!tdsEnabled}
+                />
+                <button
+                  type="button"
+                  onClick={() => setTdsEnabled(v => !v)}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                    tdsEnabled
+                      ? "bg-amber-600 text-white border-amber-600"
+                      : "bg-white text-muted-foreground border-border dark:bg-zinc-800"
+                  }`}>
+                  {tdsEnabled ? "TDS ON" : "TDS OFF"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Notes + Bill breakdown */}
         <div className="flex justify-between items-start gap-4">
           <Textarea placeholder="Notes" rows={2} className="max-w-xs text-sm" value={notes} onChange={(e) => setNotes(e.target.value)} />
 
-          <div className="min-w-[220px] rounded-lg border text-sm overflow-hidden">
+          <div className="min-w-[240px] rounded-lg border text-sm overflow-hidden">
             <div className="flex justify-between px-4 py-2 border-b">
               <span className="text-muted-foreground">Taxable Amount</span>
               <span className="font-mono-fin">{inr(totals.taxable)}</span>
@@ -643,10 +897,24 @@ function PurchaseDialog({ open, onClose, onSaved, prefill }) {
               <span className="text-muted-foreground">GST</span>
               <span className="font-mono-fin">{inr(totals.gst)}</span>
             </div>
+            <div className="flex justify-between px-4 py-2 border-b">
+              <span className="text-muted-foreground font-medium">Bill Total</span>
+              <span className="font-mono-fin font-semibold">{inr(totals.total)}</span>
+            </div>
+            {tdsEnabled && tdsAmount > 0 && (
+              <div className="flex justify-between px-4 py-2 border-b bg-amber-50 dark:bg-amber-950/20">
+                <span className="text-amber-700 dark:text-amber-400">TDS Deducted ({tdsRate}%)</span>
+                <span className="font-mono-fin text-amber-700 dark:text-amber-400">− {inr(tdsAmount)}</span>
+              </div>
+            )}
             <div className="flex justify-between px-4 py-2.5 font-semibold"
               style={{ background: "hsl(var(--tally-green-light))" }}>
-              <span style={{ color: "hsl(var(--tally-green))" }}>Bill Total</span>
-              <span className="font-mono-fin text-lg" style={{ color: "hsl(var(--tally-green))" }}>{inr(totals.total)}</span>
+              <span style={{ color: "hsl(var(--tally-green))" }}>
+                {tdsEnabled && tdsAmount > 0 ? "Net Payable" : "Bill Total"}
+              </span>
+              <span className="font-mono-fin text-lg" style={{ color: "hsl(var(--tally-green))" }}>
+                {inr(netPayable)}
+              </span>
             </div>
           </div>
         </div>

@@ -11,17 +11,31 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, Landmark, Sparkles, Loader2, Pencil, Receipt } from "lucide-react";
 import PartySelect from "@/components/PartySelect";
 import { inr, fmtDate, todayISO } from "@/lib/format";
+
+const ACCOUNT_TYPE_COLOR = {
+  Current: "bg-blue-100 text-blue-700",
+  Savings:  "bg-emerald-100 text-emerald-700",
+  OD:       "bg-amber-100 text-amber-700",
+  CC:       "bg-violet-100 text-violet-700",
+  Wallet:   "bg-cyan-100 text-cyan-700",
+};
 
 export default function Payments() {
   const [tab, setTab] = useState("received");
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
+  const [editPayment, setEditPayment] = useState(null); // payment being edited
 
-  const load = async () => { setLoading(true); const { data } = await api.get("/payments", { params: { direction: tab } }); setList(data); setLoading(false); };
+  const load = async () => {
+    setLoading(true);
+    const { data } = await api.get("/payments", { params: { direction: tab } });
+    setList(data);
+    setLoading(false);
+  };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [tab]);
   const remove = async (id) => { await api.delete(`/payments/${id}`); toast.success("Deleted"); load(); };
 
@@ -47,18 +61,48 @@ export default function Payments() {
       <Card>
         <div className="overflow-x-auto">
           <table className="app-table">
-            <thead><tr><th>Date</th><th>Party</th><th>Mode</th><th>Reference</th><th className="text-right">Amount</th><th></th></tr></thead>
+            <thead>
+              <tr>
+                <th>Date</th><th>Party</th><th>Mode</th>
+                <th>Bank Account</th><th>Reference</th>
+                <th className="text-right">Amount</th><th></th>
+              </tr>
+            </thead>
             <tbody>
-              {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={6}><Skeleton className="h-8 w-full" /></td></tr>) :
-                list.length === 0 ? <tr><td colSpan={6} className="text-center text-muted-foreground py-8">No payments.</td></tr> :
+              {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={7}><Skeleton className="h-8 w-full" /></td></tr>) :
+                list.length === 0 ? <tr><td colSpan={7} className="text-center text-muted-foreground py-8">No payments.</td></tr> :
                 list.map(p => (
                   <tr key={p.id} data-testid={`payment-row-${p.id}`}>
                     <td className="text-muted-foreground">{fmtDate(p.date)}</td>
                     <td className="font-medium">{p.party_name}</td>
                     <td><Badge variant="secondary">{p.mode}</Badge></td>
-                    <td className="font-mono-fin text-xs">{p.reference || "—"}</td>
+                    <td>
+                      {p.bank_account_name ? (
+                        <span className="flex items-center gap-1.5 text-xs">
+                          <Landmark className="h-3 w-3 text-muted-foreground" />
+                          <span className="font-medium">{p.bank_account_name}</span>
+                          {p.account_type && (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${ACCOUNT_TYPE_COLOR[p.account_type] || "bg-muted text-muted-foreground"}`}>
+                              {p.account_type}
+                            </span>
+                          )}
+                        </span>
+                      ) : <span className="text-muted-foreground text-xs">—</span>}
+                    </td>
+                    <td className="text-xs">
+                      <div className="font-mono-fin">{p.reference || "—"}</div>
+                      {p.linked_ref && (
+                        <div className="text-muted-foreground mt-0.5 flex items-center gap-1">
+                          <span className="text-[10px] px-1 rounded bg-muted">{p.linked_type === "expense" ? "Expense" : p.linked_type === "invoice" ? "SO" : "PO"}</span>
+                          {p.linked_ref}
+                        </div>
+                      )}
+                    </td>
                     <td className="num font-semibold">{inr(p.amount)}</td>
-                    <td className="text-right">
+                    <td className="text-right whitespace-nowrap">
+                      <Button size="icon" variant="ghost" onClick={() => setEditPayment(p)}>
+                        <Pencil className="h-3.5 w-3.5 text-blue-500" />
+                      </Button>
                       <AlertDialog>
                         <AlertDialogTrigger asChild><Button size="icon" variant="ghost"><Trash2 className="h-4 w-4 text-rose-500" /></Button></AlertDialogTrigger>
                         <AlertDialogContent>
@@ -75,57 +119,371 @@ export default function Payments() {
       </Card>
 
       <PaymentDialog open={open} onClose={() => setOpen(false)} direction={tab} onSaved={load} />
+      <PaymentDialog
+        open={!!editPayment}
+        onClose={() => setEditPayment(null)}
+        direction={editPayment?.direction || tab}
+        editId={editPayment?.id}
+        initialData={editPayment}
+        onSaved={() => { setEditPayment(null); load(); }}
+      />
     </div>
   );
 }
 
-function PaymentDialog({ open, onClose, direction, onSaved }) {
+export function PaymentDialog({ open, onClose, direction = "received", onSaved, defaultAmount, defaultPartyId, editId = null, initialData = null }) {
   const [parties, setParties] = useState([]);
-  const [form, setForm] = useState({ party_id: "", amount: 0, mode: "Cash", date: todayISO(), reference: "" });
+  const [banks, setBanks] = useState([]);
+  const [form, setForm] = useState({
+    party_id: defaultPartyId || "", amount: defaultAmount || 0,
+    mode: "Bank Transfer", date: todayISO(), reference: "", bank_account_id: "",
+  });
+  const [activeDir, setActiveDir] = useState(direction);
+  const [aiText, setAiText] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResult, setAiResult] = useState(null);
+  const [openItems, setOpenItems] = useState({ invoices: [], expenses: [] });
+  const [openItemsLoading, setOpenItemsLoading] = useState(false);
+  const [linkedItem, setLinkedItem] = useState(null); // { item_type, id, label, outstanding }
+  const [expenseCategory, setExpenseCategory] = useState(""); // if set, also create expense on save
+  const [expenseDesc, setExpenseDesc] = useState("");
+
   useEffect(() => {
-    if (open) api.get("/parties", { params: { type: direction === "received" ? "customer" : "supplier" } }).then(r => setParties(r.data));
-  }, [open, direction]);
+    if (open) {
+      const dir = initialData?.direction || direction;
+      setActiveDir(dir);
+      api.get("/parties").then(r => setParties(r.data));
+      api.get("/bank-accounts").then(r => setBanks(r.data));
+      if (initialData) {
+        // Edit mode — prefill from existing payment
+        setForm({
+          party_id: initialData.party_id || "",
+          amount: initialData.amount || 0,
+          mode: initialData.mode || "Bank Transfer",
+          date: initialData.date || todayISO(),
+          reference: initialData.reference || "",
+          bank_account_id: initialData.bank_account_id || "",
+          invoice_id: initialData.invoice_id || "",
+          expense_id: initialData.expense_id || "",
+          linked_type: initialData.linked_type || "",
+        });
+        if (initialData.linked_ref) {
+          setLinkedItem({ id: initialData.invoice_id || initialData.expense_id, item_type: initialData.linked_type, label: initialData.linked_ref, invoice_no: initialData.linked_ref });
+        } else { setLinkedItem(null); }
+      } else {
+        setForm(f => ({
+          ...f,
+          party_id: defaultPartyId || f.party_id,
+          amount: defaultAmount || f.amount,
+          invoice_id: "", expense_id: "", linked_type: "",
+        }));
+        setLinkedItem(null);
+      }
+      setAiText(""); setAiResult(null); setOpenItems({ invoices: [], expenses: [] });
+    }
+  }, [open, direction, defaultPartyId, defaultAmount, initialData]);
+
+  // Load open items when party or direction changes
+  useEffect(() => {
+    if (open) {
+      setOpenItemsLoading(true);
+      const params = { direction: activeDir };
+      if (form.party_id) params.party_id = form.party_id;
+      api.get("/payments/open-items", { params })
+        .then(r => setOpenItems(r.data))
+        .catch(() => setOpenItems({ invoices: [], expenses: [] }))
+        .finally(() => setOpenItemsLoading(false));
+    }
+  }, [form.party_id, activeDir, open]);
+
+  const selectLinkedItem = (item) => {
+    setLinkedItem(item);
+    setForm(f => ({
+      ...f,
+      amount: item.outstanding,
+      invoice_id: item.item_type === "invoice" ? item.id : "",
+      expense_id: item.item_type === "expense" ? item.id : "",
+      linked_type: item.item_type,
+    }));
+  };
+
+  const parseWithAI = async () => {
+    if (!aiText.trim()) return;
+    setAiLoading(true);
+    try {
+      const { data } = await api.post("/payments/ai-parse", { text: aiText, today: todayISO() });
+      if (!data || !data.amount) { toast.error("Could not parse — try rephrasing"); return; }
+      setAiResult(data);
+      setActiveDir(data.direction || activeDir);
+      // Match party by name (fuzzy)
+      const partyName = (data.party_name || "").toLowerCase();
+      const matched = parties.find(p => p.name.toLowerCase().includes(partyName) || partyName.includes(p.name.toLowerCase()));
+      setForm(f => ({
+        ...f,
+        party_id: matched ? matched.id : f.party_id,
+        amount: data.amount || f.amount,
+        date: data.date || f.date,
+        mode: data.mode || f.mode,
+        reference: data.reference || f.reference,
+      }));
+      if (!matched && data.party_name) {
+        toast.info(`Party "${data.party_name}" not found — select manually or create`, { duration: 4000 });
+      } else {
+        toast.success("AI filled the form — review and save ✨");
+      }
+    } catch { toast.error("AI parse failed"); }
+    finally { setAiLoading(false); }
+  };
 
   const save = async () => {
     if (!form.party_id || !form.amount) { toast.error("Party and amount required"); return; }
     try {
-      await api.post("/payments", { ...form, direction, amount: parseFloat(form.amount) });
-      toast.success("Saved"); onClose(); onSaved();
-      setForm({ party_id: "", amount: 0, mode: "Cash", date: todayISO(), reference: "" });
+      const payload = {
+        ...form, direction: activeDir,
+        amount: parseFloat(form.amount),
+        bank_account_id: form.bank_account_id === "__none__" ? "" : form.bank_account_id,
+      };
+      if (editId) {
+        await api.patch(`/payments/${editId}`, payload);
+        toast.success("Payment updated");
+      } else {
+        const { data } = await api.post("/payments", payload);
+        if (data.invoice_auto_closed) toast.success("✅ Payment saved — Invoice marked as Paid!");
+        else toast.success("Payment saved");
+      }
+      // Also create expense if category selected (e.g. wallet recharge, logistics)
+      if (!editId && expenseCategory && activeDir === "paid") {
+        const parties = await api.get("/parties").then(r => r.data);
+        const party = parties.find(p => p.id === form.party_id);
+        await api.post("/expenses", {
+          category: expenseCategory,
+          amount: parseFloat(form.amount),
+          date: form.date || todayISO(),
+          description: expenseDesc || (party ? `Payment to ${party.name}` : expenseCategory),
+          gst_rate: 0,
+        });
+        toast.success(`Expense recorded under "${expenseCategory}"`);
+      }
+      onClose(); onSaved?.();
+      setForm({ party_id: "", amount: 0, mode: "Bank Transfer", date: todayISO(), reference: "", bank_account_id: "" });
+      setAiText(""); setAiResult(null); setExpenseCategory(""); setExpenseDesc("");
     } catch { toast.error("Failed"); }
   };
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent data-testid="payment-form-dialog">
-        <DialogHeader><DialogTitle>New {direction === "received" ? "Money In" : "Money Out"}</DialogTitle></DialogHeader>
+      <DialogContent data-testid="payment-form-dialog" className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            {activeDir === "received" ? "💰" : "💸"}
+            <span>{editId ? "Edit" : "New"} {activeDir === "received" ? "Money In" : "Money Out"}</span>
+            <div className="ml-auto flex gap-1">
+              <button onClick={() => setActiveDir("received")}
+                className={`text-xs px-2 py-1 rounded-full font-medium border transition-colors ${activeDir === "received" ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "text-muted-foreground border-transparent hover:border-border"}`}>
+                Money In
+              </button>
+              <button onClick={() => setActiveDir("paid")}
+                className={`text-xs px-2 py-1 rounded-full font-medium border transition-colors ${activeDir === "paid" ? "bg-rose-100 text-rose-700 border-rose-300" : "text-muted-foreground border-transparent hover:border-border"}`}>
+                Money Out
+              </button>
+            </div>
+          </DialogTitle>
+        </DialogHeader>
+
+        {/* AI Parse Bar */}
+        <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 space-y-2">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-violet-700">
+            <Sparkles className="h-3.5 w-3.5" /> AI Quick Entry
+          </div>
+          <div className="flex gap-2">
+            <Input
+              className="h-8 text-sm bg-white border-violet-200 flex-1"
+              placeholder='e.g. "Received ₹45k from Ravi Traders via NEFT on 3rd Sep, UTR 987654"'
+              value={aiText}
+              onChange={e => setAiText(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && parseWithAI()}
+            />
+            <Button size="sm" className="h-8 bg-violet-600 hover:bg-violet-700 text-white shrink-0"
+              onClick={parseWithAI} disabled={aiLoading || !aiText.trim()}>
+              {aiLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <><Sparkles className="h-3.5 w-3.5 mr-1" />Parse</>}
+            </Button>
+          </div>
+          {aiResult && (
+            <div className="text-xs text-violet-600 bg-white rounded px-2 py-1 border border-violet-100">
+              ✨ Detected: <strong>{aiResult.party_name}</strong> · ₹{aiResult.amount?.toLocaleString("en-IN")} · {aiResult.mode} · {aiResult.date}
+              {aiResult.reference ? ` · Ref: ${aiResult.reference}` : ""}
+            </div>
+          )}
+        </div>
+
         <div className="space-y-3">
           <div className="space-y-1.5">
-            <Label>{direction === "received" ? "Customer" : "Supplier"} *</Label>
+            <Label>{activeDir === "received" ? "Customer" : "Supplier"} *</Label>
             <PartySelect
               parties={parties}
               value={form.party_id}
               onChange={(v) => setForm({ ...form, party_id: v })}
-              role={direction === "received" ? "customer" : "supplier"}
+              role={activeDir === "received" ? "customer" : "supplier"}
               testId="pay-party-select"
               onCreated={(p) => setParties(prev => [...prev, p])} />
           </div>
+
+          {/* Link to SO / PO / Expense — always visible */}
+          <div className="rounded-lg border bg-muted/20 overflow-hidden">
+            <div className="px-3 py-2 border-b bg-muted/40 flex items-center justify-between">
+              <span className="text-xs font-semibold text-foreground">
+                🔗 Link to {activeDir === "received" ? "Sale Order (SO)" : "Purchase Order / Expense"}
+              </span>
+              {linkedItem && (
+                <button className="text-[11px] text-rose-500 hover:text-rose-700 font-medium" onClick={() => {
+                  setLinkedItem(null);
+                  setForm(f => ({ ...f, invoice_id: "", expense_id: "", linked_type: "" }));
+                }}>✕ Unlink</button>
+              )}
+            </div>
+
+            {linkedItem && (
+              <div className="px-3 py-2 bg-blue-50 border-b flex items-center justify-between">
+                <div className="text-xs">
+                  <span className="font-semibold text-blue-800">{linkedItem.invoice_no || linkedItem.label}</span>
+                  <span className="text-blue-600 ml-2">· ₹{linkedItem.outstanding?.toLocaleString("en-IN")} outstanding</span>
+                </div>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-200 text-blue-800 font-semibold">✓ Linked</span>
+              </div>
+            )}
+
+            <div className="p-2 max-h-44 overflow-y-auto">
+              {openItemsLoading ? (
+                <div className="text-xs text-center py-3 text-muted-foreground">Loading…</div>
+              ) : ([...openItems.invoices, ...openItems.expenses].length === 0) ? (
+                <div className="text-xs text-center py-3 text-muted-foreground">
+                  {form.party_id
+                    ? `No open unpaid ${activeDir === "received" ? "sales orders" : "purchases/expenses"} for this party`
+                    : `Select a party above to see their open ${activeDir === "received" ? "sales orders" : "purchases/expenses"}`}
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {[...openItems.invoices, ...openItems.expenses].map(item => {
+                    const isSelected = linkedItem?.id === item.id;
+                    return (
+                      <button key={item.id} onClick={() => selectLinkedItem(item)}
+                        className={`w-full text-left flex items-center justify-between px-2.5 py-2 rounded-md text-xs border transition-all
+                          ${isSelected ? "bg-blue-50 border-blue-400 text-blue-800 ring-1 ring-blue-300" : "bg-white border-border hover:bg-blue-50/50 hover:border-blue-200"}`}>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-semibold">{item.invoice_no || item.label || item.category}</span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${
+                              item.item_type === "expense" ? "bg-orange-100 text-orange-700"
+                              : activeDir === "received" ? "bg-emerald-100 text-emerald-700"
+                              : "bg-blue-100 text-blue-700"}`}>
+                              {item.item_type === "expense" ? "Expense" : activeDir === "received" ? "SO" : "PO"}
+                            </span>
+                          </div>
+                          <div className="text-muted-foreground mt-0.5">
+                            {item.party_name && <span>{item.party_name} · </span>}
+                            {item.date}
+                            {item.paid > 0 && <span className="ml-1 text-amber-600">· Partial ₹{item.paid?.toLocaleString("en-IN")} paid</span>}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0 ml-3">
+                          <div className="font-bold text-sm">₹{item.outstanding?.toLocaleString("en-IN")}</div>
+                          <div className="text-muted-foreground text-[10px]">due</div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5"><Label>Amount</Label><Input type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} data-testid="pay-amount-input" /></div>
-            <div className="space-y-1.5"><Label>Date</Label><Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} data-testid="pay-date-input" /></div>
+            <div className="space-y-1.5">
+              <Label>Amount *</Label>
+              <Input type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} data-testid="pay-amount-input" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Date</Label>
+              <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} data-testid="pay-date-input" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Payment Mode</Label>
+              <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v })}>
+                <SelectTrigger data-testid="pay-mode-select"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {["Cash","Bank Transfer","UPI","NEFT","RTGS","IMPS","Cheque","Card","NACH"].map(m => (
+                    <SelectItem key={m} value={m}>{m}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Bank Account</Label>
+              <Select value={form.bank_account_id} onValueChange={(v) => setForm({ ...form, bank_account_id: v })}>
+                <SelectTrigger><SelectValue placeholder="Select account…" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">— Cash / Not applicable —</SelectItem>
+                  {banks.map(b => (
+                    <SelectItem key={b.id} value={b.id}>
+                      <span className="flex items-center gap-2">
+                        <span>{b.bank_name}</span>
+                        <span className="text-muted-foreground text-xs">…{b.account_no?.slice(-4)}</span>
+                        {b.account_type && (
+                          <span className={`text-[10px] px-1 rounded ${ACCOUNT_TYPE_COLOR[b.account_type] || ""}`}>{b.account_type}</span>
+                        )}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <div className="space-y-1.5">
-            <Label>Mode</Label>
-            <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v })}>
-              <SelectTrigger data-testid="pay-mode-select"><SelectValue /></SelectTrigger>
-              <SelectContent>{["Cash","Bank Transfer","UPI","Cheque","Card"].map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
-            </Select>
+            <Label>Reference / UTR / Cheque #</Label>
+            <Input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} placeholder="UPI ref, UTR, cheque number…" data-testid="pay-ref-input" />
           </div>
-          <div className="space-y-1.5"><Label>Reference</Label><Input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} data-testid="pay-ref-input" /></div>
+
+          {/* Also record as Expense — Money Out only */}
+          {activeDir === "paid" && (
+            <div className="rounded-lg border border-orange-200 bg-orange-50/50 overflow-hidden">
+              <div className="px-3 py-2 border-b border-orange-200 flex items-center gap-2">
+                <Receipt className="h-3.5 w-3.5 text-orange-600" />
+                <span className="text-xs font-semibold text-orange-700">Also record as Expense</span>
+                <span className="text-[10px] text-orange-500 ml-0.5">— optional, for P&amp;L tracking</span>
+                {expenseCategory && (
+                  <button className="ml-auto text-[11px] text-orange-500 hover:text-orange-700 font-medium"
+                    onClick={() => { setExpenseCategory(""); setExpenseDesc(""); }}>✕ Clear</button>
+                )}
+              </div>
+              <div className="p-2.5 space-y-2">
+                <Select value={expenseCategory} onValueChange={setExpenseCategory}>
+                  <SelectTrigger className="h-8 text-sm bg-white border-orange-200">
+                    <SelectValue placeholder="Pick expense category (optional)…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {["Logistics","Freight","Rent","Electricity","Internet","Salaries","Travel",
+                      "Office","Repairs","Marketing","Wallet Recharge","Bank Charges","Other"].map(c => (
+                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {expenseCategory && (
+                  <Input className="h-8 text-sm bg-white border-orange-200"
+                    placeholder="Description (optional)…"
+                    value={expenseDesc}
+                    onChange={e => setExpenseDesc(e.target.value)} />
+                )}
+              </div>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button className="bg-blue-600 hover:bg-blue-700" onClick={save} data-testid="pay-save-button">Save</Button>
+          <Button className={activeDir === "received" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"} onClick={save} data-testid="pay-save-button">
+            {activeDir === "received" ? "💰 Save Money In" : "💸 Save Money Out"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Edit, AlertTriangle, QrCode, Upload, Package, RefreshCw, Barcode, DollarSign, Layers, Camera, Sparkles, Loader2, Download, Lock, X } from "lucide-react";
+import { Plus, Search, Trash2, Edit, AlertTriangle, QrCode, Upload, Package, RefreshCw, Barcode, DollarSign, Layers, Camera, Sparkles, Loader2, Download, Lock, X, CheckSquare, Square } from "lucide-react";
 import { inr } from "@/lib/format";
 import HsnSuggestButton from "@/components/HsnSuggestButton";
 import JsBarcode from "jsbarcode";
@@ -43,6 +43,8 @@ export default function Products() {
   const [modeFilter, setModeFilter] = useState("all");
   const [upcDlOpen, setUpcDlOpen] = useState(false);
   const [upcSelected, setUpcSelected] = useState([]);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [bulkModes, setBulkModes] = useState(null); // null = not open, [] = selecting modes
   const barcodeDialogRef = useRef(null);
 
   const load = async () => {
@@ -96,6 +98,24 @@ export default function Products() {
     }
   };
   const remove = async (id) => { await api.delete(`/products/${id}`); toast.success("Deleted"); load(); };
+
+  // Bulk mode management
+  const toggleSelect = (id) => setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  const toggleSelectAll = () => setSelectedIds(selectedIds.length === list.length ? [] : list.map(p => p.id));
+  const openBulkModes = () => {
+    // Start with modes common to all selected products
+    const sel = list.filter(p => selectedIds.includes(p.id));
+    const common = ALL_MODES.map(m => m.value).filter(m => sel.every(p => (p.modes || []).includes(m)));
+    setBulkModes(common);
+  };
+  const applyBulkModes = async () => {
+    if (!bulkModes || selectedIds.length === 0) return;
+    try {
+      await api.put("/products/bulk-modes", { ids: selectedIds, modes: bulkModes });
+      toast.success(`Updated ${selectedIds.length} product(s)`);
+      setSelectedIds([]); setBulkModes(null); load();
+    } catch { toast.error("Failed to update"); }
+  };
 
   const printBarcode = () => {
     const svg = barcodeDialogRef.current;
@@ -235,6 +255,41 @@ export default function Products() {
         </div>
       </div>
 
+      {/* Bulk action bar */}
+      {selectedIds.length > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 flex-wrap">
+          <span className="text-sm font-semibold text-blue-700 dark:text-blue-300">{selectedIds.length} selected</span>
+          <div className="flex gap-2 flex-wrap flex-1">
+            {bulkModes !== null ? (
+              <>
+                <span className="text-xs text-muted-foreground self-center">Set visible in:</span>
+                {ALL_MODES.map(m => {
+                  const active = bulkModes.includes(m.value);
+                  return (
+                    <button key={m.value} type="button"
+                      onClick={() => setBulkModes(prev => prev.includes(m.value) ? prev.filter(x => x !== m.value) : [...prev, m.value])}
+                      className={`text-xs px-2.5 py-1 rounded-full font-semibold border transition-colors ${active ? m.color + " border-transparent" : "border-current text-muted-foreground opacity-50"}`}>
+                      {active ? "✓ " : ""}{m.label}
+                    </button>
+                  );
+                })}
+                <Button size="sm" className="h-7 text-xs bg-blue-600 hover:bg-blue-700" onClick={applyBulkModes}>Apply</Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setBulkModes(null)}>Cancel</Button>
+              </>
+            ) : (
+              <>
+                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={openBulkModes}>
+                  <Layers className="h-3 w-3 mr-1" /> Set Business Mode
+                </Button>
+              </>
+            )}
+          </div>
+          <Button size="sm" variant="ghost" className="h-7 text-xs ml-auto" onClick={() => { setSelectedIds([]); setBulkModes(null); }}>
+            <X className="h-3 w-3 mr-1" /> Clear
+          </Button>
+        </div>
+      )}
+
       {/* Mobile card list */}
       <div className="mobile-only mobile-list-gap">
         {loading
@@ -270,12 +325,22 @@ export default function Products() {
       <Card className="desktop-only">
         <div className="overflow-x-auto">
           <table className="app-table">
-            <thead><tr><th>Product</th><th>HSN</th><th>Category</th><th>Used In</th><th className="text-right">Purchase</th><th className="text-right">Sale</th><th className="text-right">GST%</th><th className="text-right">Stock</th><th></th></tr></thead>
+            <thead><tr>
+              <th className="w-8">
+                <input type="checkbox" className="rounded" checked={list.length > 0 && selectedIds.length === list.length}
+                  onChange={toggleSelectAll} title="Select all" />
+              </th>
+              <th>Product</th><th>HSN</th><th>Category</th><th>Used In</th><th className="text-right">Purchase</th><th className="text-right">Sale</th><th className="text-right">GST%</th><th className="text-right">Stock</th><th></th>
+            </tr></thead>
             <tbody>
               {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={9}><Skeleton className="h-8 w-full" /></td></tr>) :
                 list.length === 0 ? <tr><td colSpan={9} className="text-center text-muted-foreground py-8">No products yet.</td></tr> :
                 list.map(p => (
-                  <tr key={p.id} data-testid={`product-row-${p.name}`}>
+                  <tr key={p.id} data-testid={`product-row-${p.name}`} className={selectedIds.includes(p.id) ? "bg-blue-50/50 dark:bg-blue-950/20" : ""}>
+                    <td className="w-8" onClick={e => e.stopPropagation()}>
+                      <input type="checkbox" className="rounded" checked={selectedIds.includes(p.id)}
+                        onChange={() => toggleSelect(p.id)} />
+                    </td>
                     <td>
                       <div className="flex items-center gap-2">
                         {p.image_b64

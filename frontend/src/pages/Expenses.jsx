@@ -12,7 +12,7 @@ import { toast } from "sonner";
 import { Plus, Trash2, Receipt } from "lucide-react";
 import { inr, fmtDate, todayISO } from "@/lib/format";
 
-const CATEGORIES = ["Rent","Electricity","Internet","Salaries","Travel","Office","Repairs","Marketing","Other"];
+const CATEGORIES = ["Rent","Electricity","Internet","Salaries","Travel","Office","Repairs","Marketing","Logistics","Freight","Wallet Recharge","Bank Charges","Other"];
 const CAT_COLOR = {
   Rent: "bg-purple-100 text-purple-700", Electricity: "bg-yellow-100 text-yellow-700",
   Internet: "bg-blue-100 text-blue-700", Salaries: "bg-green-100 text-green-700",
