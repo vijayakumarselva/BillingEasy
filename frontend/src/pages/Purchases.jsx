@@ -12,7 +12,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Textarea } from "@/components/ui/textarea";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Ban, Pencil, Trash2, FileDown, ScanLine, Upload, Loader2, Smartphone, Copy, CheckCircle2, Bell, AlertTriangle, Info, Warehouse, PackageCheck, Paperclip, Eye, X } from "lucide-react";
+import { Plus, Ban, Pencil, Trash2, FileDown, ScanLine, Upload, Loader2, Smartphone, Copy, CheckCircle2, Bell, AlertTriangle, Info, Warehouse, PackageCheck, Paperclip, Eye, X, CreditCard } from "lucide-react";
+import { PaymentDialog } from "@/pages/Payments";
 import { downloadFile } from "@/lib/mobile";
 import DropZone from "@/components/DropZone";
 import PartySelect from "@/components/PartySelect";
@@ -172,6 +173,7 @@ export default function Purchases() {
 
   useEffect(() => { load(); loadPendingUploads(); }, []);
   const [editPurchase, setEditPurchase] = useState(null); // purchase doc to edit
+  const [payTarget, setPayTarget] = useState(null); // purchase to record payment against
   const [attachTarget, setAttachTarget] = useState(null); // {id, name} of purchase to attach vendor invoice
   const [viewAttachment, setViewAttachment] = useState(null); // {b64, name} to view
   const cancelPurchase = async (id) => {
@@ -351,6 +353,13 @@ export default function Purchases() {
                       {p.status !== "cancelled" && (
                         <Button size="icon" variant="ghost" onClick={() => openEdit(p)} title="Edit"><Pencil className="h-4 w-4 text-blue-500" /></Button>
                       )}
+                      {p.status !== "cancelled" && p.status !== "paid" && (
+                        <Button size="icon" variant="ghost" title="Record Payment"
+                          onClick={() => setPayTarget(p)}
+                          className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50">
+                          <CreditCard className="h-4 w-4" />
+                        </Button>
+                      )}
                       {p.type === "purchase" && p.purchase_category !== "service" && p.status !== "cancelled" && (
                         <Button size="icon" variant="ghost" title="Create GRN from this bill"
                           onClick={() => nav("/grn", { state: { fromPurchase: p } })}>
@@ -389,6 +398,26 @@ export default function Purchases() {
         prefill={prefill}
         editDoc={editPurchase}
       />
+
+      {/* Pay button dialog — opens with PO pre-linked */}
+      {payTarget && (
+        <PaymentDialog
+          open={!!payTarget}
+          onClose={() => setPayTarget(null)}
+          direction="paid"
+          defaultPartyId={payTarget.party_id}
+          defaultAmount={payTarget.totals?.grand_total || 0}
+          initialData={{
+            direction: "paid",
+            party_id: payTarget.party_id,
+            amount: payTarget.totals?.grand_total || 0,
+            invoice_id: payTarget.id,
+            linked_type: "invoice",
+            linked_ref: `PO-${payTarget.bill_no || ""}`,
+          }}
+          onSaved={() => { setPayTarget(null); load(); toast.success("Payment recorded"); }}
+        />
+      )}
 
       {/* Vendor invoice viewer */}
       <Dialog open={!!viewAttachment} onOpenChange={() => setViewAttachment(null)}>
