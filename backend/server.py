@@ -3593,21 +3593,26 @@ async def get_open_items(party_id: str = Query(None), direction: str = Query("re
                 result_invoices.append({**inv, "paid": paid, "outstanding": outstanding, "item_type": "invoice"})
     else:
         # Money Out — link to Purchase bills (db.purchases collection)
-        # Build base query — try with biz_type scoping first, fall back to org-wide
-        base_pur_q = {"org_id": ctx["org_id"], "status": {"$nin": ["cancelled"]}}
-        if party_id: base_pur_q["party_id"] = party_id
-        # Include biz_type filter if set (purchases stored with biz_type)
-        bt = ctx.get("biz_type")
-        if bt:
-            pur_q = {**base_pur_q, "$or": [{"biz_type": bt}, {"biz_type": {"$exists": False}}, {"biz_type": None}]}
+        # Query org-wide (no biz_type scoping) — payments cross business modes
+        org_q = {"org_id": ctx["org_id"], "status": {"$nin": ["cancelled", "draft"]}}
+        # First try: filter by party
+        if party_id:
+            pur_q = {**org_q, "party_id": party_id}
+            purchases = await db.purchases.find(pur_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
+                "purchase_date": 1, "party_id": 1, "status": 1}).sort("purchase_date", -1).to_list(100)
+            # Fallback 1: try without status restriction (in case status field differs)
+            if not purchases:
+                purchases = await db.purchases.find(
+                    {"org_id": ctx["org_id"], "party_id": party_id},
+                    {"_id": 0, "id": 1, "bill_no": 1, "totals": 1, "purchase_date": 1, "party_id": 1, "status": 1}
+                ).sort("purchase_date", -1).to_list(100)
+            # Fallback 2: show all org purchases so user can manually pick
+            if not purchases:
+                purchases = await db.purchases.find(org_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
+                    "purchase_date": 1, "party_id": 1, "status": 1}).sort("purchase_date", -1).to_list(100)
         else:
-            pur_q = base_pur_q
-        purchases = await db.purchases.find(pur_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
-            "purchase_date": 1, "party_id": 1}).sort("purchase_date", -1).to_list(100)
-        # If biz_type scoping returned nothing, fall back to org-wide (handles legacy data)
-        if not purchases and party_id:
-            purchases = await db.purchases.find(base_pur_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
-                "purchase_date": 1, "party_id": 1}).sort("purchase_date", -1).to_list(100)
+            purchases = await db.purchases.find(org_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
+                "purchase_date": 1, "party_id": 1, "status": 1}).sort("purchase_date", -1).to_list(100)
         # Enrich party names
         pur_party_ids = list({p["party_id"] for p in purchases if p.get("party_id")})
         pmap = {p["id"]: p["name"] async for p in db.parties.find(
