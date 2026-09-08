@@ -436,7 +436,11 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
           <div className="space-y-1.5">
             <Label>{activeDir === "received" ? "Customer" : "Supplier"} *</Label>
             <PartySelect
-              parties={parties}
+              parties={parties.filter(p => {
+                const t = (p.type || "").toLowerCase();
+                if (activeDir === "received") return t === "customer" || t === "both" || t === "";
+                return t === "supplier" || t === "vendor" || t === "both" || t === "";
+              })}
               value={form.party_id}
               onChange={(v) => setForm({ ...form, party_id: v })}
               role={activeDir === "received" ? "customer" : "supplier"}
