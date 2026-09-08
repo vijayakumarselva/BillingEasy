@@ -214,7 +214,8 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
       const { data } = await api.post("/payments/ai-parse", { text: aiText, today: todayISO() });
       if (!data || !data.amount) { toast.error("Could not parse — try rephrasing"); return; }
       setAiResult(data);
-      setActiveDir(data.direction || activeDir);
+      const dir = data.direction || activeDir;
+      setActiveDir(dir);
       // Match party by name (fuzzy)
       const partyName = (data.party_name || "").toLowerCase();
       const matched = parties.find(p => p.name.toLowerCase().includes(partyName) || partyName.includes(p.name.toLowerCase()));
@@ -226,7 +227,11 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
         mode: data.mode || f.mode,
         reference: data.reference || f.reference,
       }));
-      if (!matched && data.party_name) {
+      // Auto-select suggested PO/SO link if AI found a match
+      if (data.suggested_link) {
+        selectLinkedItem(data.suggested_link);
+        toast.success(`AI matched ${dir === "paid" ? "PO" : "SO"} ${data.suggested_link.invoice_no} (₹${data.suggested_link.outstanding?.toLocaleString("en-IN")}) — review and confirm ✨`);
+      } else if (!matched && data.party_name) {
         toast.info(`Party "${data.party_name}" not found — select manually or create`, { duration: 4000 });
       } else {
         toast.success("AI filled the form — review and save ✨");
@@ -309,9 +314,20 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
             </Button>
           </div>
           {aiResult && (
-            <div className="text-xs text-violet-600 bg-white rounded px-2 py-1 border border-violet-100">
-              ✨ Detected: <strong>{aiResult.party_name}</strong> · ₹{aiResult.amount?.toLocaleString("en-IN")} · {aiResult.mode} · {aiResult.date}
-              {aiResult.reference ? ` · Ref: ${aiResult.reference}` : ""}
+            <div className="space-y-1">
+              <div className="text-xs text-violet-600 bg-white rounded px-2 py-1 border border-violet-100">
+                ✨ Detected: <strong>{aiResult.party_name || "—"}</strong> · ₹{aiResult.amount?.toLocaleString("en-IN")} · {aiResult.mode} · {aiResult.date}
+                {aiResult.reference ? ` · Ref: ${aiResult.reference}` : ""}
+              </div>
+              {aiResult.suggested_link && (
+                <div className="text-xs bg-amber-50 border border-amber-200 rounded px-2 py-1.5 flex items-center gap-2">
+                  <span className="text-amber-700 font-semibold">🔗 AI matched:</span>
+                  <span className="text-amber-800 font-bold">{aiResult.suggested_link.invoice_no}</span>
+                  <span className="text-amber-600">· ₹{aiResult.suggested_link.outstanding?.toLocaleString("en-IN")} outstanding</span>
+                  {aiResult.suggested_link.party_name && <span className="text-muted-foreground">· {aiResult.suggested_link.party_name}</span>}
+                  <span className="ml-auto text-[10px] bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded-full font-semibold">Auto-linked ✓</span>
+                </div>
+              )}
             </div>
           )}
         </div>

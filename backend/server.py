@@ -3507,11 +3507,21 @@ async def get_open_items(party_id: str = Query(None), direction: str = Query("re
                 result_invoices.append({**inv, "paid": paid, "outstanding": outstanding, "item_type": "invoice"})
     else:
         # Money Out — link to Purchase bills (db.purchases collection)
-        pur_q = biz_filter(ctx)   # purchases are scoped by biz_type
-        if party_id: pur_q["party_id"] = party_id
-        pur_q["status"] = {"$nin": ["cancelled"]}  # include all non-cancelled
+        # Build base query — try with biz_type scoping first, fall back to org-wide
+        base_pur_q = {"org_id": ctx["org_id"], "status": {"$nin": ["cancelled"]}}
+        if party_id: base_pur_q["party_id"] = party_id
+        # Include biz_type filter if set (purchases stored with biz_type)
+        bt = ctx.get("biz_type")
+        if bt:
+            pur_q = {**base_pur_q, "$or": [{"biz_type": bt}, {"biz_type": {"$exists": False}}, {"biz_type": None}]}
+        else:
+            pur_q = base_pur_q
         purchases = await db.purchases.find(pur_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
             "purchase_date": 1, "party_id": 1}).sort("purchase_date", -1).to_list(100)
+        # If biz_type scoping returned nothing, fall back to org-wide (handles legacy data)
+        if not purchases and party_id:
+            purchases = await db.purchases.find(base_pur_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
+                "purchase_date": 1, "party_id": 1}).sort("purchase_date", -1).to_list(100)
         # Enrich party names
         pur_party_ids = list({p["party_id"] for p in purchases if p.get("party_id")})
         pmap = {p["id"]: p["name"] async for p in db.parties.find(
@@ -3565,8 +3575,61 @@ async def get_open_items(party_id: str = Query(None), direction: str = Query("re
 
 @api.post("/payments/ai-parse")
 async def ai_parse_payment_endpoint(body: PaymentParseIn, ctx=Depends(get_org_ctx)):
-    """Parse a natural-language payment description using AI."""
+    """Parse a natural-language payment description using AI and suggest a matching SO/PO."""
     result = await ai_parse_payment(body.text, body.today)
+
+    # After parsing, try to auto-match against open POs (money-out) or sale invoices (money-in)
+    direction = result.get("direction", "received")
+    parsed_amount = result.get("amount", 0)
+    parsed_party = (result.get("party_name") or "").lower()
+
+    suggested_link = None
+    try:
+        if parsed_amount and parsed_amount > 0:
+            if direction == "paid":
+                # Look for purchase bills with similar amount (within 1%)
+                pur_q = {"org_id": ctx["org_id"], "status": {"$nin": ["cancelled"]}}
+                async for pur in db.purchases.find(pur_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
+                        "purchase_date": 1, "party_id": 1}).sort("purchase_date", -1).limit(200):
+                    total = pur.get("totals", {}).get("grand_total", 0)
+                    if total and abs(total - parsed_amount) / max(total, 1) <= 0.02:
+                        # Amount match within 2% — fetch party name
+                        party = await db.parties.find_one({"org_id": ctx["org_id"], "id": pur.get("party_id")},
+                                                           {"_id": 0, "name": 1})
+                        party_name = (party or {}).get("name", "")
+                        # Prefer match if party name also matches
+                        score = 2 if parsed_party and parsed_party in party_name.lower() else 1
+                        if not suggested_link or score > suggested_link.get("score", 0):
+                            suggested_link = {
+                                "id": pur["id"], "invoice_no": f"PO-{pur.get('bill_no', '')}",
+                                "total": total, "outstanding": total,
+                                "date": pur.get("purchase_date", ""),
+                                "party_name": party_name, "item_type": "invoice", "score": score,
+                            }
+            else:
+                # Money in — look for sale invoices
+                inv_q = {"org_id": ctx["org_id"], "type": "sale",
+                         "status": {"$in": ["finalized", "dispatched", "delivered"]}}
+                async for inv in db.invoices.find(inv_q, {"_id": 0, "id": 1, "invoice_no": 1,
+                        "total": 1, "date": 1, "party_name": 1}).sort("date", -1).limit(200):
+                    total = inv.get("total", 0)
+                    if total and abs(total - parsed_amount) / max(total, 1) <= 0.02:
+                        p_name = inv.get("party_name", "")
+                        score = 2 if parsed_party and parsed_party in p_name.lower() else 1
+                        if not suggested_link or score > suggested_link.get("score", 0):
+                            suggested_link = {
+                                "id": inv["id"], "invoice_no": inv.get("invoice_no", ""),
+                                "total": total, "outstanding": total,
+                                "date": inv.get("date", ""),
+                                "party_name": p_name, "item_type": "invoice", "score": score,
+                            }
+    except Exception:
+        pass  # suggestion is best-effort
+
+    if suggested_link:
+        suggested_link.pop("score", None)
+        result["suggested_link"] = suggested_link
+
     return result
 
 
