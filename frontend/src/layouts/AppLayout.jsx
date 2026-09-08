@@ -15,7 +15,7 @@ import {
   Receipt, BookOpen, Landmark, Settings, LogOut, Moon, Sun, Building2,
   FileBarChart, ChevronDown, Plus, Bot, Wrench, FileSpreadsheet, Coins, Zap,
   UtensilsCrossed, Scan, SlidersHorizontal, Sparkles, Menu, X, ChevronRight,
-  Home, Lock, ArrowLeftRight, Store,
+  Home, Lock, ArrowLeftRight, Store, PackageCheck, Truck,
 } from "lucide-react";
 import { STATES } from "@/pages/Parties";
 import SupportChat from "@/components/SupportChat";
@@ -24,8 +24,11 @@ const ALL_NAV = [
   { to: "/parties",  label: "Parties",           icon: Users,           tid: "nav-parties",   shortcut: "Alt+P", group: "Masters",      modes: ["b2b","b2c","restaurant","pos"] },
   { to: "/products", label: "Products & Stock",   icon: Package,         tid: "nav-products",  shortcut: "Alt+I", group: "Masters",      modes: ["b2b","b2c","restaurant","pos"] },
   { to: "/sales",      label: "Sales / Invoices", icon: FileText,        tid: "nav-sales",     shortcut: "Alt+S", group: "Transactions", modes: ["b2b","b2c"] },
-  { to: "/purchases",  label: "Purchases",         icon: ShoppingCart,   tid: "nav-purchases", shortcut: "Alt+B", group: "Transactions", modes: ["b2b","b2c","restaurant","pos"] },
-  { to: "/payments",   label: "Payments",          icon: Wallet,         tid: "nav-payments",  shortcut: "Alt+M", group: "Transactions", modes: ["b2b","b2c"] },
+  { to: "/purchases",       label: "Purchases",        icon: ShoppingCart,  tid: "nav-purchases",    shortcut: "Alt+B", group: "Transactions", modes: ["b2b","b2c","restaurant","pos"] },
+  { to: "/grn",             label: "GRN",              icon: PackageCheck,  tid: "nav-grn",                         group: "Transactions", modes: ["b2b","b2c"] },
+  { to: "/inventory",       label: "Inventory",        icon: ArrowLeftRight,tid: "nav-inventory",                   group: "Transactions", modes: ["b2b","b2c"] },
+  { to: "/delivery-orders", label: "Delivery Orders",  icon: Truck,         tid: "nav-delivery",                    group: "Transactions", modes: ["b2b","b2c"] },
+  { to: "/payments",        label: "Payments",         icon: Wallet,        tid: "nav-payments",  shortcut: "Alt+M", group: "Transactions", modes: ["b2b","b2c"] },
   { to: "/expenses",   label: "Expenses",          icon: Receipt,        tid: "nav-expenses",  shortcut: "Alt+E", group: "Transactions", modes: ["b2b","b2c","restaurant"] },
   { to: "/pos",              label: "Retail POS",          icon: Scan,             tid: "nav-pos",           badge: "New", group: "Modules", modes: ["pos","b2c"] },
   { to: "/pos/admin",        label: "POS Settings",        icon: SlidersHorizontal,tid: "nav-pos-admin",                   group: "Modules", modes: ["pos"] },

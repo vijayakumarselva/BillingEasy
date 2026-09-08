@@ -50,7 +50,7 @@ export default function PartySelect({
         name: name.trim(),
         phone: phone.trim(),
         gstin: gstin.trim(),
-        role: role === "both" ? "customer" : role,
+        type: role === "both" ? "customer" : role,
       });
       toast.success(`${data.name} created`);
       setShowQuickCreate(false);
@@ -58,7 +58,11 @@ export default function PartySelect({
       if (onCreated) onCreated(data);
       onChange(data.id);
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Failed to create");
+      const detail = e?.response?.data?.detail;
+      const msg = Array.isArray(detail)
+        ? detail.map(d => d.msg || JSON.stringify(d)).join(", ")
+        : typeof detail === "string" ? detail : "Failed to create";
+      toast.error(msg);
     } finally { setSaving(false); }
   };
 

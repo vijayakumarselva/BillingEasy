@@ -12,8 +12,14 @@ api.interceptors.request.use((config) => {
   const orgId = localStorage.getItem("be_org_id");
   if (orgId) {
     config.headers["X-Org-Id"] = orgId;
-    const bizType = localStorage.getItem(`biz_mode_${orgId}`);
-    if (bizType) config.headers["X-Biz-Type"] = bizType;
+    // Entity takes priority over biz_type
+    const entityId = localStorage.getItem(`active_entity_${orgId}`);
+    if (entityId) {
+      config.headers["X-Entity-Id"] = entityId;
+    } else {
+      const bizType = localStorage.getItem(`biz_mode_${orgId}`);
+      if (bizType) config.headers["X-Biz-Type"] = bizType;
+    }
   }
   return config;
 });

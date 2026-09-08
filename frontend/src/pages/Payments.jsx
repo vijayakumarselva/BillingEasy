@@ -147,6 +147,8 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
   const [linkedItem, setLinkedItem] = useState(null); // { item_type, id, label, outstanding }
   const [expenseCategory, setExpenseCategory] = useState(""); // if set, also create expense on save
   const [expenseDesc, setExpenseDesc] = useState("");
+  // outType: "payment" = supplier payment (linked to PO), "expense" = direct expense entry
+  const [outType, setOutType] = useState("payment");
 
   useEffect(() => {
     if (open) {
@@ -241,8 +243,33 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
   };
 
   const save = async () => {
-    if (!form.party_id || !form.amount) { toast.error("Party and amount required"); return; }
+    if (!form.amount) { toast.error("Amount required"); return; }
     try {
+      // ── EXPENSE MODE ─────────────────────────────────────────────────────────
+      if (activeDir === "paid" && outType === "expense") {
+        if (!expenseCategory) { toast.error("Select an expense category"); return; }
+        const partyList = await api.get("/parties").then(r => r.data);
+        const party = partyList.find(p => p.id === form.party_id);
+        const paidTo = expenseDesc || (party ? party.name : expenseCategory);
+        await api.post("/expenses", {
+          category: expenseCategory,
+          amount: parseFloat(form.amount),
+          date: form.date || todayISO(),
+          description: paidTo,
+          gst_rate: 0,
+          paid_via: form.mode || "",
+          reference: form.reference || "",
+          bank_account_id: form.bank_account_id === "__none__" ? "" : (form.bank_account_id || ""),
+        });
+        toast.success(`✅ Expense saved — ${expenseCategory}: ₹${parseFloat(form.amount).toLocaleString("en-IN")}`);
+        onClose(); onSaved?.();
+        setForm({ party_id: "", amount: 0, mode: "Bank Transfer", date: todayISO(), reference: "", bank_account_id: "" });
+        setAiText(""); setAiResult(null); setExpenseCategory(""); setExpenseDesc(""); setOutType("payment");
+        return;
+      }
+
+      // ── PAYMENT MODE ─────────────────────────────────────────────────────────
+      if (!form.party_id) { toast.error("Party required"); return; }
       const payload = {
         ...form, direction: activeDir,
         amount: parseFloat(form.amount),
@@ -256,22 +283,21 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
         if (data.invoice_auto_closed) toast.success("✅ Payment saved — Invoice marked as Paid!");
         else toast.success("Payment saved");
       }
-      // Also create expense if category selected (e.g. wallet recharge, logistics)
+      // Also create expense if category selected (wallet recharge, logistics)
       if (!editId && expenseCategory && activeDir === "paid") {
-        const parties = await api.get("/parties").then(r => r.data);
-        const party = parties.find(p => p.id === form.party_id);
+        const partyList = await api.get("/parties").then(r => r.data);
+        const party = partyList.find(p => p.id === form.party_id);
         await api.post("/expenses", {
-          category: expenseCategory,
-          amount: parseFloat(form.amount),
+          category: expenseCategory, amount: parseFloat(form.amount),
           date: form.date || todayISO(),
           description: expenseDesc || (party ? `Payment to ${party.name}` : expenseCategory),
           gst_rate: 0,
         });
-        toast.success(`Expense recorded under "${expenseCategory}"`);
+        toast.success(`Expense also recorded under "${expenseCategory}"`);
       }
       onClose(); onSaved?.();
       setForm({ party_id: "", amount: 0, mode: "Bank Transfer", date: todayISO(), reference: "", bank_account_id: "" });
-      setAiText(""); setAiResult(null); setExpenseCategory(""); setExpenseDesc("");
+      setAiText(""); setAiResult(null); setExpenseCategory(""); setExpenseDesc(""); setOutType("payment");
     } catch { toast.error("Failed"); }
   };
 
@@ -332,7 +358,51 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
           )}
         </div>
 
+        {/* Type toggle for Money Out: Transaction vs Expense */}
+        {activeDir === "paid" && (
+          <div className="flex rounded-lg border overflow-hidden text-sm font-semibold">
+            <button type="button"
+              onClick={() => setOutType("payment")}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 transition-colors
+                ${outType === "payment" ? "bg-rose-600 text-white" : "bg-muted/30 text-muted-foreground hover:bg-muted/60"}`}>
+              💸 Supplier Payment
+              <span className={`text-[10px] font-normal ${outType === "payment" ? "text-rose-100" : "text-muted-foreground"}`}>PO / vendor</span>
+            </button>
+            <button type="button"
+              onClick={() => setOutType("expense")}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 border-l transition-colors
+                ${outType === "expense" ? "bg-orange-500 text-white" : "bg-muted/30 text-muted-foreground hover:bg-muted/60"}`}>
+              🧾 Expense
+              <span className={`text-[10px] font-normal ${outType === "expense" ? "text-orange-100" : "text-muted-foreground"}`}>salary / opex / other</span>
+            </button>
+          </div>
+        )}
+
         <div className="space-y-3">
+          {/* Expense mode: category first, party optional */}
+          {activeDir === "paid" && outType === "expense" ? (
+            <>
+              <div className="space-y-1.5">
+                <Label>Expense Category *</Label>
+                <Select value={expenseCategory} onValueChange={setExpenseCategory}>
+                  <SelectTrigger className="border-orange-300">
+                    <SelectValue placeholder="Select category…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {["Salaries","Rent","Electricity","Internet","Travel","Office","Repairs",
+                      "Marketing","Logistics","Freight","Wallet Recharge","Bank Charges","Other"].map(c => (
+                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Description / Paid To</Label>
+                <Input value={expenseDesc} onChange={e => setExpenseDesc(e.target.value)}
+                  placeholder="e.g. Salary – Vijayakumar, Aug 2026" />
+              </div>
+            </>
+          ) : (<>
           <div className="space-y-1.5">
             <Label>{activeDir === "received" ? "Customer" : "Supplier"} *</Label>
             <PartySelect
@@ -412,6 +482,7 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
               )}
             </div>
           </div>
+          </>)}
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
@@ -461,8 +532,8 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
             <Input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} placeholder="UPI ref, UTR, cheque number…" data-testid="pay-ref-input" />
           </div>
 
-          {/* Also record as Expense — Money Out only */}
-          {activeDir === "paid" && (
+          {/* Also record as Expense — supplier payment mode only */}
+          {activeDir === "paid" && outType === "payment" && (
             <div className="rounded-lg border border-orange-200 bg-orange-50/50 overflow-hidden">
               <div className="px-3 py-2 border-b border-orange-200 flex items-center gap-2">
                 <Receipt className="h-3.5 w-3.5 text-orange-600" />

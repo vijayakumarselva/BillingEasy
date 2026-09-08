@@ -3,10 +3,13 @@
  * URL: /play/sv2026   Password: SubhiViju26
  */
 import { useState, useEffect } from "react";
-import PokerGame from "@/games/PokerGame";
+import PokerGame     from "@/games/PokerGame";
+import RummyGame     from "@/games/RummyGame";
+import AdventureGame from "@/games/AdventureGame";
 
-const SECRET_PASSWORD = "SubhiViju26";
-const SESSION_KEY = "cg_auth_sv";
+const PASSWORD_MAP = { "9789224680": "Subhi", "9790064624": "Viju" };
+const SESSION_KEY  = "cg_auth_sv";
+const USER_KEY     = "cg_user_sv";
 
 // ── Mood / game modes ──────────────────────────────────────────────────────
 const MODES = [
@@ -18,6 +21,26 @@ const MODES = [
     color: "#f59e0b",
     bg: "linear-gradient(135deg,#f59e0b22,#fcd34d11)",
     border: "#f59e0b44",
+    coming: false,
+  },
+  {
+    id: "rummy",
+    emoji: "🃏",
+    title: "Rummy Night",
+    desc: "Indian Points Rummy — 13 cards, wild joker, pure sequences. Classic card game!",
+    color: "#10b981",
+    bg: "linear-gradient(135deg,#10b98122,#6ee7b711)",
+    border: "#10b98144",
+    coming: false,
+  },
+  {
+    id: "adventure",
+    emoji: "🎮",
+    title: "Our Adventure",
+    desc: "Co-op puzzle game — 3 levels you can ONLY beat together. Inspired by It Takes Two!",
+    color: "#a78bfa",
+    bg: "linear-gradient(135deg,#a78bfa22,#7c3aed11)",
+    border: "#a78bfa44",
     coming: false,
   },
   {
@@ -90,8 +113,11 @@ function PasswordGate({ onUnlock }) {
   const [attempts, setAttempts] = useState(0);
 
   const tryLogin = () => {
-    if (pw === SECRET_PASSWORD) {
+    const clean = pw.replace(/\s|\+91/g, "");
+    const who = PASSWORD_MAP[clean];
+    if (who) {
       sessionStorage.setItem(SESSION_KEY, "1");
+      sessionStorage.setItem(USER_KEY, who);
       onUnlock();
     } else {
       setShake(true);
@@ -101,12 +127,7 @@ function PasswordGate({ onUnlock }) {
     }
   };
 
-  const hints = [
-    "",
-    "💡 Hint: It's a mix of your names + year",
-    "💡 Hint: Starts with S, ends with 26",
-    "💡 Hint: SubhiViju + 26",
-  ];
+  const hints = ["", "💡 Hint: Your mobile number", "💡 Hint: 10-digit number, no spaces"];
 
   return (
     <div style={s.gate}>
@@ -203,7 +224,9 @@ function GameHub({ onLogout }) {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
-  if (selected?.id === "poker") return <PokerGame onBack={() => setSelected(null)} />;
+  if (selected?.id === "poker")     return <PokerGame     playerName={sessionStorage.getItem(USER_KEY)} onBack={() => setSelected(null)} />;
+  if (selected?.id === "rummy")     return <RummyGame     playerName={sessionStorage.getItem(USER_KEY)} onBack={() => setSelected(null)} />;
+  if (selected?.id === "adventure") return <AdventureGame playerName={sessionStorage.getItem(USER_KEY)} onBack={() => setSelected(null)} />;
   if (selected) return <GameScreen mode={selected} onBack={() => setSelected(null)} />;
 
   return (
@@ -244,10 +267,13 @@ export default function CouplesGame() {
   const [authed, setAuthed] = useState(false);
 
   useEffect(() => {
-    if (sessionStorage.getItem(SESSION_KEY) === "1") setAuthed(true);
+    // Both keys must be present; missing USER_KEY means old session → re-login
+    if (sessionStorage.getItem(SESSION_KEY) === "1" && sessionStorage.getItem(USER_KEY)) {
+      setAuthed(true);
+    }
   }, []);
 
-  const logout = () => { sessionStorage.removeItem(SESSION_KEY); setAuthed(false); };
+  const logout = () => { sessionStorage.removeItem(SESSION_KEY); sessionStorage.removeItem(USER_KEY); setAuthed(false); };
 
   return authed
     ? <GameHub onLogout={logout} />

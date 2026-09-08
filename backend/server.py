@@ -200,8 +200,18 @@ async def get_org_ctx(request: Request, user=Depends(get_current_user)) -> dict:
     if allowed_modes:
         if not biz_type or biz_type not in allowed_modes:
             biz_type = allowed_modes[0]
+    # Entity support: resolve active entity from X-Entity-Id header
+    entity_id = request.headers.get("X-Entity-Id") or None
+    entity = None
+    if entity_id:
+        org_doc = await db.organizations.find_one({"id": org_id}, {"_id": 0, "entities": 1})
+        entities = (org_doc or {}).get("entities", [])
+        entity = next((e for e in entities if e.get("id") == entity_id), None)
+        if entity:
+            biz_type = entity.get("biz_type", biz_type)  # entity overrides biz_type
     return {"user": user, "org_id": org_id, "role": membership["role"], "permissions": perms,
-            "allowed_modes": allowed_modes, "biz_type": biz_type, "request": request}
+            "allowed_modes": allowed_modes, "biz_type": biz_type,
+            "entity_id": entity_id, "entity": entity, "request": request}
 
 
 def require_permission(perm: str):
@@ -227,10 +237,14 @@ def org_filter(ctx: dict, extra: Optional[dict] = None) -> dict:
 
 
 def biz_filter(ctx: dict, extra: Optional[dict] = None) -> dict:
-    """org_filter + optional biz_type scoping. Docs with no biz_type field are visible in all modes."""
+    """org_filter + optional entity/biz_type scoping. Docs with no entity/biz_type visible in all modes."""
     q = org_filter(ctx, extra)
+    eid = ctx.get("entity_id")
     bt = ctx.get("biz_type")
-    if bt:
+    if eid:
+        # Entity-scoped: match entity_id OR legacy docs with no entity (shared)
+        q["$or"] = [{"entity_id": eid}, {"entity_id": {"$exists": False}}, {"entity_id": None}]
+    elif bt:
         q["$or"] = [{"biz_type": bt}, {"biz_type": {"$exists": False}}]
     return q
 
@@ -1301,6 +1315,78 @@ async def update_current_org(body: OrgUpdateIn, request: Request, ctx=Depends(re
     await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="settings.updated",
                     entity_type="organization", entity_id=ctx["org_id"], request=request)
     return await db.organizations.find_one({"id": ctx["org_id"]}, {"_id": 0})
+
+
+# ── Entities (sub-profiles within an org) ─────────────────────────────────────
+
+class EntityIn(BaseModel):
+    name: str                       # e.g. "Nammahut B2B", "Nammahut Retail"
+    biz_type: str = "b2b"           # b2b | b2c | restaurant | pos
+    gstin: str = ""
+    pan: str = ""
+    address: str = ""
+    state: str = ""
+    state_code: str = ""
+    phone: str = ""
+    email: str = ""
+    logo_b64: str = ""
+    invoice_prefix: str = ""        # e.g. "B2B", "B2C"
+    invoice_theme: dict = {}
+
+@api.get("/orgs/current/entities")
+async def list_entities(ctx=Depends(get_org_ctx)):
+    org = await get_org_doc(ctx["org_id"])
+    return org.get("entities", [])
+
+@api.post("/orgs/current/entities")
+async def create_entity(body: EntityIn, ctx=Depends(require_permission("settings.edit"))):
+    eid = str(uuid.uuid4())
+    entity = {"id": eid, **body.model_dump(), "created_at": now_iso()}
+    await db.organizations.update_one({"id": ctx["org_id"]}, {"$push": {"entities": entity}})
+    return entity
+
+@api.put("/orgs/current/entities/{eid}")
+async def update_entity(eid: str, body: EntityIn, ctx=Depends(require_permission("settings.edit"))):
+    org = await get_org_doc(ctx["org_id"])
+    entities = org.get("entities", [])
+    updated = []
+    found = False
+    for e in entities:
+        if e["id"] == eid:
+            updated.append({"id": eid, **body.model_dump(), "created_at": e.get("created_at", now_iso()), "updated_at": now_iso()})
+            found = True
+        else:
+            updated.append(e)
+    if not found:
+        raise HTTPException(404, "Entity not found")
+    await db.organizations.update_one({"id": ctx["org_id"]}, {"$set": {"entities": updated}})
+    return next(e for e in updated if e["id"] == eid)
+
+@api.delete("/orgs/current/entities/{eid}")
+async def delete_entity(eid: str, ctx=Depends(require_permission("settings.edit"))):
+    await db.organizations.update_one({"id": ctx["org_id"]}, {"$pull": {"entities": {"id": eid}}})
+    return {"ok": True}
+
+
+# Bulk product update (inline edit all)
+class BulkProductUpdateIn(BaseModel):
+    updates: List[dict]   # [{id, name, purchase_price, sale_price, gst_rate, stock, unit, ...}]
+
+@api.put("/products/bulk-update")
+async def bulk_update_products(body: BulkProductUpdateIn, ctx=Depends(get_org_ctx)):
+    """Update multiple products at once (inline edit mode)."""
+    await ensure_active_subscription(ctx)
+    updated = 0
+    ALLOWED = {"name", "purchase_price", "sale_price", "gst_rate", "unit", "unit_qty",
+                "hsn", "category", "low_stock_alert", "modes", "entity_id"}
+    for upd in body.updates:
+        pid = upd.get("id")
+        if not pid: continue
+        patch = {k: v for k, v in upd.items() if k in ALLOWED}
+        if patch:
+            await db.products.update_one(org_filter(ctx, {"id": pid}), {"$set": patch})
+            updated += 1
+    return {"ok": True, "updated": updated}
 
 
 @api.get("/orgs/current/branches")

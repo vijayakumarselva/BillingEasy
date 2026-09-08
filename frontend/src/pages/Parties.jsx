@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Edit, ScrollText, Users } from "lucide-react";
+import { Plus, Search, Trash2, Edit, ScrollText, Users, MapPin } from "lucide-react";
 import { inr, fmtDate } from "@/lib/format";
 import GstinField from "@/components/GstinField";
 import { useNavigate } from "react-router-dom";
@@ -19,7 +19,9 @@ import { useNavigate } from "react-router-dom";
 const emptyForm = {
   type: "customer", name: "", phone: "", email: "", gstin: "", pan: "",
   state: "Tamil Nadu", state_code: "33",
-  billing_address: "", shipping_address: "", opening_balance: 0, credit_limit: 0,
+  billing_address: "", shipping_address: "", shipping_addresses: [],
+  opening_balance: 0, credit_limit: 0,
+  tds_opening_balance: 0,
 };
 
 export default function Parties() {
@@ -40,7 +42,14 @@ export default function Parties() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [tab, search]);
 
   const startCreate = () => { setForm({ ...emptyForm, type: tab }); setEditId(null); setOpen(true); };
-  const startEdit = (p) => { setForm(p); setEditId(p.id); setOpen(true); };
+  const startEdit = (p) => {
+    // migrate legacy single shipping_address to array if needed
+    const addrs = Array.isArray(p.shipping_addresses) && p.shipping_addresses.length
+      ? p.shipping_addresses
+      : p.shipping_address ? [{ label: "Default", address: p.shipping_address }] : [];
+    setForm({ ...p, shipping_addresses: addrs });
+    setEditId(p.id); setOpen(true);
+  };
   const save = async () => {
     try {
       if (editId) await api.put(`/parties/${editId}`, form);
@@ -226,13 +235,69 @@ export default function Parties() {
             </div>
             <Field label="Opening Balance (₹)" type="number" v={form.opening_balance} on={(v) => setForm({ ...form, opening_balance: parseFloat(v||0) })} tid="party-opening-input" />
             <Field label="Credit Limit (₹)" type="number" v={form.credit_limit} on={(v) => setForm({ ...form, credit_limit: parseFloat(v||0) })} tid="party-credit-input" />
+            {/* TDS 194Q migration field — for both supplier and customer */}
+            <div className="sm:col-span-2 space-y-1.5 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-3">
+              <Label className="text-amber-800 dark:text-amber-300 font-semibold">
+                TDS Opening Balance — Sec 194Q (Migration) ₹
+              </Label>
+              <Input
+                type="number" min="0" step="1000"
+                value={form.tds_opening_balance || 0}
+                onChange={(e) => setForm({ ...form, tds_opening_balance: parseFloat(e.target.value||0) })}
+                className="max-w-[200px]"
+              />
+              <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                {form.type === "supplier"
+                  ? "Total purchases already made to this vendor in the current FY before migrating to this system. Added to purchases recorded here when checking the ₹50 Lakh TDS threshold."
+                  : "Total sales already made to this customer in the current FY before migrating to this system. Added to invoices recorded here when checking the ₹50 Lakh TDS threshold."}
+              </p>
+            </div>
             <div className="sm:col-span-2 space-y-1.5">
               <Label>Billing Address</Label>
               <Input value={form.billing_address} onChange={(e) => setForm({ ...form, billing_address: e.target.value })} data-testid="party-billing-input" />
             </div>
-            <div className="sm:col-span-2 space-y-1.5">
-              <Label>Shipping Address</Label>
-              <Input value={form.shipping_address} onChange={(e) => setForm({ ...form, shipping_address: e.target.value })} data-testid="party-shipping-input" />
+            {/* Multiple Shipping Addresses */}
+            <div className="sm:col-span-2 space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="flex items-center gap-1.5"><MapPin className="h-3.5 w-3.5" /> Shipping Addresses</Label>
+                <Button type="button" size="sm" variant="outline" className="h-7 text-xs gap-1"
+                  onClick={() => setForm(f => ({ ...f, shipping_addresses: [...(f.shipping_addresses || []), { label: "", address: "" }] }))}>
+                  <Plus className="h-3 w-3" /> Add Address
+                </Button>
+              </div>
+              {(form.shipping_addresses || []).length === 0 && (
+                <p className="text-xs text-muted-foreground">No shipping addresses yet. Click "Add Address" to add one.</p>
+              )}
+              {(form.shipping_addresses || []).map((sa, i) => (
+                <div key={i} className="border rounded-lg p-3 space-y-2 bg-muted/20">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      placeholder="Label (e.g. Warehouse, Site 1)"
+                      className="h-8 text-sm w-44 shrink-0"
+                      value={sa.label}
+                      onChange={e => setForm(f => {
+                        const a = [...f.shipping_addresses];
+                        a[i] = { ...a[i], label: e.target.value };
+                        return { ...f, shipping_addresses: a };
+                      })}
+                    />
+                    <button type="button" className="ml-auto text-rose-400 hover:text-rose-600 p-1"
+                      onClick={() => setForm(f => ({ ...f, shipping_addresses: f.shipping_addresses.filter((_, idx) => idx !== i) }))}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <Input
+                    placeholder="Full shipping address"
+                    className="text-sm"
+                    value={sa.address}
+                    onChange={e => setForm(f => {
+                      const a = [...f.shipping_addresses];
+                      a[i] = { ...a[i], address: e.target.value };
+                      return { ...f, shipping_addresses: a };
+                    })}
+                  />
+                </div>
+              ))}
             </div>
           </div>
           <DialogFooter>

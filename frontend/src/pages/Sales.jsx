@@ -9,13 +9,19 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Eye, FileDown, Share2, ChevronRight, FileText, Pencil } from "lucide-react";
+import { Plus, Search, Ban, Eye, FileDown, Share2, ChevronRight, FileText, Pencil, ChevronDown } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { inr, fmtDate } from "@/lib/format";
 import { openExternalUrl, downloadFile } from "@/lib/mobile";
 
 const STATUS_COLOR = {
-  finalized: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-  draft: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300",
+  finalized:  "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+  dispatched: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+  delivered:  "bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300",
+  paid:       "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+  draft:     "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300",
+  void:      "bg-slate-100 text-slate-500 dark:bg-slate-800/60 dark:text-slate-400 line-through",
+  cancelled: "bg-rose-50 text-rose-500 dark:bg-rose-950/30 dark:text-rose-400",
 };
 
 export default function Sales() {
@@ -42,7 +48,25 @@ export default function Sales() {
     (i.party_name || "").toLowerCase().includes(search.toLowerCase())
   );
 
-  const remove = async (id) => { await api.delete(`/invoices/${id}`); toast.success("Deleted"); load(); };
+  const cancel = async (id) => {
+    try {
+      await api.patch(`/invoices/${id}/cancel`);
+      toast.success("Invoice cancelled");
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to cancel");
+    }
+  };
+
+  const changeStatus = async (id, newStatus) => {
+    try {
+      await api.patch(`/invoices/${id}/status`, { status: newStatus });
+      toast.success(`Marked as ${newStatus}`);
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to update status");
+    }
+  };
 
   const downloadPdf = async (inv) => {
     try {
@@ -110,7 +134,11 @@ export default function Sales() {
             <SelectContent>
               <SelectItem value="all">All status</SelectItem>
               <SelectItem value="finalized">Finalized</SelectItem>
+              <SelectItem value="dispatched">Dispatched</SelectItem>
+              <SelectItem value="delivered">Delivered</SelectItem>
               <SelectItem value="draft">Draft</SelectItem>
+              <SelectItem value="void">Void</SelectItem>
+              <SelectItem value="cancelled">Cancelled</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -178,21 +206,53 @@ export default function Sales() {
                     <td className="num">{inr(inv.totals?.grand_total)}</td>
                     <td className="num">{inr(inv.paid)}</td>
                     <td className="num">{inv.due > 0 ? <span className="text-rose-600 font-semibold">{inr(inv.due)}</span> : <Badge className="bg-emerald-600">Paid</Badge>}</td>
-                    <td><Badge variant={inv.status === "finalized" ? "default" : "secondary"}>{inv.status}</Badge></td>
+                    <td>
+                      {inv.status === "cancelled" || inv.status === "void" ? (
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLOR[inv.status] || "bg-muted text-muted-foreground"}`}>
+                          {inv.status}
+                        </span>
+                      ) : (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium cursor-pointer hover:opacity-80 transition-opacity ${STATUS_COLOR[inv.status] || "bg-muted text-muted-foreground"}`}>
+                              {inv.status} <ChevronDown className="h-2.5 w-2.5" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="text-sm min-w-[160px]">
+                            {inv.status !== "draft" && <DropdownMenuItem onClick={() => changeStatus(inv.id, "draft")}>📝 Draft</DropdownMenuItem>}
+                            {inv.status !== "finalized" && <DropdownMenuItem onClick={() => changeStatus(inv.id, "finalized")}>✅ Finalized</DropdownMenuItem>}
+                            {inv.type === "sale" && inv.status !== "dispatched" && <DropdownMenuItem onClick={() => changeStatus(inv.id, "dispatched")}>🚚 Dispatched</DropdownMenuItem>}
+                            {inv.type === "sale" && inv.status !== "delivered" && <DropdownMenuItem onClick={() => changeStatus(inv.id, "delivered")}>📦 Delivered</DropdownMenuItem>}
+                            <DropdownMenuSeparator />
+                            {inv.status !== "void" && <DropdownMenuItem className="text-slate-500" onClick={() => changeStatus(inv.id, "void")}>🚫 Void</DropdownMenuItem>}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                    </td>
                     <td className="text-right whitespace-nowrap">
                       <Button size="icon" variant="ghost" onClick={() => nav(`/sales/${inv.id}`)} title="View"><Eye className="h-4 w-4" /></Button>
-                      <Button size="icon" variant="ghost" onClick={() => nav(`/sales/${inv.id}/edit`)} title="Edit"><Pencil className="h-4 w-4 text-blue-500" /></Button>
+                      {inv.status !== "cancelled" && inv.status !== "void" && (
+                        <Button size="icon" variant="ghost" onClick={() => nav(`/sales/${inv.id}/edit`)} title="Edit"><Pencil className="h-4 w-4 text-blue-500" /></Button>
+                      )}
                       <Button size="icon" variant="ghost" onClick={() => downloadPdf(inv)}><FileDown className="h-4 w-4" /></Button>
                       <Button size="icon" variant="ghost" onClick={() => shareWhatsApp(inv)}><Share2 className="h-4 w-4" /></Button>
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button size="icon" variant="ghost"><Trash2 className="h-4 w-4 text-rose-500" /></Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader><AlertDialogTitle>Delete {inv.invoice_no}?</AlertDialogTitle><AlertDialogDescription>This cannot be undone.</AlertDialogDescription></AlertDialogHeader>
-                          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => remove(inv.id)}>Delete</AlertDialogAction></AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
+                      {inv.status !== "cancelled" && inv.status !== "void" && (
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button size="icon" variant="ghost" title="Cancel invoice"><Ban className="h-4 w-4 text-rose-500" /></Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Cancel {inv.invoice_no}?</AlertDialogTitle>
+                              <AlertDialogDescription>The invoice will be marked as cancelled. It will remain in your records but cannot be edited or used for payments.</AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Keep it</AlertDialogCancel>
+                              <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={() => cancel(inv.id)}>Yes, Cancel Invoice</AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      )}
                     </td>
                   </tr>
                 ))}

@@ -237,3 +237,116 @@ def _parse_json(raw: str) -> Dict[str, Any]:
         except json.JSONDecodeError:
             return {"error": "invalid_json", "raw": raw[:500]}
     return {"error": "no_json_found", "raw": raw[:500]}
+
+
+BANK_ANALYSIS_SYSTEM = """You are an expert Indian business financial analyst.
+You will receive a list of bank transaction vendor names (extracted from bank descriptions) and their total amounts.
+Your job is to:
+1. Assign each vendor to a business expense/income CATEGORY
+2. Identify the vendor's likely real name (clean it up from bank codes)
+3. Return structured JSON only
+
+Categories to use (pick the best fit):
+Sales Income, Customer Receipts, Vendor Payments, Rent & Utilities, Salaries & Payroll,
+Bank Charges & Fees, Tax & GST Payments, Loan & EMI, Travel & Transport, Raw Materials,
+Office Supplies, Software & Subscriptions, Marketing & Advertising, Insurance,
+Logistics & Delivery, Food & Hospitality, Miscellaneous Debit, Miscellaneous Credit
+
+ALWAYS respond with a JSON array of this exact shape and nothing else:
+[
+  {
+    "raw_vendor": "original vendor string passed in",
+    "clean_name": "human-readable vendor name",
+    "category": "one of the categories above",
+    "sub_type": "income | expense | transfer"
+  }
+]
+"""
+
+async def ai_analyze_bank_vendors(vendors: List[Dict]) -> List[Dict]:
+    """Categorize a list of {raw_vendor, total_debit, total_credit} using Claude."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return [{"raw_vendor": v["raw_vendor"], "clean_name": v["raw_vendor"],
+                 "category": "Uncategorized", "sub_type": "expense"} for v in vendors]
+    client = anthropic.AsyncAnthropic(api_key=key)
+    # Send at most 80 vendors at once to stay within token limits
+    vendor_list = "\n".join(
+        f"- {v['raw_vendor']} (debit ₹{v['total_debit']:.0f}, credit ₹{v['total_credit']:.0f})"
+        for v in vendors[:80]
+    )
+    msg = await client.messages.create(
+        model=MODEL_NAME,
+        max_tokens=4096,
+        system=BANK_ANALYSIS_SYSTEM,
+        messages=[{"role": "user", "content": f"Categorise these vendors:\n{vendor_list}\n\nReturn only JSON array."}],
+    )
+    raw = msg.content[0].text.strip()
+    # Extract JSON array
+    arr_match = re.search(r"\[.*\]", raw, re.S)
+    if arr_match:
+        try:
+            return json.loads(arr_match.group(0))
+        except Exception:
+            pass
+    return [{"raw_vendor": v["raw_vendor"], "clean_name": v["raw_vendor"],
+             "category": "Uncategorized", "sub_type": "expense"} for v in vendors]
+
+
+async def ai_bank_insights(summary: Dict) -> str:
+    """Generate 5-6 plain-English insights from a bank statement summary dict."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return ""
+    client = anthropic.AsyncAnthropic(api_key=key)
+    system = """You are a sharp Indian business financial advisor. 
+Given a bank statement summary JSON for a small/medium Indian business, write 5-6 bullet-point insights.
+Be specific with numbers. Use ₹ symbol. Focus on: top spends, income patterns, anomalies, cash flow health, actionable suggestions.
+Write in plain English. Each bullet starts with an emoji. Do NOT use markdown headers. Output plain text only."""
+    msg = await client.messages.create(
+        model=MODEL_NAME, max_tokens=800, system=system,
+        messages=[{"role": "user", "content": json.dumps(summary, default=str)[:4000]}],
+    )
+    return msg.content[0].text.strip()
+
+
+PAYMENT_PARSE_SYSTEM = """You are a payment-entry assistant for an Indian small business accounting app.
+The user will describe a payment in natural language (English, Hinglish, or mixed). 
+Extract structured payment details and return ONLY valid JSON with these fields:
+{
+  "direction": "received" | "paid",        // money in (from customer) or money out (to supplier)
+  "party_name": string,                     // customer or supplier name
+  "amount": number,                         // in INR, no commas or symbols
+  "date": "YYYY-MM-DD",                    // today if not specified (use context date provided)
+  "mode": string,                           // one of: Cash, Bank Transfer, UPI, NEFT, RTGS, IMPS, Cheque, Card, NACH
+  "reference": string,                      // UTR, UPI ref, cheque number, or "" if none
+  "notes": string                           // any extra context, or ""
+}
+
+Rules:
+- If amount has ₹, lakh/lac (×100000), k (×1000) — convert to plain number.
+- If "received", "from customer", "income", "sale payment" → direction=received
+- If "paid", "sent", "to supplier", "purchase payment", "vendor" → direction=paid  
+- Infer mode from keywords: "UPI", "gpay", "phonepe", "paytm" → UPI; "neft/rtgs/imps" → use as-is; "cash" → Cash; "cheque/check" → Cheque; "card/swipe" → Card; default → Bank Transfer
+- Return ONLY the JSON object, no explanation."""
+
+
+async def ai_parse_payment(text: str, today: str = "") -> Dict:
+    """Parse a natural-language payment description into structured fields."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return {}
+    client = anthropic.AsyncAnthropic(api_key=key)
+    user_msg = f"Today's date: {today or 'unknown'}\n\nPayment description: {text}"
+    msg = await client.messages.create(
+        model=MODEL_NAME, max_tokens=400, system=PAYMENT_PARSE_SYSTEM,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+    raw = msg.content[0].text.strip()
+    obj_match = re.search(r"\{.*\}", raw, re.S)
+    if obj_match:
+        try:
+            return json.loads(obj_match.group(0))
+        except Exception:
+            pass
+    return {}

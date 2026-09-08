@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Trash2, KeyRound, Building2, Pencil, Upload, X, Eye, Palette } from "lucide-react";
+import { Plus, Trash2, KeyRound, Building2, Pencil, Upload, X, Eye, Palette, Warehouse } from "lucide-react";
 import { STATES } from "@/pages/Parties";
 import { useAuth } from "@/context/AuthContext";
 import RolesPanel from "@/components/RolesPanel";
@@ -33,9 +33,11 @@ export default function Settings() {
   });
   const [logoUploading, setLogoUploading] = useState(false);
   const logoRef = useRef(null);
+  const [sigUploading, setSigUploading] = useState(false);
+  const sigRef = useRef(null);
   const [members, setMembers] = useState([]);
   const [banks, setBanks] = useState([]);
-  const [bankForm, setBankForm] = useState({ bank_name: "", account_no: "", ifsc: "", branch: "", opening_balance: 0 });
+  const [bankForm, setBankForm] = useState({ bank_name: "", account_no: "", ifsc: "", branch: "", opening_balance: 0, account_type: "Current" });
   const [composition, setComposition] = useState(false);
   const [language, setLanguage] = useState("English");
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -85,6 +87,26 @@ export default function Settings() {
     setBiz(b => ({ ...b, logo_b64: "" }));
     toast.success("Logo removed");
   };
+
+  const uploadSignature = async (file) => {
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { toast.error("Signature image must be under 2 MB"); return; }
+    setSigUploading(true);
+    try {
+      const fd = new FormData(); fd.append("file", file);
+      const { data } = await api.post("/business/signature", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      setBiz(b => ({ ...b, signature_b64: data.signature_b64 }));
+      toast.success("Signature uploaded");
+    } catch (e) { toast.error(e?.response?.data?.detail || "Upload failed"); }
+    finally { setSigUploading(false); }
+  };
+
+  const removeSignature = async () => {
+    await api.delete("/business/signature");
+    setBiz(b => ({ ...b, signature_b64: "" }));
+    toast.success("Signature removed");
+  };
+
   const addBank = async () => {
     if (!bankForm.bank_name || !bankForm.account_no) { toast.error("Bank & A/c required"); return; }
     await api.post("/bank-accounts", { ...bankForm, opening_balance: parseFloat(bankForm.opening_balance || 0) });
@@ -136,6 +158,7 @@ export default function Settings() {
           <TabsTrigger value="biz" data-testid="settings-tab-biz">Business</TabsTrigger>
           <TabsTrigger value="invoice" data-testid="settings-tab-invoice">Invoice Theme</TabsTrigger>
           <TabsTrigger value="branches" data-testid="settings-tab-branches">Branches & GSTINs</TabsTrigger>
+          <TabsTrigger value="warehouses" data-testid="settings-tab-warehouses">Warehouses</TabsTrigger>
           <TabsTrigger value="bank" data-testid="settings-tab-bank">Banking</TabsTrigger>
           <TabsTrigger value="users" data-testid="settings-tab-users">Team</TabsTrigger>
           <TabsTrigger value="roles" data-testid="settings-tab-roles">Roles</TabsTrigger>
@@ -287,25 +310,38 @@ export default function Settings() {
           </Dialog>
         </TabsContent>
 
+        {/* ── Warehouses tab ── */}
+        <TabsContent value="warehouses">
+          <WarehousesTab branches={branches} />
+        </TabsContent>
+
         <TabsContent value="bank">
           <Card className="p-5 mt-4 space-y-4">
             <h3 className="font-semibold">Bank Accounts</h3>
-            <div className="grid sm:grid-cols-5 gap-3">
-              <F label="Bank" v={bankForm.bank_name} on={(v) => setBankForm({ ...bankForm, bank_name: v })} />
+            <div className="grid sm:grid-cols-3 gap-3">
+              <F label="Bank Name" v={bankForm.bank_name} on={(v) => setBankForm({ ...bankForm, bank_name: v })} />
               <F label="A/c No" v={bankForm.account_no} on={(v) => setBankForm({ ...bankForm, account_no: v })} />
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Account Type</label>
+                <select className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+                  value={bankForm.account_type} onChange={e => setBankForm({ ...bankForm, account_type: e.target.value })}>
+                  {["Current","Savings","OD","CC","Wallet"].map(t => <option key={t} value={t}>{t === "OD" ? "OD (Overdraft)" : t === "CC" ? "CC (Credit Card)" : t}</option>)}
+                </select>
+              </div>
               <F label="IFSC" v={bankForm.ifsc} on={(v) => setBankForm({ ...bankForm, ifsc: v })} />
               <F label="Branch" v={bankForm.branch} on={(v) => setBankForm({ ...bankForm, branch: v })} />
-              <F label="Opening" type="number" v={bankForm.opening_balance} on={(v) => setBankForm({ ...bankForm, opening_balance: v })} />
+              <F label="Opening Balance ₹" type="number" v={bankForm.opening_balance} on={(v) => setBankForm({ ...bankForm, opening_balance: v })} />
             </div>
-            <Button onClick={addBank} className="bg-blue-600 hover:bg-blue-700" data-testid="add-bank-button">Add Bank</Button>
+            <Button onClick={addBank} className="bg-blue-600 hover:bg-blue-700" data-testid="add-bank-button">Add Bank Account</Button>
             <div className="overflow-x-auto"><table className="app-table">
-              <thead><tr><th>Bank</th><th>A/c No</th><th>IFSC</th><th>Branch</th><th></th></tr></thead>
+              <thead><tr><th>Bank</th><th>A/c No</th><th>Type</th><th>IFSC</th><th>Branch</th><th></th></tr></thead>
               <tbody>
-                {banks.length === 0 ? <tr><td colSpan={5} className="text-center text-muted-foreground py-6">No banks yet.</td></tr> :
+                {banks.length === 0 ? <tr><td colSpan={6} className="text-center text-muted-foreground py-6">No bank accounts yet.</td></tr> :
                   banks.map(b => (
                     <tr key={b.id}>
                       <td className="font-medium">{b.bank_name}</td>
                       <td className="font-mono-fin">{b.account_no}</td>
+                      <td><span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">{b.account_type || "Current"}</span></td>
                       <td className="font-mono-fin text-xs">{b.ifsc}</td>
                       <td>{b.branch}</td>
                       <td className="text-right"><Button variant="ghost" size="sm" onClick={() => delBank(b.id)}>Remove</Button></td>
@@ -420,6 +456,38 @@ export default function Settings() {
                 )}
               </Card>
 
+              {/* Authorized Signature */}
+              <Card className="p-5 space-y-3">
+                <h3 className="font-semibold">Authorized Signature</h3>
+                {biz.signature_b64 ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3 p-3 rounded-lg border bg-muted/30">
+                      <img src={biz.signature_b64} alt="Signature" className="h-14 max-w-[160px] object-contain rounded" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">Signature uploaded</p>
+                        <p className="text-xs text-muted-foreground">Appears at the bottom-right of every PDF invoice</p>
+                      </div>
+                      <Button size="sm" variant="ghost" onClick={removeSignature} className="text-rose-500 shrink-0">
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Switch checked={theme.show_signature} onCheckedChange={v => setTheme(t => ({ ...t, show_signature: v }))} />
+                      <Label className="text-sm">Show signature on invoices</Label>
+                    </div>
+                  </div>
+                ) : (
+                  <DropZone
+                    accept="image/*"
+                    onFile={uploadSignature}
+                    label={sigUploading ? "Uploading…" : "Click or drag & drop signature here"}
+                    hint="PNG with transparent background works best — max 2 MB"
+                    icon={Upload}
+                    disabled={sigUploading}
+                  />
+                )}
+              </Card>
+
               {/* Colours */}
               <Card className="p-5 space-y-4">
                 <h3 className="font-semibold">Colour Scheme</h3>
@@ -470,6 +538,29 @@ export default function Settings() {
                       GRAND TOTAL
                     </div>
                   </div>
+                </div>
+              </Card>
+
+              {/* Template picker */}
+              <Card className="p-5 space-y-3">
+                <h3 className="font-semibold">Invoice Template</h3>
+                <p className="text-xs text-muted-foreground">Choose the layout for your PDF invoices. Applies to both sales and purchase bills.</p>
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { id: "classic", name: "Classic GST", desc: "India GST layout with company header, two-column Bill To / Ship To, itemised tax breakdown" },
+                    { id: "modern",  name: "Modern",      desc: "Full-width colour header bar, accent-shaded rows, prominent grand total" },
+                    { id: "compact", name: "Compact",     desc: "Minimal spreadsheet style, dense rows, great for multi-item invoices" },
+                  ].map(t => (
+                    <button key={t.id} type="button"
+                      onClick={() => setTheme(th => ({ ...th, template: t.id }))}
+                      className={`rounded-lg border-2 p-3 text-left transition-all ${(theme.template || "classic") === t.id ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30" : "border-muted hover:border-blue-300"}`}>
+                      <div className="text-sm font-semibold mb-1 flex items-center gap-1.5">
+                        {(theme.template || "classic") === t.id && <span className="text-blue-600">✓</span>}
+                        {t.name}
+                      </div>
+                      <p className="text-xs text-muted-foreground leading-snug">{t.desc}</p>
+                    </button>
+                  ))}
                 </div>
               </Card>
 
@@ -880,6 +971,148 @@ function ChangePasswordCard() {
           {saving ? "Updating…" : "Update password"}
         </Button>
       </form>
+    </Card>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Warehouses Tab Component
+// ─────────────────────────────────────────────────────────────────────────────
+function WarehousesTab({ branches = [] }) {
+  const [warehouses, setWarehouses] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [editWh, setEditWh] = useState(null);
+  const emptyForm = { name: "", branch_id: "", address: "", active: true };
+  const [form, setForm] = useState(emptyForm);
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    const { data } = await api.get("/warehouses");
+    setWarehouses(data);
+  };
+  useEffect(() => { load(); }, []);
+
+  const openAdd  = () => { setForm(emptyForm); setEditWh(null); setOpen(true); };
+  const openEdit = (w) => { setForm({ name: w.name, branch_id: w.branch_id || "", address: w.address || "", active: w.active }); setEditWh(w); setOpen(true); };
+
+  const save = async () => {
+    if (!form.name.trim()) { toast.error("Name is required"); return; }
+    setSaving(true);
+    try {
+      if (editWh) await api.put(`/warehouses/${editWh.id}`, form);
+      else        await api.post("/warehouses", form);
+      toast.success(editWh ? "Warehouse updated" : "Warehouse added");
+      setOpen(false); load();
+    } catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
+    finally { setSaving(false); }
+  };
+
+  const remove = async (id) => {
+    await api.delete(`/warehouses/${id}`);
+    toast.success("Deleted"); load();
+  };
+
+  const getBranchName = (bid) => {
+    const b = branches.find(x => x.id === bid);
+    return b ? b.name : "—";
+  };
+
+  return (
+    <Card className="p-5 mt-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold flex items-center gap-2"><Warehouse className="h-4 w-4" /> Warehouses</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">Each warehouse belongs to a branch. Stock is tracked per warehouse.</p>
+        </div>
+        <Button onClick={openAdd} className="bg-blue-600 hover:bg-blue-700 gap-1.5">
+          <Plus className="h-4 w-4" /> Add Warehouse
+        </Button>
+      </div>
+
+      {warehouses.length === 0 ? (
+        <div className="text-center text-muted-foreground py-10 text-sm border border-dashed rounded-md">
+          No warehouses yet. Add your first warehouse to start tracking per-warehouse inventory.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="app-table">
+            <thead><tr>
+              <th>Warehouse Name</th><th>Branch</th><th>Address</th><th>Status</th><th></th>
+            </tr></thead>
+            <tbody>
+              {warehouses.map(w => (
+                <tr key={w.id}>
+                  <td className="font-medium flex items-center gap-2"><Warehouse className="h-3.5 w-3.5 text-muted-foreground" />{w.name}</td>
+                  <td className="text-muted-foreground">{getBranchName(w.branch_id)}</td>
+                  <td className="text-muted-foreground text-sm">{w.address || "—"}</td>
+                  <td>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${w.active ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400" : "bg-muted text-muted-foreground"}`}>
+                      {w.active ? "Active" : "Inactive"}
+                    </span>
+                  </td>
+                  <td className="text-right">
+                    <Button size="icon" variant="ghost" onClick={() => openEdit(w)}><Pencil className="h-4 w-4" /></Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button size="icon" variant="ghost"><Trash2 className="h-4 w-4 text-rose-500" /></Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Delete "{w.name}"?</AlertDialogTitle>
+                          <AlertDialogDescription>Stock records for this warehouse will remain but the warehouse will no longer appear in dropdowns.</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => remove(w.id)}>Delete</AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{editWh ? "Edit" : "Add"} Warehouse</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label>Warehouse Name *</Label>
+              <Input placeholder="e.g. Main Store, Cold Storage" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Branch (optional)</Label>
+              <Select value={form.branch_id || "__none__"} onValueChange={v => setForm(f => ({ ...f, branch_id: v === "__none__" ? "" : v }))}>
+                <SelectTrigger><SelectValue placeholder="Select branch" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">— Head Office (no branch) —</SelectItem>
+                  {branches.map(b => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Address</Label>
+              <Input placeholder="Warehouse address" value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} />
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch checked={form.active} onCheckedChange={v => setForm(f => ({ ...f, active: v }))} />
+              <Label>Active</Label>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button onClick={save} disabled={saving} className="bg-blue-600 hover:bg-blue-700">
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

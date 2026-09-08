@@ -110,7 +110,12 @@ def _logo_image(data_uri: str, max_w=30*mm, max_h=18*mm):
         return None
 
 # ── Main generator ─────────────────────────────────────────────────────────────
-def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
+def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale", template: str = "classic") -> bytes:
+    if template == "modern":
+        return _generate_modern_pdf(inv, biz, kind)
+    if template == "compact":
+        return _generate_compact_pdf(inv, biz, kind)
+    # default: classic (existing template)
     _ensure_fonts()
     F  = _FONT_BASE if _FONT_REGISTERED else "Helvetica"
     FB = _FONT_BOLD if _FONT_REGISTERED else "Helvetica-Bold"
@@ -536,7 +541,13 @@ def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
 
     right_footer = [tot_tbl]
     if SHOW_SIG:
-        right_footer.append(Spacer(1, 15*mm))
+        right_footer.append(Spacer(1, 10*mm))
+        # Render signature image if available, else leave blank space for manual sign
+        sig_img = _logo_image(biz.get("signature_b64", ""), max_w=55*mm, max_h=20*mm)
+        if sig_img:
+            right_footer.append(sig_img)
+        else:
+            right_footer.append(Spacer(1, 20*mm))
         right_footer.append(Paragraph("Authorized Signature", s_sig))
 
     foot = Table(
@@ -581,4 +592,350 @@ def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
     else:
         doc.build(story)
 
+    return buf.getvalue()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODERN TEMPLATE — Clean header bar, coloured accent, two-column footer
+# ═══════════════════════════════════════════════════════════════════════════════
+def _generate_modern_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
+    _ensure_fonts()
+    F  = _FONT_BASE if _FONT_REGISTERED else "Helvetica"
+    FB = _FONT_BOLD if _FONT_REGISTERED else "Helvetica-Bold"
+
+    theme   = biz.get("invoice_theme") or {}
+    PRIMARY = _hex_color(theme.get("primary_color") or "#1D4ED8")
+    ACCENT  = colors.HexColor("#F0F4FF")
+
+    if kind == "purchase":
+        type_label = {"purchase": "PURCHASE BILL", "debit_note": "DEBIT NOTE",
+                      "purchase_return": "PURCHASE RETURN"}.get(inv.get("type"), "PURCHASE BILL")
+        inv_no = inv.get("bill_no", "")
+        inv_date = inv.get("purchase_date", "")
+        due_date = ""
+    else:
+        type_label = {"sale": "TAX INVOICE", "quotation": "QUOTATION",
+                      "credit_note": "CREDIT NOTE", "sales_return": "SALES RETURN"}.get(inv.get("type"), "TAX INVOICE")
+        inv_no = inv.get("invoice_no", "")
+        inv_date = inv.get("invoice_date", "")
+        due_date = inv.get("due_date", "")
+
+    party = inv.get("party_snapshot") or {}
+    totals = inv.get("totals") or {}
+    items  = inv.get("items") or []
+    same_state = inv.get("same_state", True)
+
+    buf = BytesIO()
+    CW = 180*mm
+
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+        leftMargin=15*mm, rightMargin=15*mm, topMargin=10*mm, bottomMargin=12*mm,
+        title=f"{type_label} {inv_no}", author=biz.get("name",""))
+
+    def PS(name, **kw):
+        d = dict(fontName=F, fontSize=9, leading=13, textColor=BLACK)
+        d.update(kw); return ParagraphStyle(name, **d)
+
+    story = []
+
+    # ── Header bar ────────────────────────────────────────────────────────────
+    logo_cell = ""
+    if theme.get("show_logo", True):
+        logo_img = _logo_image(biz.get("logo_b64",""), max_w=35*mm, max_h=14*mm)
+        if logo_img: logo_cell = logo_img
+
+    biz_block = [
+        Paragraph(biz.get("name",""), PS("h_name", fontName=FB, fontSize=14, leading=18, textColor=WHITE)),
+        Paragraph(biz.get("address",""), PS("h_addr", fontSize=7.5, leading=11, textColor=colors.HexColor("#DDEEFF"))),
+        Paragraph(f"GSTIN: {biz.get('gstin','')}  |  {biz.get('phone','')}", PS("h_g", fontSize=7.5, leading=11, textColor=colors.HexColor("#DDEEFF"))),
+    ]
+    title_block = [
+        Paragraph(type_label, PS("h_title", fontName=FB, fontSize=18, leading=22, textColor=WHITE, alignment=TA_RIGHT)),
+        Paragraph(inv_no, PS("h_no", fontName=FB, fontSize=11, leading=15, textColor=colors.HexColor("#CCDDFF"), alignment=TA_RIGHT)),
+    ]
+
+    hdr_tbl = Table([[logo_cell or "", biz_block, title_block]], colWidths=[38*mm, 90*mm, 52*mm])
+    hdr_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,-1), PRIMARY),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        ("LEFTPADDING", (0,0), (-1,-1), 6), ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING", (0,0), (-1,-1), 8), ("BOTTOMPADDING", (0,0), (-1,-1), 8),
+    ]))
+    story.append(hdr_tbl)
+    story.append(Spacer(1, 6*mm))
+
+    # ── Meta + Party ─────────────────────────────────────────────────────────
+    meta_rows = [["Invoice No", inv_no], ["Date", inv_date]]
+    if due_date: meta_rows.append(["Due Date", due_date])
+    if inv.get("po_number"): meta_rows.append(["PO Number", inv["po_number"]])
+    meta_rows.append(["Place of Supply", party.get("state","")])
+
+    meta_tbl = Table([[Paragraph(k, PS("ml", fontSize=8, textColor=GREY)), Paragraph(v, PS("mv", fontName=FB, fontSize=8))] for k,v in meta_rows],
+                     colWidths=[30*mm, 50*mm])
+    meta_tbl.setStyle(TableStyle([("TOPPADDING",(0,0),(-1,-1),2),("BOTTOMPADDING",(0,0),(-1,-1),2)]))
+
+    bill_to = [
+        Paragraph("BILL TO", PS("bt_lbl", fontName=FB, fontSize=7, textColor=PRIMARY)),
+        Paragraph(party.get("name",""), PS("bt_nm", fontName=FB, fontSize=10, leading=14)),
+        Paragraph(party.get("billing_address",""), PS("bt_a", fontSize=8, textColor=GREY, leading=12)),
+        Paragraph(f"GSTIN: {party.get('gstin','—')}", PS("bt_g", fontSize=8, textColor=GREY)),
+        Paragraph(party.get("phone",""), PS("bt_ph", fontSize=8, textColor=GREY)),
+    ]
+
+    info_tbl = Table([[bill_to, meta_tbl]], colWidths=[100*mm, 80*mm])
+    info_tbl.setStyle(TableStyle([
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("BACKGROUND",(0,0),(0,-1),ACCENT),
+        ("BOX",(0,0),(0,-1),0.5,colors.HexColor("#D0D8F0")),
+        ("LEFTPADDING",(0,0),(-1,-1),6),("RIGHTPADDING",(0,0),(-1,-1),6),
+        ("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),
+    ]))
+    story.append(info_tbl)
+    story.append(Spacer(1, 5*mm))
+
+    # ── Items table ───────────────────────────────────────────────────────────
+    if same_state:
+        hdrs = ["#","Item / Description","HSN","Qty","Rate ₹","Disc%","Taxable","GST%","CGST","SGST","Total ₹"]
+        cws  = [8,50,14,14,20,12,22,10,18,18,24]
+    else:
+        hdrs = ["#","Item / Description","HSN","Qty","Rate ₹","Disc%","Taxable","GST%","IGST","Total ₹"]
+        cws  = [8,56,14,14,20,12,24,10,20,42]
+    cws = [c*mm for c in cws]
+
+    rows = [[Paragraph(h, PS(f"th{i}", fontName=FB, fontSize=7.5, textColor=WHITE, alignment=TA_CENTER)) for i,h in enumerate(hdrs)]]
+    for idx, it in enumerate(items):
+        row = [
+            Paragraph(str(idx+1), PS("r", fontSize=8, alignment=TA_CENTER)),
+            Paragraph(it.get("name",""), PS("rn", fontSize=8)),
+            Paragraph(it.get("hsn",""), PS("rh", fontSize=8, alignment=TA_CENTER)),
+            Paragraph(f"{it.get('qty',0)} {it.get('unit','')}", PS("rq", fontSize=8, alignment=TA_CENTER)),
+            Paragraph(f"{it.get('rate',0):,.2f}", PS("rr", fontSize=8, alignment=TA_RIGHT)),
+            Paragraph(f"{it.get('discount_pct',0):.1f}%", PS("rd", fontSize=8, alignment=TA_CENTER)),
+            Paragraph(f"{it.get('taxable',0):,.2f}", PS("rt", fontSize=8, alignment=TA_RIGHT)),
+            Paragraph(f"{it.get('gst_rate',0):.0f}%", PS("rg", fontSize=8, alignment=TA_CENTER)),
+        ]
+        if same_state:
+            row += [Paragraph(f"{it.get('cgst',0):,.2f}", PS("rc", fontSize=8, alignment=TA_RIGHT)),
+                    Paragraph(f"{it.get('sgst',0):,.2f}", PS("rs", fontSize=8, alignment=TA_RIGHT))]
+        else:
+            row += [Paragraph(f"{it.get('igst',0):,.2f}", PS("ri", fontSize=8, alignment=TA_RIGHT))]
+        row.append(Paragraph(f"{it.get('total',0):,.2f}", PS("rtot", fontName=FB, fontSize=8, alignment=TA_RIGHT)))
+        rows.append(row)
+
+    itbl = Table(rows, colWidths=cws, repeatRows=1)
+    itbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),PRIMARY), ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white, ACCENT]),
+        ("GRID",(0,0),(-1,-1),0.3,colors.HexColor("#D0D8F0")),
+        ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
+        ("LEFTPADDING",(0,0),(-1,-1),4),("RIGHTPADDING",(0,0),(-1,-1),4),
+        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+    ]))
+    story.append(itbl)
+    story.append(Spacer(1, 4*mm))
+
+    # ── Totals ────────────────────────────────────────────────────────────────
+    tax_label = "CGST + SGST" if same_state else "IGST"
+    tax_val = totals.get("cgst",0)+totals.get("sgst",0) if same_state else totals.get("igst",0)
+    tot_rows = [
+        ["Subtotal", f"₹ {totals.get('subtotal',0):,.2f}"],
+        ["Discount", f"₹ {totals.get('discount',0):,.2f}"],
+        ["Taxable Amount", f"₹ {totals.get('taxable_amount',0):,.2f}"],
+        [tax_label, f"₹ {tax_val:,.2f}"],
+        ["Round Off", f"₹ {totals.get('round_off',0):,.2f}"],
+        ["Grand Total", f"₹ {totals.get('grand_total',0):,.2f}"],
+    ]
+    grand = totals.get("grand_total",0)
+    try:
+        words = num2words(int(grand), lang="en_IN").title() + " Rupees Only"
+    except Exception:
+        words = ""
+
+    tot_tbl = Table([[Paragraph(k, PS(f"tk{i}", fontSize=8.5, textColor=GREY if i<5 else BLACK,
+                                      fontName=FB if i==5 else F)),
+                      Paragraph(v, PS(f"tv{i}", fontSize=8.5, alignment=TA_RIGHT,
+                                      fontName=FB if i==5 else F,
+                                      textColor=PRIMARY if i==5 else BLACK))]
+                     for i,(k,v) in enumerate(tot_rows)],
+                    colWidths=[45*mm, 35*mm])
+    tot_tbl.setStyle(TableStyle([
+        ("TOPPADDING",(0,0),(-1,-1),2),("BOTTOMPADDING",(0,0),(-1,-1),2),
+        ("LINEABOVE",(0,5),(-1,5),1,PRIMARY),
+        ("BACKGROUND",(0,5),(-1,5),ACCENT),
+    ]))
+
+    notes_content = []
+    if words:
+        notes_content.append(Paragraph(f"Amount in words: {words}", PS("aw", fontSize=7.5, textColor=GREY, fontName=FB)))
+    if inv.get("notes"):
+        notes_content.append(Spacer(1,4))
+        notes_content.append(Paragraph(f"Notes: {inv['notes']}", PS("nt", fontSize=8, textColor=GREY)))
+    if biz.get("terms"):
+        notes_content.append(Spacer(1,4))
+        notes_content.append(Paragraph(f"Terms: {biz['terms']}", PS("tm", fontSize=7.5, textColor=GREY)))
+
+    footer_tbl = Table([[notes_content or [Spacer(1,1)], tot_tbl]], colWidths=[100*mm, 80*mm])
+    footer_tbl.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),
+                                    ("RIGHTPADDING",(1,0),(1,-1),0)]))
+    story.append(footer_tbl)
+
+    # ── Signature ─────────────────────────────────────────────────────────────
+    if theme.get("show_signature", True):
+        sig_img = _logo_image(biz.get("signature_b64",""), max_w=45*mm, max_h=18*mm)
+        sig_row = [[Paragraph("", PS("_")),
+                    sig_img or Spacer(1, 18*mm),
+                    Paragraph("Authorized Signature", PS("sg", fontSize=8, textColor=GREY, alignment=TA_RIGHT))]]
+        sig_tbl = Table(sig_row, colWidths=[110*mm, 50*mm, 20*mm])
+        sig_tbl.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"BOTTOM"),
+                                     ("TOPPADDING",(0,0),(-1,-1),8)]))
+        story.append(Spacer(1,4*mm))
+        story.append(sig_tbl)
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPACT TEMPLATE — Minimal, spreadsheet style, dense rows
+# ═══════════════════════════════════════════════════════════════════════════════
+def _generate_compact_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
+    _ensure_fonts()
+    F  = _FONT_BASE if _FONT_REGISTERED else "Helvetica"
+    FB = _FONT_BOLD if _FONT_REGISTERED else "Helvetica-Bold"
+
+    theme   = biz.get("invoice_theme") or {}
+    PRIMARY = _hex_color(theme.get("primary_color") or "#1D4ED8")
+
+    if kind == "purchase":
+        type_label = "PURCHASE BILL"
+        inv_no = inv.get("bill_no","")
+        inv_date = inv.get("purchase_date","")
+        due_date = ""
+    else:
+        type_label = {"sale":"TAX INVOICE","quotation":"QUOTATION","credit_note":"CREDIT NOTE"}.get(inv.get("type"),"TAX INVOICE")
+        inv_no = inv.get("invoice_no","")
+        inv_date = inv.get("invoice_date","")
+        due_date = inv.get("due_date","")
+
+    party  = inv.get("party_snapshot") or {}
+    totals = inv.get("totals") or {}
+    items  = inv.get("items") or []
+    same_state = inv.get("same_state", True)
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+        leftMargin=12*mm, rightMargin=12*mm, topMargin=10*mm, bottomMargin=10*mm,
+        title=f"{type_label} {inv_no}", author=biz.get("name",""))
+
+    def PS(name, **kw):
+        d = dict(fontName=F, fontSize=8.5, leading=12, textColor=BLACK)
+        d.update(kw); return ParagraphStyle(name, **d)
+
+    story = []
+    CW = 186*mm
+
+    # ── Top: biz left, invoice right ─────────────────────────────────────────
+    logo_img = None
+    if theme.get("show_logo", True):
+        logo_img = _logo_image(biz.get("logo_b64",""), max_w=30*mm, max_h=12*mm)
+
+    biz_col = [logo_img or Spacer(1,1),
+               Paragraph(biz.get("name",""), PS("bn", fontName=FB, fontSize=13, leading=17)),
+               Paragraph(biz.get("gstin",""), PS("bg", fontSize=8, textColor=GREY)),
+               Paragraph(biz.get("address",""), PS("ba", fontSize=8, textColor=GREY, leading=11)),
+               Paragraph(biz.get("phone",""), PS("bp", fontSize=8, textColor=GREY))]
+
+    inv_col = [Paragraph(type_label, PS("tl", fontName=FB, fontSize=16, textColor=PRIMARY, alignment=TA_RIGHT)),
+               Paragraph(f"<b>No:</b> {inv_no}", PS("in", fontSize=9, alignment=TA_RIGHT)),
+               Paragraph(f"<b>Date:</b> {inv_date}", PS("id", fontSize=9, alignment=TA_RIGHT)),
+               Paragraph(f"<b>Due:</b> {due_date}", PS("dd", fontSize=9, alignment=TA_RIGHT)) if due_date else Spacer(1,1),
+               Paragraph(f"<b>Place of Supply:</b> {party.get('state','')}", PS("ps", fontSize=9, alignment=TA_RIGHT))]
+
+    top = Table([[biz_col, inv_col]], colWidths=[100*mm, 86*mm])
+    top.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP")]))
+    story.append(top)
+    story.append(HRFlowable(width=CW, thickness=1.5, color=PRIMARY, spaceAfter=4))
+
+    # ── Party ────────────────────────────────────────────────────────────────
+    story.append(Paragraph("BILL TO", PS("btl", fontName=FB, fontSize=7, textColor=PRIMARY)))
+    story.append(Paragraph(party.get("name",""), PS("pn", fontName=FB, fontSize=10)))
+    story.append(Paragraph(f"{party.get('billing_address','')}  |  GSTIN: {party.get('gstin','—')}  |  {party.get('phone','')}", PS("pa", fontSize=8, textColor=GREY)))
+    story.append(HRFlowable(width=CW, thickness=0.5, color=colors.HexColor("#CCCCCC"), spaceBefore=4, spaceAfter=4))
+
+    # ── Items ─────────────────────────────────────────────────────────────────
+    if same_state:
+        hdrs = ["#","Description","HSN","Qty","Rate","Taxable","GST%","CGST","SGST","Total"]
+        cws  = [7,55,14,16,20,22,10,18,18,26]
+    else:
+        hdrs = ["#","Description","HSN","Qty","Rate","Taxable","GST%","IGST","Total"]
+        cws  = [7,58,14,16,22,24,10,20,35]
+    cws = [c*mm for c in cws]
+
+    rows = [[Paragraph(h, PS(f"th{i}", fontName=FB, fontSize=7.5, textColor=WHITE, alignment=TA_CENTER)) for i,h in enumerate(hdrs)]]
+    for idx, it in enumerate(items):
+        bg = colors.white if idx%2==0 else colors.HexColor("#F7F9FF")
+        row = [
+            Paragraph(str(idx+1), PS("n", fontSize=8, alignment=TA_CENTER)),
+            Paragraph(it.get("name",""), PS("d", fontSize=8)),
+            Paragraph(it.get("hsn",""), PS("h", fontSize=8, alignment=TA_CENTER)),
+            Paragraph(f"{it.get('qty',0)} {it.get('unit','')}", PS("q", fontSize=8, alignment=TA_CENTER)),
+            Paragraph(f"{it.get('rate',0):,.2f}", PS("r", fontSize=8, alignment=TA_RIGHT)),
+            Paragraph(f"{it.get('taxable',0):,.2f}", PS("t", fontSize=8, alignment=TA_RIGHT)),
+            Paragraph(f"{it.get('gst_rate',0):.0f}%", PS("g", fontSize=8, alignment=TA_CENTER)),
+        ]
+        if same_state:
+            row += [Paragraph(f"{it.get('cgst',0):,.2f}", PS("c", fontSize=8, alignment=TA_RIGHT)),
+                    Paragraph(f"{it.get('sgst',0):,.2f}", PS("s", fontSize=8, alignment=TA_RIGHT))]
+        else:
+            row += [Paragraph(f"{it.get('igst',0):,.2f}", PS("i", fontSize=8, alignment=TA_RIGHT))]
+        row.append(Paragraph(f"{it.get('total',0):,.2f}", PS("tot", fontName=FB, fontSize=8, alignment=TA_RIGHT)))
+        rows.append(row)
+
+    itbl = Table(rows, colWidths=cws, repeatRows=1)
+    itbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),PRIMARY),
+        ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white, colors.HexColor("#F7F9FF")]),
+        ("GRID",(0,0),(-1,-1),0.25,colors.HexColor("#DDDDDD")),
+        ("TOPPADDING",(0,0),(-1,-1),2),("BOTTOMPADDING",(0,0),(-1,-1),2),
+        ("LEFTPADDING",(0,0),(-1,-1),3),("RIGHTPADDING",(0,0),(-1,-1),3),
+    ]))
+    story.append(itbl)
+    story.append(Spacer(1, 3*mm))
+
+    # ── Totals right-aligned ─────────────────────────────────────────────────
+    tax_val = totals.get("cgst",0)+totals.get("sgst",0) if same_state else totals.get("igst",0)
+    tax_lbl = "CGST + SGST" if same_state else "IGST"
+    try:
+        words = num2words(int(totals.get("grand_total",0)), lang="en_IN").title() + " Rupees Only"
+    except Exception:
+        words = ""
+
+    tot_rows_data = [
+        ("Taxable Amount", totals.get("taxable_amount",0)),
+        (tax_lbl, tax_val),
+        ("Round Off", totals.get("round_off",0)),
+    ]
+    trows = [[Paragraph(k, PS(f"tk{i}", fontSize=8.5, textColor=GREY)),
+              Paragraph(f"₹ {v:,.2f}", PS(f"tv{i}", fontSize=8.5, alignment=TA_RIGHT))]
+             for i,(k,v) in enumerate(tot_rows_data)]
+    trows.append([Paragraph("Grand Total", PS("gtl", fontName=FB, fontSize=10, textColor=PRIMARY)),
+                  Paragraph(f"₹ {totals.get('grand_total',0):,.2f}", PS("gtv", fontName=FB, fontSize=10, alignment=TA_RIGHT, textColor=PRIMARY))])
+
+    tot_tbl = Table(trows, colWidths=[45*mm, 35*mm])
+    tot_tbl.setStyle(TableStyle([
+        ("TOPPADDING",(0,0),(-1,-1),2),("BOTTOMPADDING",(0,0),(-1,-1),2),
+        ("LINEABOVE",(0,-1),(-1,-1),1,PRIMARY),
+    ]))
+
+    notes = []
+    if words:
+        notes.append(Paragraph(words, PS("w", fontSize=7.5, fontName=FB, textColor=GREY)))
+    if inv.get("notes"):
+        notes.append(Paragraph(f"Notes: {inv['notes']}", PS("nt", fontSize=8, textColor=GREY)))
+    if biz.get("bank_account"):
+        notes.append(Paragraph(f"Bank: {biz.get('bank_name','')} | A/C: {biz.get('bank_account','')} | IFSC: {biz.get('bank_ifsc','')}", PS("bk", fontSize=7.5, textColor=GREY)))
+
+    ft = Table([[notes or [Spacer(1,1)], tot_tbl]], colWidths=[106*mm, 80*mm])
+    ft.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP")]))
+    story.append(ft)
+
+    doc.build(story)
     return buf.getvalue()

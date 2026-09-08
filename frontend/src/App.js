@@ -43,6 +43,9 @@ import Restaurant from "@/pages/Restaurant";
 import RestaurantAdmin from "@/pages/RestaurantAdmin";
 import POSAdmin from "@/pages/POSAdmin";
 import QuickUpload from "@/pages/QuickUpload";
+import GRN from "@/pages/GRN";
+import DeliveryOrders from "@/pages/DeliveryOrders";
+import Inventory from "@/pages/Inventory";
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -152,6 +155,9 @@ export default function App() {
               <Route path="/sales/:id/edit" element={<InvoiceCreate />} />
               <Route path="/sales/:id" element={<InvoiceDetail />} />
               <Route path="/purchases" element={<Purchases />} />
+              <Route path="/grn" element={<GRN />} />
+              <Route path="/inventory" element={<Inventory />} />
+              <Route path="/delivery-orders" element={<DeliveryOrders />} />
               <Route path="/payments" element={<Payments />} />
               <Route path="/bank-statement" element={<BankStatement />} />
               <Route path="/wallet" element={<Wallet />} />
