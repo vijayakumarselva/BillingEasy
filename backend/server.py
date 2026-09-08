@@ -60,7 +60,7 @@ from launch_offer import (
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
-from ai_helpers import ai_chat_stream, ai_hsn_suggest, ai_categorize_expense, ai_product_suggest, ai_extract_invoice
+from ai_helpers import ai_chat_stream, ai_hsn_suggest, ai_categorize_expense, ai_product_suggest, ai_extract_invoice, ai_analyze_bank_vendors, ai_bank_insights, ai_parse_payment
 
 # ---------------- Setup ----------------
 MONGO_URL = os.environ["MONGO_URL"]
@@ -336,6 +336,10 @@ class SubscribeIn(BaseModel):
     plan_code: str  # MONTHLY_199 | YEARLY_1990
 
 
+class ShippingAddress(BaseModel):
+    label: str = ""
+    address: str = ""
+
 class PartyIn(BaseModel):
     type: str
     name: str
@@ -346,9 +350,11 @@ class PartyIn(BaseModel):
     state: str = "Tamil Nadu"
     state_code: str = "33"
     billing_address: str = ""
-    shipping_address: str = ""
+    shipping_address: str = ""          # legacy single address — kept for backward compat
+    shipping_addresses: List[ShippingAddress] = []   # new: multiple addresses
     opening_balance: float = 0
     credit_limit: float = 0
+    tds_opening_balance: float = 0
 
 
 class ProductIn(BaseModel):
@@ -389,6 +395,57 @@ class BranchIn(BaseModel):
     active: bool = True
 
 
+class WarehouseIn(BaseModel):
+    name: str
+    branch_id: str = ""       # which branch this warehouse belongs to
+    address: str = ""
+    active: bool = True
+
+
+class GrnItemIn(BaseModel):
+    product_id: str
+    name: str = ""
+    hsn: str = ""
+    qty: float
+    unit: str = "NOS"
+    rate: float                # purchase rate / cost price
+    gst_rate: float = 18
+
+
+class GrnIn(BaseModel):
+    warehouse_id: str
+    vendor_id: str
+    grn_date: str
+    ref_no: str = ""           # vendor's DC / challan number
+    purchase_id: str = ""      # link to purchase bill if created
+    items: List[GrnItemIn]
+    notes: str = ""
+
+
+class DeliveryOrderItemIn(BaseModel):
+    product_id: str
+    name: str = ""
+    hsn: str = ""
+    qty: float
+    unit: str = "NOS"
+    rate: float
+    gst_rate: float = 18
+
+
+class DeliveryOrderIn(BaseModel):
+    warehouse_id: str
+    customer_id: str
+    do_date: str
+    shipment_date: str = ""
+    ref_no: str = ""           # sale order / PO reference
+    invoice_id: str = ""       # link to invoice if created
+    order_type: str = "Sales"
+    payment_terms: str = "Due on Receipt"
+    broker: str = ""
+    items: List[DeliveryOrderItemIn]
+    notes: str = ""
+
+
 class InvoiceIn(BaseModel):
     party_id: str
     invoice_date: str
@@ -402,6 +459,9 @@ class InvoiceIn(BaseModel):
     invoice_category: str = "stock"   # "stock" | "service"
     shipping_address: str = ""
     po_number: str = ""
+    tds_rate: float = 0          # TDS rate customer will deduct (e.g. 0.1%)
+    tds_amount: float = 0        # Expected TDS deduction by customer
+    warehouse_id: str = ""       # dispatch warehouse (stock invoices)
 
 
 class PurchaseIn(BaseModel):
@@ -412,10 +472,13 @@ class PurchaseIn(BaseModel):
     notes: str = ""
     type: str = "purchase"
     branch_id: str = ""
+    warehouse_id: str = ""       # receiving warehouse
     eway_bill_no: str = ""
     vehicle_no: str = ""
     bank_account_id: Optional[str] = None
     purchase_category: str = "stock"  # "stock" | "service"
+    tds_rate: float = 0          # TDS rate applied (e.g. 0.1 for 0.1%)
+    tds_amount: float = 0        # Computed TDS deduction amount
 
 
 class PaymentIn(BaseModel):
@@ -426,7 +489,9 @@ class PaymentIn(BaseModel):
     date: str
     reference: str = ""
     bank_account_id: str = ""
-    invoice_id: str = ""
+    invoice_id: str = ""       # link to SO/PO invoice
+    expense_id: str = ""       # link to expense record
+    linked_type: str = ""      # "invoice" | "expense" | ""
 
 
 class ExpenseIn(BaseModel):
@@ -443,6 +508,7 @@ class BankAccountIn(BaseModel):
     ifsc: str = ""
     branch: str = ""
     opening_balance: float = 0
+    account_type: str = "Current"   # Current | Savings | OD | CC | Wallet
 
 
 class TDSEntryIn(BaseModel):
@@ -1263,6 +1329,238 @@ async def delete_branch(branch_id: str, ctx=Depends(get_org_ctx)):
     await db.organizations.update_one({"id": ctx["org_id"]}, {"$pull": {"branches": {"id": branch_id}}})
     return {"ok": True}
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WAREHOUSES  (stored in org doc like branches)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@api.get("/warehouses")
+async def list_warehouses(ctx=Depends(get_org_ctx)):
+    org = await get_org_doc(ctx["org_id"])
+    return org.get("warehouses", [])
+
+@api.post("/warehouses")
+async def create_warehouse(body: WarehouseIn, ctx=Depends(require_permission("settings.edit"))):
+    wh = {"id": str(uuid.uuid4()), **body.model_dump(), "created_at": now_iso()}
+    await db.organizations.update_one({"id": ctx["org_id"]}, {"$push": {"warehouses": wh}})
+    return wh
+
+@api.put("/warehouses/{wid}")
+async def update_warehouse(wid: str, body: WarehouseIn, ctx=Depends(require_permission("settings.edit"))):
+    org = await get_org_doc(ctx["org_id"])
+    whs = org.get("warehouses", [])
+    idx = next((i for i, w in enumerate(whs) if w["id"] == wid), None)
+    if idx is None: raise HTTPException(404, "Warehouse not found")
+    whs[idx] = {**whs[idx], **body.model_dump()}
+    await db.organizations.update_one({"id": ctx["org_id"]}, {"$set": {"warehouses": whs}})
+    return whs[idx]
+
+@api.delete("/warehouses/{wid}")
+async def delete_warehouse(wid: str, ctx=Depends(require_permission("settings.edit"))):
+    await db.organizations.update_one({"id": ctx["org_id"]}, {"$pull": {"warehouses": {"id": wid}}})
+    return {"ok": True}
+
+@api.get("/warehouses/{wid}/stock")
+async def warehouse_stock(wid: str, ctx=Depends(get_org_ctx)):
+    """Return per-product stock for a specific warehouse."""
+    cursor = db.warehouse_stock.find(org_filter(ctx, {"warehouse_id": wid}), {"_id": 0})
+    items = await cursor.to_list(length=2000)
+    # Join product names
+    prod_ids = [i["product_id"] for i in items]
+    prods = {}
+    async for p in db.products.find(org_filter(ctx, {"id": {"$in": prod_ids}}), {"_id": 0, "id": 1, "name": 1, "sku": 1, "unit": 1, "low_stock_alert": 1}):
+        prods[p["id"]] = p
+    for it in items:
+        p = prods.get(it["product_id"], {})
+        it["product_name"] = p.get("name", "Unknown")
+        it["sku"] = p.get("sku", "")
+        it["unit"] = p.get("unit", "NOS")
+        it["low_stock_alert"] = p.get("low_stock_alert", 5)
+    return items
+
+async def _adjust_warehouse_stock(org_id: str, warehouse_id: str, product_id: str, qty_delta: float,
+                                   movement_type: str = "", ref_id: str = "", ref_no: str = "",
+                                   party_name: str = "", date: str = ""):
+    """Add/subtract qty from warehouse_stock and log a stock movement."""
+    filt = {"org_id": org_id, "warehouse_id": warehouse_id, "product_id": product_id}
+    await db.warehouse_stock.update_one(filt, {"$inc": {"qty": qty_delta}}, upsert=True)
+    # Log movement
+    if movement_type:
+        await db.stock_movements.insert_one({
+            "id": str(uuid.uuid4()), "org_id": org_id,
+            "product_id": product_id, "warehouse_id": warehouse_id,
+            "qty": qty_delta,  # positive = IN, negative = OUT
+            "movement_type": movement_type,  # grn | sale | purchase_return | adjustment | delivery
+            "ref_id": ref_id, "ref_no": ref_no, "party_name": party_name,
+            "date": date or now_iso()[:10],
+            "created_at": now_iso(),
+        })
+
+
+async def _log_stock_movement(org_id: str, product_id: str, qty_delta: float,
+                               movement_type: str, ref_id: str = "", ref_no: str = "",
+                               party_name: str = "", date: str = "", warehouse_id: str = ""):
+    """Log a global product stock movement (no warehouse)."""
+    await db.stock_movements.insert_one({
+        "id": str(uuid.uuid4()), "org_id": org_id,
+        "product_id": product_id, "warehouse_id": warehouse_id,
+        "qty": qty_delta,
+        "movement_type": movement_type,
+        "ref_id": ref_id, "ref_no": ref_no, "party_name": party_name,
+        "date": date or now_iso()[:10],
+        "created_at": now_iso(),
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GRN – Goods Receipt Note
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _next_grn_number(org_id: str) -> str:
+    import datetime as _dt
+    yr = _dt.date.today().year
+    count = await db.grns.count_documents({"org_id": org_id}) + 1
+    return f"GRN-{yr}-{count:04d}"
+
+@api.get("/grns")
+async def list_grns(ctx=Depends(get_org_ctx)):
+    cursor = db.grns.find(org_filter(ctx, {}), {"_id": 0}).sort("grn_date", -1)
+    return await cursor.to_list(length=500)
+
+@api.get("/grns/{gid}")
+async def get_grn(gid: str, ctx=Depends(get_org_ctx)):
+    grn = await db.grns.find_one(org_filter(ctx, {"id": gid}), {"_id": 0})
+    if not grn: raise HTTPException(404, "GRN not found")
+    return grn
+
+@api.post("/grns")
+async def create_grn(body: GrnIn, ctx=Depends(require_permission("purchase.create"))):
+    # Validate warehouse exists
+    org = await get_org_doc(ctx["org_id"])
+    whs = {w["id"]: w for w in org.get("warehouses", [])}
+    if body.warehouse_id not in whs:
+        raise HTTPException(400, "Warehouse not found")
+
+    grn_no = await _next_grn_number(ctx["org_id"])
+    grn = {
+        "id": str(uuid.uuid4()),
+        "org_id": ctx["org_id"],
+        "grn_no": grn_no,
+        **body.model_dump(),
+        "warehouse_name": whs[body.warehouse_id]["name"],
+        "status": "received",
+        "created_at": now_iso(),
+    }
+    # Resolve vendor name
+    vendor = await db.parties.find_one(org_filter(ctx, {"id": body.vendor_id}), {"_id": 0, "name": 1})
+    grn["vendor_name"] = vendor.get("name", "") if vendor else ""
+
+    await db.grns.insert_one(grn)
+
+    # Increase warehouse stock per item
+    for it in body.items:
+        if it.product_id:
+            await _adjust_warehouse_stock(
+                ctx["org_id"], body.warehouse_id, it.product_id, it.qty,
+                movement_type="grn", ref_id=grn["id"], ref_no=grn_no,
+                party_name=grn.get("vendor_name", ""), date=body.grn_date)
+            # Also update global product stock
+            await db.products.update_one(org_filter(ctx, {"id": it.product_id}), {"$inc": {"stock": it.qty}})
+
+    grn.pop("_id", None)
+    return grn
+
+@api.delete("/grns/{gid}")
+async def delete_grn(gid: str, ctx=Depends(require_permission("purchase.create"))):
+    grn = await db.grns.find_one(org_filter(ctx, {"id": gid}), {"_id": 0})
+    if not grn: raise HTTPException(404, "GRN not found")
+    # Reverse stock
+    for it in grn.get("items", []):
+        if it.get("product_id"):
+            await _adjust_warehouse_stock(ctx["org_id"], grn["warehouse_id"], it["product_id"], -it["qty"])
+            await db.products.update_one(org_filter(ctx, {"id": it["product_id"]}), {"$inc": {"stock": -it["qty"]}})
+    await db.grns.delete_one({"id": gid, "org_id": ctx["org_id"]})
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DELIVERY ORDERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _next_do_number(org_id: str) -> str:
+    import datetime as _dt
+    yr = _dt.date.today().year
+    count = await db.delivery_orders.count_documents({"org_id": org_id}) + 1
+    return f"DO-{yr}-{count:04d}"
+
+@api.get("/delivery-orders")
+async def list_delivery_orders(ctx=Depends(get_org_ctx)):
+    cursor = db.delivery_orders.find(org_filter(ctx, {}), {"_id": 0}).sort("do_date", -1)
+    return await cursor.to_list(length=500)
+
+@api.get("/delivery-orders/{did}")
+async def get_delivery_order(did: str, ctx=Depends(get_org_ctx)):
+    do = await db.delivery_orders.find_one(org_filter(ctx, {"id": did}), {"_id": 0})
+    if not do: raise HTTPException(404, "Delivery order not found")
+    return do
+
+@api.post("/delivery-orders")
+async def create_delivery_order(body: DeliveryOrderIn, ctx=Depends(require_permission("invoice.create"))):
+    org = await get_org_doc(ctx["org_id"])
+    whs = {w["id"]: w for w in org.get("warehouses", [])}
+    if body.warehouse_id not in whs:
+        raise HTTPException(400, "Warehouse not found")
+
+    # Check warehouse has enough stock for each item
+    errors = []
+    for it in body.items:
+        if it.product_id:
+            ws = await db.warehouse_stock.find_one(
+                {"org_id": ctx["org_id"], "warehouse_id": body.warehouse_id, "product_id": it.product_id}
+            )
+            available = (ws or {}).get("qty", 0)
+            if available < it.qty:
+                prod = await db.products.find_one(org_filter(ctx, {"id": it.product_id}), {"name": 1})
+                pname = (prod or {}).get("name", it.product_id)
+                errors.append(f"{pname}: need {it.qty}, only {available} in warehouse")
+    if errors:
+        raise HTTPException(400, "; ".join(errors))
+
+    do_no = await _next_do_number(ctx["org_id"])
+    customer = await db.parties.find_one(org_filter(ctx, {"id": body.customer_id}), {"_id": 0, "name": 1, "phone": 1, "gstin": 1})
+
+    do = {
+        "id": str(uuid.uuid4()),
+        "org_id": ctx["org_id"],
+        "do_no": do_no,
+        **body.model_dump(),
+        "warehouse_name": whs[body.warehouse_id]["name"],
+        "customer_name": (customer or {}).get("name", ""),
+        "status": "dispatched",
+        "created_at": now_iso(),
+    }
+    await db.delivery_orders.insert_one(do)
+
+    # Decrease warehouse stock
+    for it in body.items:
+        if it.product_id:
+            await _adjust_warehouse_stock(ctx["org_id"], body.warehouse_id, it.product_id, -it.qty)
+            await db.products.update_one(org_filter(ctx, {"id": it.product_id}), {"$inc": {"stock": -it.qty}})
+
+    do.pop("_id", None)
+    return do
+
+@api.delete("/delivery-orders/{did}")
+async def delete_delivery_order(did: str, ctx=Depends(require_permission("invoice.create"))):
+    do = await db.delivery_orders.find_one(org_filter(ctx, {"id": did}), {"_id": 0})
+    if not do: raise HTTPException(404)
+    for it in do.get("items", []):
+        if it.get("product_id"):
+            await _adjust_warehouse_stock(ctx["org_id"], do["warehouse_id"], it["product_id"], it["qty"])
+            await db.products.update_one(org_filter(ctx, {"id": it["product_id"]}), {"$inc": {"stock": it["qty"]}})
+    await db.delivery_orders.delete_one({"id": did, "org_id": ctx["org_id"]})
+    return {"ok": True}
+
 @api.get("/orgs/current/members")
 async def list_members(ctx=Depends(get_org_ctx)):
     out = []
@@ -1751,6 +2049,93 @@ async def invoice_einvoice_json(iid: str, ctx=Depends(get_org_ctx)):
     return {"ok": True, "errors": [], "warnings": check["warnings"], "payload": payload}
 
 
+@api.post("/invoices/{iid}/eway-bill")
+async def invoice_eway_bill(iid: str, body: dict, ctx=Depends(get_org_ctx)):
+    """Generate E-Way Bill JSON payload (NIC format) for a sales invoice."""
+    inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    org = await get_org_doc(ctx["org_id"])
+
+    errors = []
+    warnings = []
+    party = inv.get("party_snapshot", {})
+
+    if not org.get("gstin"):      errors.append("Your GSTIN is missing — add it in Settings")
+    if not party.get("gstin"):    errors.append("Customer GSTIN is missing — add it in Parties")
+    if not party.get("state_code"): warnings.append("Customer state code missing — place of supply may be wrong")
+    totals = inv.get("totals", {})
+    grand = totals.get("grand_total", 0)
+    if grand < 50000:
+        warnings.append(f"E-Way Bill is optional for amounts below ₹50,000 (this invoice: ₹{grand:,.2f})")
+    if not body.get("distance"):  errors.append("Distance (km) is required")
+
+    if errors:
+        return {"ok": False, "errors": errors, "warnings": warnings, "payload": None}
+
+    import datetime as _dt
+    inv_date = inv.get("invoice_date", _dt.date.today().isoformat())
+    # Format date as DD/MM/YYYY for NIC
+    def _fmt(d):
+        try: return _dt.date.fromisoformat(d).strftime("%d/%m/%Y")
+        except: return d
+
+    trans_doc_date = body.get("transDocDate", inv_date)
+
+    # Build item list
+    items = []
+    for it in inv.get("items", []):
+        gst = it.get("gst_rate", 0)
+        same_state = (org.get("state_code", "33") == party.get("state_code", "33"))
+        taxable = it.get("qty", 0) * it.get("rate", 0) * (1 - (it.get("discount_pct", 0) / 100))
+        items.append({
+            "productName": it.get("name", ""),
+            "hsnCode": str(it.get("hsn", "") or ""),
+            "quantity": it.get("qty", 0),
+            "qtyUnit": it.get("unit", "NOS"),
+            "taxableAmount": round(taxable, 2),
+            "sgstRate": round(gst / 2, 2) if same_state else 0,
+            "cgstRate": round(gst / 2, 2) if same_state else 0,
+            "igstRate": gst if not same_state else 0,
+            "cessRate": 0,
+        })
+
+    payload = {
+        "supplyType": body.get("supplyType", "O"),
+        "subSupplyType": body.get("subSupplyType", "1"),
+        "docType": "INV",
+        "docNo": inv.get("invoice_no", ""),
+        "docDate": _fmt(inv_date),
+        "fromGstin": org.get("gstin", ""),
+        "fromTrdName": org.get("name", ""),
+        "fromAddr1": org.get("address", ""),
+        "fromStateCode": org.get("state_code", "33"),
+        "toGstin": party.get("gstin", ""),
+        "toTrdName": party.get("name", ""),
+        "toAddr1": party.get("billing_address", ""),
+        "toStateCode": party.get("state_code", "33"),
+        "totalValue": round(totals.get("grand_total", 0), 2),
+        "cgstValue": round(totals.get("cgst", 0), 2),
+        "sgstValue": round(totals.get("sgst", 0), 2),
+        "igstValue": round(totals.get("igst", 0), 2),
+        "cessValue": 0,
+        "cessNonAdvolValue": 0,
+        "otherValue": round(totals.get("shipping", 0) + totals.get("adj", 0), 2),
+        "totInvValue": round(totals.get("grand_total", 0), 2),
+        "transMode": body.get("transMode", "1"),
+        "transDistance": str(body.get("distance", "")),
+        "transporterName": body.get("transName", ""),
+        "transporterId": "",
+        "transDocNo": body.get("transDocNo", ""),
+        "transDocDate": _fmt(trans_doc_date),
+        "vehicleNo": body.get("vehNo", ""),
+        "vehicleType": body.get("vehType", "R"),
+        "itemList": items,
+    }
+
+    return {"ok": True, "errors": [], "warnings": warnings, "payload": payload}
+
+
 @api.get("/billing/status")
 async def billing_status(ctx=Depends(get_org_ctx)):
     org = await get_org_doc(ctx["org_id"])
@@ -2028,6 +2413,33 @@ async def delete_logo(ctx=Depends(require_permission("settings.edit"))):
     return {"ok": True}
 
 
+@api.post("/business/signature")
+async def upload_signature(file: UploadFile = File(...), ctx=Depends(require_permission("settings.edit"))):
+    """Upload authorized signature image — stored as base64 in org doc. Max 2 MB."""
+    if file.size and file.size > 2 * 1024 * 1024:
+        raise HTTPException(413, "Signature image must be under 2 MB")
+    content = await file.read()
+    if len(content) > 2 * 1024 * 1024:
+        raise HTTPException(413, "Signature image must be under 2 MB")
+    mime = file.content_type or "image/png"
+    if mime not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
+        raise HTTPException(415, "Unsupported format — use PNG or JPG")
+    import base64 as b64mod
+    encoded = b64mod.b64encode(content).decode()
+    data_uri = f"data:{mime};base64,{encoded}"
+    await db.organizations.update_one(
+        {"id": ctx["org_id"]},
+        {"$set": {"signature_b64": data_uri, "updated_at": now_iso()}}
+    )
+    return {"ok": True, "signature_b64": data_uri}
+
+
+@api.delete("/business/signature")
+async def delete_signature(ctx=Depends(require_permission("settings.edit"))):
+    await db.organizations.update_one({"id": ctx["org_id"]}, {"$set": {"signature_b64": "", "updated_at": now_iso()}})
+    return {"ok": True}
+
+
 @api.get("/business/upload-token")
 async def get_upload_token(ctx=Depends(get_org_ctx)):
     """Return the stable upload token for this org's mobile quick-upload link."""
@@ -2197,6 +2609,23 @@ async def update_product(pid: str, body: ProductIn, ctx=Depends(get_org_ctx)):
     return await db.products.find_one(org_filter(ctx, {"id": pid}), {"_id": 0})
 
 
+class BulkModesIn(BaseModel):
+    ids: List[str]
+    modes: List[str]
+
+@api.put("/products/bulk-modes")
+async def bulk_update_product_modes(body: BulkModesIn, ctx=Depends(get_org_ctx)):
+    """Set the `modes` field (business types) for multiple products at once."""
+    await ensure_active_subscription(ctx)
+    valid_modes = {"b2b", "b2c", "restaurant", "pos"}
+    modes = [m for m in body.modes if m in valid_modes]
+    result = await db.products.update_many(
+        org_filter(ctx, {"id": {"$in": body.ids}}),
+        {"$set": {"modes": modes, "updated_at": now_iso()}}
+    )
+    return {"ok": True, "updated": result.modified_count}
+
+
 @api.delete("/products/{pid}")
 async def delete_product(pid: str, ctx=Depends(require_permission("product.delete"))):
     await db.products.delete_one(org_filter(ctx, {"id": pid}))
@@ -2204,6 +2633,42 @@ async def delete_product(pid: str, ctx=Depends(require_permission("product.delet
 
 
 # ---------------- INVOICES ----------------
+
+@api.get("/invoices/next-number")
+async def get_next_invoice_number(ctx=Depends(get_org_ctx)):
+    """Return the next auto-generated invoice number for this org."""
+    num = await next_invoice_number(ctx["org_id"])
+    return {"next": num}
+
+@api.get("/invoices/customer-ytd/{party_id}")
+async def customer_ytd(party_id: str, ctx=Depends(get_org_ctx)):
+    """Return this customer's YTD sales (grand_total) for TDS applicability check."""
+    import datetime as _dt
+    today = _dt.date.today()
+    fy_start = _dt.date(today.year if today.month >= 4 else today.year - 1, 4, 1)
+    pipeline = [
+        {"$match": {**biz_filter(ctx), "party_id": party_id,
+                    "invoice_date": {"$gte": fy_start.isoformat()},
+                    "type": {"$in": ["invoice", "b2c"]}}},
+        {"$group": {"_id": None, "ytd": {"$sum": "$totals.grand_total"}}},
+    ]
+    result = await db.invoices.aggregate(pipeline).to_list(1)
+    ytd_in_system = result[0]["ytd"] if result else 0.0
+    party = await db.parties.find_one(org_filter(ctx, {"id": party_id}), {"_id": 0, "tds_opening_balance": 1})
+    opening = float((party or {}).get("tds_opening_balance") or 0)
+    ytd_total = ytd_in_system + opening
+    TDS_THRESHOLD = 5_000_000
+    return {
+        "party_id": party_id,
+        "ytd_in_system": round(ytd_in_system, 2),
+        "tds_opening_balance": round(opening, 2),
+        "ytd_total": round(ytd_total, 2),
+        "tds_applicable": ytd_total >= TDS_THRESHOLD,
+        "threshold": TDS_THRESHOLD,
+        "remaining_to_threshold": max(0, round(TDS_THRESHOLD - ytd_total, 2)),
+    }
+
+
 @api.get("/invoices")
 async def list_invoices(status: Optional[str] = None, type: Optional[str] = None,
                         party_id: Optional[str] = None, ctx=Depends(get_org_ctx)):
@@ -2265,6 +2730,10 @@ async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
         "invoice_category": getattr(body, "invoice_category", "stock"),
         "shipping_address": getattr(body, "shipping_address", ""),
         "po_number": getattr(body, "po_number", ""),
+        "tds_rate": getattr(body, "tds_rate", 0) or 0,
+        "tds_amount": round(getattr(body, "tds_amount", 0) or 0, 2),
+        "net_receivable": round((totals.get("grand_total", 0) - (getattr(body, "tds_amount", 0) or 0)), 2),
+        "warehouse_id": getattr(body, "warehouse_id", "") or "",
         "created_at": now_iso(),
     }
 
@@ -2279,9 +2748,19 @@ async def create_invoice(body: InvoiceIn, request: Request, ctx=Depends(require_
     await db.invoices.insert_one(doc)
     # Only deduct stock for stock invoices (not service invoices)
     if body.type == "sale" and body.status == "finalized" and body.invoice_category == "stock":
+        party = await db.parties.find_one(org_filter(ctx, {"id": body.party_id}), {"_id": 0, "name": 1})
+        party_name = party.get("name", "") if party else ""
         for it in body.items:
             if it.product_id:
                 await db.products.update_one(org_filter(ctx, {"id": it.product_id}), {"$inc": {"stock": -it.qty}})
+                if body.warehouse_id:
+                    await _adjust_warehouse_stock(ctx["org_id"], body.warehouse_id, it.product_id, -it.qty,
+                        movement_type="sale", ref_id=doc["id"], ref_no=doc["invoice_no"],
+                        party_name=party_name, date=body.invoice_date)
+                else:
+                    await _log_stock_movement(ctx["org_id"], it.product_id, -it.qty,
+                        movement_type="sale", ref_id=doc["id"], ref_no=doc["invoice_no"],
+                        party_name=party_name, date=body.invoice_date)
     await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="invoice.created",
                     entity_type="invoice", entity_id=doc["id"],
                     metadata={"invoice_no": doc["invoice_no"], "total": doc["totals"]["grand_total"]},
@@ -2330,6 +2809,43 @@ async def update_invoice(iid: str, body: InvoiceIn, request: Request, ctx=Depend
     return strip_id(doc)
 
 
+class InvoiceStatusIn(BaseModel):
+    status: str  # draft | finalized | void | cancelled
+
+@api.patch("/invoices/{iid}/status")
+async def change_invoice_status(iid: str, body: InvoiceStatusIn, request: Request, ctx=Depends(require_permission("invoice.create"))):
+    allowed = {"draft", "finalized", "void", "cancelled", "dispatched", "delivered", "paid"}
+    if body.status not in allowed:
+        raise HTTPException(400, f"Status must be one of: {', '.join(allowed)}")
+    inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0, "invoice_no": 1, "status": 1})
+    if not inv: raise HTTPException(404, "Invoice not found")
+    await db.invoices.update_one(
+        org_filter(ctx, {"id": iid}),
+        {"$set": {"status": body.status, "status_changed_at": datetime.utcnow().isoformat()}}
+    )
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action=f"invoice.status.{body.status}",
+                    entity_type="invoice", entity_id=iid,
+                    metadata={"invoice_no": inv.get("invoice_no"), "new_status": body.status}, request=request)
+    return {"ok": True, "status": body.status}
+
+
+@api.patch("/invoices/{iid}/cancel")
+async def cancel_invoice(iid: str, request: Request, ctx=Depends(require_permission("invoice.delete"))):
+    inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0, "invoice_no": 1, "status": 1})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    if inv.get("status") == "cancelled":
+        raise HTTPException(400, "Invoice is already cancelled")
+    await db.invoices.update_one(
+        org_filter(ctx, {"id": iid}),
+        {"$set": {"status": "cancelled", "cancelled_at": datetime.utcnow().isoformat()}}
+    )
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="invoice.cancelled",
+                    entity_type="invoice", entity_id=iid,
+                    metadata={"invoice_no": inv.get("invoice_no")}, request=request)
+    return {"ok": True}
+
+
 @api.delete("/invoices/{iid}")
 async def delete_invoice(iid: str, request: Request, ctx=Depends(require_permission("invoice.delete"))):
     inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0, "invoice_no": 1})
@@ -2358,8 +2874,9 @@ async def invoice_pdf(iid: str, ctx=Depends(get_org_ctx)):
     inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
     if not inv: raise HTTPException(404, "Not found")
     biz = await get_org_doc(ctx["org_id"])
+    tmpl = (biz.get("invoice_theme") or {}).get("template", "classic")
     try:
-        pdf_bytes = generate_invoice_pdf(inv, biz)
+        pdf_bytes = generate_invoice_pdf(inv, biz, template=tmpl)
     except Exception as exc:
         import traceback
         raise HTTPException(500, f"PDF generation failed: {exc}\n{traceback.format_exc()}")
@@ -2655,6 +3172,36 @@ async def dismiss_purchase_upload(uid: str, ctx=Depends(get_org_ctx)):
     return {"ok": True}
 
 
+@api.get("/purchases/vendor-ytd/{party_id}")
+async def vendor_ytd(party_id: str, ctx=Depends(get_org_ctx)):
+    """Return this vendor's YTD purchases + TDS applicability (respects opening balance for migrations)."""
+    import datetime as _dt
+    today = _dt.date.today()
+    fy_start = _dt.date(today.year if today.month >= 4 else today.year - 1, 4, 1)
+    pipeline = [
+        {"$match": {**biz_filter(ctx), "party_id": party_id,
+                    "purchase_date": {"$gte": fy_start.isoformat()},
+                    "type": "purchase"}},
+        {"$group": {"_id": None, "ytd": {"$sum": "$totals.grand_total"}}},
+    ]
+    result = await db.purchases.aggregate(pipeline).to_list(1)
+    ytd_in_system = result[0]["ytd"] if result else 0.0
+    # Get opening balance (purchases before migration) from party record
+    party = await db.parties.find_one(org_filter(ctx, {"id": party_id}), {"_id": 0, "tds_opening_balance": 1})
+    opening = float((party or {}).get("tds_opening_balance") or 0)
+    ytd_total = ytd_in_system + opening
+    TDS_THRESHOLD = 5_000_000  # ₹50 Lakhs
+    return {
+        "party_id": party_id,
+        "ytd_in_system": round(ytd_in_system, 2),
+        "tds_opening_balance": round(opening, 2),
+        "ytd_total": round(ytd_total, 2),
+        "tds_applicable": ytd_total >= TDS_THRESHOLD,
+        "threshold": TDS_THRESHOLD,
+        "remaining_to_threshold": max(0, round(TDS_THRESHOLD - ytd_total, 2)),
+    }
+
+
 @api.get("/purchases")
 async def list_purchases(ctx=Depends(get_org_ctx)):
     items = await db.purchases.find(biz_filter(ctx), {"_id": 0}).sort("purchase_date", -1).to_list(500)
@@ -2681,6 +3228,17 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
             seller_state_code = branch.get("state_code", seller_state_code)
     same_state = (seller_state_code == party.get("state_code", "33"))
     totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state)
+    # Resolve warehouse
+    warehouse_name = ""
+    if body.warehouse_id:
+        wh = await db.warehouse_stock.find_one({"org_id": ctx["org_id"], "warehouse_id": body.warehouse_id}, {"_id": 0, "warehouse_name": 1})
+        if not wh:
+            wh_doc = await db.organizations.find_one({"id": ctx["org_id"]}, {"_id": 0, "warehouses": 1})
+            wh_list = (wh_doc or {}).get("warehouses", [])
+            found = next((w for w in wh_list if w.get("id") == body.warehouse_id), None)
+            warehouse_name = found.get("name", "") if found else ""
+        else:
+            warehouse_name = wh.get("warehouse_name", "")
     doc = {
         "id": str(uuid.uuid4()), "org_id": ctx["org_id"],
         "biz_type": ctx.get("biz_type"),
@@ -2690,9 +3248,14 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
         "totals": {k: v for k, v in totals.items() if k != "items"},
         "notes": body.notes, "type": body.type, "same_state": same_state,
         "branch_id": body.branch_id, "branch_snapshot": branch,
+        "warehouse_id": body.warehouse_id or "",
+        "warehouse_name": warehouse_name,
         "eway_bill_no": body.eway_bill_no or "",
         "vehicle_no": body.vehicle_no or "",
         "purchase_category": body.purchase_category or "stock",
+        "tds_rate": body.tds_rate or 0,
+        "tds_amount": round(body.tds_amount or 0, 2),
+        "net_payable": round((totals.get("grand_total", 0) - (body.tds_amount or 0)), 2),
         "created_at": now_iso(),
     }
     await db.purchases.insert_one(doc)
@@ -2702,6 +3265,91 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
             if it.product_id:
                 await db.products.update_one(org_filter(ctx, {"id": it.product_id}), {"$inc": {"stock": it.qty}})
     return strip_id(doc)
+
+
+@api.patch("/purchases/{pid}/cancel")
+async def cancel_purchase(pid: str, ctx=Depends(require_permission("purchase.delete"))):
+    p = await db.purchases.find_one(org_filter(ctx, {"id": pid}), {"_id": 0, "status": 1})
+    if not p: raise HTTPException(404, "Purchase not found")
+    if p.get("status") == "cancelled": raise HTTPException(400, "Already cancelled")
+    await db.purchases.update_one(
+        org_filter(ctx, {"id": pid}),
+        {"$set": {"status": "cancelled", "cancelled_at": datetime.utcnow().isoformat()}}
+    )
+    return {"ok": True}
+
+
+@api.put("/purchases/{pid}")
+async def update_purchase(pid: str, body: PurchaseIn, ctx=Depends(require_permission("purchase.create"))):
+    p = await db.purchases.find_one(org_filter(ctx, {"id": pid}), {"_id": 0})
+    if not p: raise HTTPException(404, "Purchase not found")
+    if p.get("status") == "cancelled": raise HTTPException(400, "Cannot edit a cancelled purchase")
+    biz = await get_org_doc(ctx["org_id"])
+    party = await db.parties.find_one(org_filter(ctx, {"id": body.party_id}), {"_id": 0})
+    if not party: raise HTTPException(400, "Supplier not found")
+    branch = None
+    seller_state_code = biz.get("state_code", "33")
+    if body.branch_id:
+        branch = next((b for b in biz.get("branches", []) if b["id"] == body.branch_id), None)
+        if branch:
+            seller_state_code = branch.get("state_code", seller_state_code)
+    same_state = (seller_state_code == party.get("state_code", "33"))
+    totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state)
+    # Reverse old stock if it was a stock purchase
+    if p.get("type") == "purchase" and p.get("purchase_category", "stock") == "stock":
+        for it in p.get("items", []):
+            if it.get("product_id"):
+                await db.products.update_one(org_filter(ctx, {"id": it["product_id"]}), {"$inc": {"stock": -it.get("qty", 0)}})
+    update = {
+        "party_id": body.party_id, "party_snapshot": party,
+        "bill_no": body.bill_no, "purchase_date": body.purchase_date,
+        "items": totals["items"],
+        "totals": {k: v for k, v in totals.items() if k != "items"},
+        "notes": body.notes, "type": body.type, "same_state": same_state,
+        "branch_id": body.branch_id, "branch_snapshot": branch,
+        "warehouse_id": body.warehouse_id or "",
+        "eway_bill_no": body.eway_bill_no or "", "vehicle_no": body.vehicle_no or "",
+        "purchase_category": body.purchase_category or "stock",
+        "tds_rate": body.tds_rate or 0,
+        "tds_amount": round(body.tds_amount or 0, 2),
+        "net_payable": round((totals.get("grand_total", 0) - (body.tds_amount or 0)), 2),
+        "updated_at": now_iso(),
+    }
+    await db.purchases.update_one(org_filter(ctx, {"id": pid}), {"$set": update})
+    # Apply new stock
+    if body.type == "purchase" and body.purchase_category == "stock":
+        for it in body.items:
+            if it.product_id:
+                await db.products.update_one(org_filter(ctx, {"id": it.product_id}), {"$inc": {"stock": it.qty}})
+    return strip_id({**p, **update})
+
+
+@api.post("/purchases/{pid}/attach-invoice")
+async def attach_vendor_invoice(pid: str, file: UploadFile = File(...), ctx=Depends(require_permission("purchase.create"))):
+    """Upload vendor invoice PDF or image and attach it to a purchase bill."""
+    p = await db.purchases.find_one(org_filter(ctx, {"id": pid}), {"_id": 0, "id": 1})
+    if not p: raise HTTPException(404, "Purchase not found")
+    if file.size and file.size > 5 * 1024 * 1024:
+        raise HTTPException(413, "File must be under 5 MB")
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(413, "File must be under 5 MB")
+    mime = file.content_type or "application/pdf"
+    import base64 as b64mod
+    encoded = b64mod.b64encode(content).decode()
+    data_uri = f"data:{mime};base64,{encoded}"
+    await db.purchases.update_one(
+        org_filter(ctx, {"id": pid}),
+        {"$set": {"vendor_invoice_b64": data_uri, "vendor_invoice_name": file.filename or "invoice", "updated_at": now_iso()}}
+    )
+    return {"ok": True, "filename": file.filename}
+
+
+@api.delete("/purchases/{pid}/attach-invoice")
+async def remove_vendor_invoice(pid: str, ctx=Depends(require_permission("purchase.create"))):
+    await db.purchases.update_one(org_filter(ctx, {"id": pid}),
+        {"$unset": {"vendor_invoice_b64": "", "vendor_invoice_name": ""}})
+    return {"ok": True}
 
 
 @api.delete("/purchases/{pid}")
@@ -2718,8 +3366,9 @@ async def purchase_pdf(pid: str, ctx=Depends(get_org_ctx)):
     biz = await get_org_doc(ctx["org_id"])
     # Adapt purchase shape to the generator (uses invoice_no/invoice_date keys).
     adapted = {**p, "invoice_no": p["bill_no"], "invoice_date": p["purchase_date"]}
+    tmpl = (biz.get("invoice_theme") or {}).get("template", "classic")
     try:
-        pdf_bytes = generate_invoice_pdf(adapted, biz, kind="purchase")
+        pdf_bytes = generate_invoice_pdf(adapted, biz, kind="purchase", template=tmpl)
     except Exception as exc:
         import traceback
         raise HTTPException(500, f"PDF generation failed: {exc}\n{traceback.format_exc()}")
@@ -2749,14 +3398,176 @@ async def create_payment(body: PaymentIn, ctx=Depends(get_org_ctx)):
     await ensure_active_subscription(ctx)
     doc = {**body.model_dump(), "id": str(uuid.uuid4()),
            "org_id": ctx["org_id"], "created_at": now_iso()}
+    # Resolve bank account name for display
+    if body.bank_account_id:
+        bank = await db.bank_accounts.find_one(org_filter(ctx, {"id": body.bank_account_id}), {"_id": 0})
+        if bank:
+            doc["bank_account_name"] = f"{bank['bank_name']} – {bank['account_no'][-4:]}"
+            doc["account_type"] = bank.get("account_type", "Current")
+    # Resolve linked invoice display info + auto-close if fully paid
+    if body.invoice_id:
+        inv = await db.invoices.find_one(org_filter(ctx, {"id": body.invoice_id}), {"_id": 0, "invoice_no": 1, "total": 1, "status": 1})
+        if inv:
+            doc["linked_ref"] = inv.get("invoice_no", body.invoice_id)
+            doc["linked_type"] = "invoice"
+    # Resolve linked expense display info
+    if body.expense_id:
+        exp = await db.expenses.find_one(org_filter(ctx, {"id": body.expense_id}), {"_id": 0, "category": 1, "description": 1})
+        if exp:
+            doc["linked_ref"] = exp.get("description") or exp.get("category", body.expense_id)
+            doc["linked_type"] = "expense"
     await db.payments.insert_one(doc)
+    # Auto-mark invoice as paid if total payments now cover it
+    if body.invoice_id:
+        inv = await db.invoices.find_one(org_filter(ctx, {"id": body.invoice_id}), {"_id": 0, "id": 1, "total": 1, "status": 1})
+        if inv and inv.get("status") not in ("void", "cancelled", "paid"):
+            total_paid = 0
+            async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
+                total_paid += p["amount"]
+            if total_paid >= inv.get("total", 0) * 0.99:
+                await db.invoices.update_one(
+                    org_filter(ctx, {"id": body.invoice_id}),
+                    {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
+                )
+                doc["invoice_auto_closed"] = True
     return strip_id(doc)
+
+
+@api.patch("/payments/{pid}")
+async def update_payment(pid: str, body: PaymentIn, ctx=Depends(get_org_ctx)):
+    """Update a payment — re-resolve bank account name and linked invoice/expense."""
+    update = {**body.model_dump()}
+    if body.bank_account_id:
+        bank = await db.bank_accounts.find_one(org_filter(ctx, {"id": body.bank_account_id}), {"_id": 0})
+        if bank:
+            update["bank_account_name"] = f"{bank['bank_name']} – {bank['account_no'][-4:]}"
+            update["account_type"] = bank.get("account_type", "Current")
+    if body.invoice_id:
+        inv = await db.invoices.find_one(org_filter(ctx, {"id": body.invoice_id}), {"_id": 0, "invoice_no": 1, "total": 1})
+        if inv:
+            update["linked_ref"] = inv.get("invoice_no", body.invoice_id)
+            update["linked_type"] = "invoice"
+    elif body.expense_id:
+        exp = await db.expenses.find_one(org_filter(ctx, {"id": body.expense_id}), {"_id": 0, "category": 1, "description": 1})
+        if exp:
+            update["linked_ref"] = exp.get("description") or exp.get("category", body.expense_id)
+            update["linked_type"] = "expense"
+    else:
+        update["linked_ref"] = ""
+        update["linked_type"] = ""
+    await db.payments.update_one(org_filter(ctx, {"id": pid}), {"$set": update})
+    # Re-check invoice auto-close
+    if body.invoice_id:
+        inv = await db.invoices.find_one(org_filter(ctx, {"id": body.invoice_id}), {"_id": 0, "id": 1, "total": 1, "status": 1})
+        if inv and inv.get("status") not in ("void", "cancelled", "paid"):
+            total_paid = 0
+            async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
+                total_paid += p["amount"]
+            if total_paid >= inv.get("total", 0) * 0.99:
+                await db.invoices.update_one(
+                    org_filter(ctx, {"id": body.invoice_id}),
+                    {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
+                )
+    return {"ok": True}
 
 
 @api.delete("/payments/{pid}")
 async def delete_payment(pid: str, ctx=Depends(require_permission("payment.delete"))):
     await db.payments.delete_one(org_filter(ctx, {"id": pid}))
     return {"ok": True}
+
+
+class PaymentParseIn(BaseModel):
+    text: str
+    today: str = ""
+
+@api.get("/payments/open-items")
+async def get_open_items(party_id: str = Query(None), direction: str = Query("received"), ctx=Depends(get_org_ctx)):
+    """Return open invoices/purchases and expenses for a party that can be linked to a payment."""
+    result_invoices = []
+
+    if direction == "received":
+        # Money In — link to Sale invoices
+        inv_q = {**org_filter(ctx), "type": "sale",
+                  "status": {"$in": ["finalized", "dispatched", "delivered"]}}
+        if party_id: inv_q["party_id"] = party_id
+        invoices = await db.invoices.find(inv_q, {"_id": 0, "id": 1, "invoice_no": 1, "total": 1, "date": 1, "party_name": 1}).sort("date", -1).to_list(100)
+        inv_ids = [i["id"] for i in invoices]
+        paid_map = {}
+        if inv_ids:
+            async for p in db.payments.aggregate([
+                {"$match": {"org_id": ctx["org_id"], "invoice_id": {"$in": inv_ids}}},
+                {"$group": {"_id": "$invoice_id", "paid": {"$sum": "$amount"}}},
+            ]):
+                paid_map[p["_id"]] = p["paid"]
+        for inv in invoices:
+            paid = paid_map.get(inv["id"], 0)
+            outstanding = round(inv.get("total", 0) - paid, 2)
+            if outstanding > 0.5:
+                result_invoices.append({**inv, "paid": paid, "outstanding": outstanding, "item_type": "invoice"})
+    else:
+        # Money Out — link to Purchase bills (db.purchases collection)
+        pur_q = biz_filter(ctx)   # purchases are scoped by biz_type
+        if party_id: pur_q["party_id"] = party_id
+        pur_q["status"] = {"$nin": ["cancelled"]}  # include all non-cancelled
+        purchases = await db.purchases.find(pur_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
+            "purchase_date": 1, "party_id": 1}).sort("purchase_date", -1).to_list(100)
+        # Enrich party names
+        pur_party_ids = list({p["party_id"] for p in purchases if p.get("party_id")})
+        pmap = {p["id"]: p["name"] async for p in db.parties.find(
+            {"org_id": ctx["org_id"], "id": {"$in": pur_party_ids}}, {"_id": 0, "id": 1, "name": 1})} if pur_party_ids else {}
+        pur_ids = [p["id"] for p in purchases]
+        pur_paid_map = {}
+        if pur_ids:
+            async for p in db.payments.aggregate([
+                {"$match": {"org_id": ctx["org_id"], "invoice_id": {"$in": pur_ids}}},
+                {"$group": {"_id": "$invoice_id", "paid": {"$sum": "$amount"}}},
+            ]):
+                pur_paid_map[p["_id"]] = p["paid"]
+        for pur in purchases:
+            total = pur.get("totals", {}).get("grand_total", 0)
+            paid = pur_paid_map.get(pur["id"], 0)
+            outstanding = round(total - paid, 2)
+            if outstanding > 0.5:
+                result_invoices.append({
+                    "id": pur["id"],
+                    "invoice_no": f"PO-{pur.get('bill_no', '')}",
+                    "total": total, "paid": paid, "outstanding": outstanding,
+                    "date": pur.get("purchase_date", ""),
+                    "party_name": pmap.get(pur.get("party_id", ""), ""),
+                    "item_type": "invoice",
+                })
+
+    # Expenses (only for money-out)
+    result_expenses = []
+    if direction == "paid":
+        exp_q = org_filter(ctx)
+        expenses = await db.expenses.find(exp_q, {"_id": 0, "id": 1, "category": 1, "description": 1, "amount": 1, "date": 1}).sort("date", -1).to_list(50)
+        # Check which expenses are already fully paid
+        exp_ids = [e["id"] for e in expenses]
+        exp_paid_map = {}
+        if exp_ids:
+            async for p in db.payments.aggregate([
+                {"$match": {"org_id": ctx["org_id"], "expense_id": {"$in": exp_ids}}},
+                {"$group": {"_id": "$expense_id", "paid": {"$sum": "$amount"}}},
+            ]):
+                exp_paid_map[p["_id"]] = p["paid"]
+        for exp in expenses:
+            paid = exp_paid_map.get(exp["id"], 0)
+            outstanding = round(exp.get("amount", 0) - paid, 2)
+            if outstanding > 0.5:
+                result_expenses.append({**exp, "paid": paid, "outstanding": outstanding,
+                                        "item_type": "expense",
+                                        "label": exp.get("description") or exp.get("category", "Expense")})
+
+    return {"invoices": result_invoices, "expenses": result_expenses}
+
+
+@api.post("/payments/ai-parse")
+async def ai_parse_payment_endpoint(body: PaymentParseIn, ctx=Depends(get_org_ctx)):
+    """Parse a natural-language payment description using AI."""
+    result = await ai_parse_payment(body.text, body.today)
+    return result
 
 
 # ---------------- EXPENSES ----------------
@@ -2813,16 +3624,173 @@ class BankStatementRow(BaseModel):
 class BankStatementUpload(BaseModel):
     bank_account_id: str
     rows: List[BankStatementRow]
+    filename: str = ""
+
+@api.get("/bank-statement/batches")
+async def list_statement_batches(bank_account_id: str = Query(None), ctx=Depends(get_org_ctx)):
+    q = org_filter(ctx)
+    if bank_account_id:
+        q["bank_account_id"] = bank_account_id
+    batches = await db.bank_statement_uploads.find(q, {"_id": 0}).sort("uploaded_at", -1).to_list(200)
+
+    # Recalculate matched_count live for each batch (upload-time count goes stale as rows get matched)
+    base_row_q = org_filter(ctx)
+    if bank_account_id:
+        base_row_q["bank_account_id"] = bank_account_id
+
+    for b in batches:
+        bid = b.get("id") or b.get("batch_id")
+        total = await db.bank_statement_rows.count_documents({**base_row_q, "batch_id": bid})
+        matched_live = await db.bank_statement_rows.count_documents({**base_row_q, "batch_id": bid, "matched": True})
+        b["row_count"] = total
+        b["matched_count"] = matched_live
+
+    # Also check for "legacy" rows that have no batch_id (uploaded before batch tracking)
+    legacy_q = {**base_row_q, "batch_id": {"$exists": False}}
+    legacy_count = await db.bank_statement_rows.count_documents(legacy_q)
+    if legacy_count > 0:
+        legacy_rows = await db.bank_statement_rows.find(legacy_q, {"_id": 0, "date": 1, "matched": 1}).to_list(5000)
+        dates = sorted([r["date"] for r in legacy_rows if r.get("date")])
+        matched = sum(1 for r in legacy_rows if r.get("matched"))
+        batches.append({
+            "id": "__legacy__",
+            "filename": "Legacy Upload (pre-tracking)",
+            "row_count": legacy_count,
+            "matched_count": matched,
+            "date_from": dates[0] if dates else "",
+            "date_to": dates[-1] if dates else "",
+            "uploaded_at": "",
+            "bank_account_id": bank_account_id or "",
+            "is_legacy": True,
+        })
+    return batches
+
+@api.get("/bank-statement/batch/{batch_id}/rows")
+async def get_batch_rows(batch_id: str, ctx=Depends(get_org_ctx)):
+    if batch_id == "__legacy__":
+        rows = await db.bank_statement_rows.find(
+            {**org_filter(ctx), "batch_id": {"$exists": False}}, {"_id": 0}
+        ).sort("date", 1).to_list(5000)
+    else:
+        rows = await db.bank_statement_rows.find(org_filter(ctx, {"batch_id": batch_id}), {"_id": 0}).sort("date", 1).to_list(5000)
+    return rows
+
+@api.delete("/bank-statement/batch/{batch_id}")
+async def delete_batch(batch_id: str, ctx=Depends(get_org_ctx)):
+    if batch_id == "__legacy__":
+        await db.bank_statement_rows.delete_many({**org_filter(ctx), "batch_id": {"$exists": False}})
+    else:
+        await db.bank_statement_rows.delete_many(org_filter(ctx, {"batch_id": batch_id}))
+        await db.bank_statement_uploads.delete_one(org_filter(ctx, {"id": batch_id}))
+    return {"ok": True}
+
+@api.get("/bank-statement/analyze")
+async def analyze_bank_statement(bank_account_id: str = Query(None), batch_id: str = Query(None), ctx=Depends(get_org_ctx)):
+    """AI-powered analysis: vendor groups, category breakdown, monthly trend, insights."""
+    import re as _re
+    from collections import defaultdict
+
+    q = org_filter(ctx)
+    if bank_account_id: q["bank_account_id"] = bank_account_id
+    if batch_id: q["batch_id"] = batch_id
+    rows = await db.bank_statement_rows.find(q, {"_id": 0}).to_list(5000)
+    if not rows:
+        return {"vendors": [], "categories": [], "monthly": [], "insights": "", "total_in": 0, "total_out": 0}
+
+    # ── 1. Extract vendor key from description ──────────────────────────────
+    def extract_vendor(desc: str) -> str:
+        d = desc.upper()
+        # Remove common bank prefixes
+        d = _re.sub(r"^(IMPS|NEFT|RTGS|UPI|NACH|ECS|ACH|HDFC|ICICI|SBI|AXIS|KOTAK|YES|PNB|BOB|CBI|IOB|CANARA)[- /]*", "", d)
+        # Extract meaningful part (before long number sequences)
+        d = _re.sub(r"\d{6,}", "", d)
+        d = _re.sub(r"[/\-_]{2,}", " ", d)
+        parts = d.split()[:5]
+        return " ".join(p for p in parts if len(p) > 2)[:50].strip() or desc[:40]
+
+    # ── 2. Aggregate by vendor ──────────────────────────────────────────────
+    vendor_map = defaultdict(lambda: {"total_debit": 0.0, "total_credit": 0.0, "count": 0})
+    monthly_map = defaultdict(lambda: {"debit": 0.0, "credit": 0.0})
+    total_in = total_out = 0.0
+
+    for r in rows:
+        vk = extract_vendor(r.get("description", ""))
+        vendor_map[vk]["total_debit"]  += r.get("debit", 0)
+        vendor_map[vk]["total_credit"] += r.get("credit", 0)
+        vendor_map[vk]["count"] += 1
+        # monthly
+        date_str = r.get("date", "")
+        month_key = date_str[:7] if len(date_str) >= 7 else date_str[:4]
+        monthly_map[month_key]["debit"]  += r.get("debit", 0)
+        monthly_map[month_key]["credit"] += r.get("credit", 0)
+        total_in  += r.get("credit", 0)
+        total_out += r.get("debit", 0)
+
+    vendors_list = [
+        {"raw_vendor": k, "total_debit": v["total_debit"], "total_credit": v["total_credit"], "count": v["count"]}
+        for k, v in sorted(vendor_map.items(), key=lambda x: -(x[1]["total_debit"] + x[1]["total_credit"]))
+    ]
+
+    # ── 3. AI categorization ────────────────────────────────────────────────
+    ai_cats = await ai_analyze_bank_vendors(vendors_list[:80])
+    cat_map = {c["raw_vendor"]: c for c in ai_cats}
+
+    # Enrich vendors with AI category
+    for v in vendors_list:
+        ai = cat_map.get(v["raw_vendor"], {})
+        v["clean_name"] = ai.get("clean_name", v["raw_vendor"])
+        v["category"]   = ai.get("category", "Miscellaneous")
+        v["sub_type"]   = ai.get("sub_type", "expense")
+
+    # ── 4. Category rollup ──────────────────────────────────────────────────
+    cat_rollup = defaultdict(lambda: {"debit": 0.0, "credit": 0.0, "count": 0})
+    for v in vendors_list:
+        cat = v["category"]
+        cat_rollup[cat]["debit"]  += v["total_debit"]
+        cat_rollup[cat]["credit"] += v["total_credit"]
+        cat_rollup[cat]["count"]  += v["count"]
+    categories = [
+        {"category": k, "debit": v["debit"], "credit": v["credit"], "count": v["count"]}
+        for k, v in sorted(cat_rollup.items(), key=lambda x: -(x[1]["debit"] + x[1]["credit"]))
+    ]
+
+    # ── 5. Monthly trend ────────────────────────────────────────────────────
+    monthly = [
+        {"month": k, "credit": v["credit"], "debit": v["debit"]}
+        for k, v in sorted(monthly_map.items())
+    ]
+
+    # ── 6. AI insights ──────────────────────────────────────────────────────
+    summary = {
+        "total_in": round(total_in, 2), "total_out": round(total_out, 2),
+        "net": round(total_in - total_out, 2),
+        "top_expense_vendors": [{"name": v["clean_name"], "amount": v["total_debit"]} for v in vendors_list[:10] if v["total_debit"] > 0],
+        "top_income_vendors":  [{"name": v["clean_name"], "amount": v["total_credit"]} for v in vendors_list[:10] if v["total_credit"] > 0],
+        "top_expense_categories": categories[:5],
+        "months_covered": len(monthly),
+    }
+    insights = await ai_bank_insights(summary)
+
+    return {
+        "vendors": vendors_list[:100],
+        "categories": categories,
+        "monthly": monthly,
+        "insights": insights,
+        "total_in": round(total_in, 2),
+        "total_out": round(total_out, 2),
+    }
 
 @api.post("/bank-statement/upload")
 async def upload_bank_statement(body: BankStatementUpload, ctx=Depends(get_org_ctx)):
     """Accept parsed bank statement rows and auto-match against invoices/purchases."""
+    batch_id = str(uuid.uuid4())
     results = []
     for row in body.rows:
         entry = {
             "id": str(uuid.uuid4()),
             "org_id": ctx["org_id"],
             "bank_account_id": body.bank_account_id,
+            "batch_id": batch_id,
             "date": row.date,
             "description": row.description,
             "debit": row.debit,
@@ -2834,40 +3802,90 @@ async def upload_bank_statement(body: BankStatementUpload, ctx=Depends(get_org_c
             "match_ref": None,
             "created_at": now_iso(),
         }
-        # Auto-match: credit → customer invoices, debit → vendor purchases
+        # Auto-match: try to reconcile against recorded payments first (most accurate),
+        # then fall back to invoice/purchase totals.
         amount = row.credit if row.credit > 0 else row.debit
-        match_direction = "sales" if row.credit > 0 else "purchases"
-        if match_direction == "sales":
-            invoice = await db.invoices.find_one(
-                org_filter(ctx, {"total": {"$gte": amount * 0.99, "$lte": amount * 1.01}, "status": {"$ne": "paid"}}),
-                {"_id": 0}
-            )
-            if invoice:
+        is_credit = row.credit > 0
+
+        def date_range(d: str, days: int = 3):
+            """Return (from_date, to_date) strings ±days around d."""
+            try:
+                from datetime import date, timedelta
+                dt = date.fromisoformat(d)
+                return (dt - timedelta(days=days)).isoformat(), (dt + timedelta(days=days)).isoformat()
+            except Exception:
+                return d, d
+
+        if amount > 0:
+            d_from, d_to = date_range(row.date)
+
+            # 1. Match against recorded payments (amount ±1% AND date ±3 days)
+            pay_direction = "received" if is_credit else "paid"
+            pay_q = org_filter(ctx, {
+                "direction": pay_direction,
+                "amount": {"$gte": amount * 0.99, "$lte": amount * 1.01},
+                "date": {"$gte": d_from, "$lte": d_to},
+            })
+            # Also try matching by UTR/reference if present in description
+            payment = await db.payments.find_one(pay_q, {"_id": 0})
+            if not payment and row.description:
+                # Try reference match: look for any word in description that's alphanumeric 8+ chars
+                import re as _re
+                refs = _re.findall(r"[A-Z0-9]{8,}", row.description.upper())
+                for ref in refs[:3]:
+                    payment = await db.payments.find_one(
+                        org_filter(ctx, {"reference": {"$regex": ref, "$options": "i"}}), {"_id": 0}
+                    )
+                    if payment:
+                        break
+            if payment:
                 entry["matched"] = True
-                entry["match_type"] = "invoice"
-                entry["match_id"] = invoice["id"]
-                entry["match_ref"] = invoice.get("invoice_number", invoice["id"])
-        else:
-            purchase = await db.purchases.find_one(
-                org_filter(ctx, {"total": {"$gte": amount * 0.99, "$lte": amount * 1.01}, "status": {"$ne": "paid"}}),
-                {"_id": 0}
-            )
-            if purchase:
-                entry["matched"] = True
-                entry["match_type"] = "purchase"
-                entry["match_id"] = purchase["id"]
-                entry["match_ref"] = purchase.get("bill_number", purchase["id"])
+                entry["match_type"] = "payment"
+                entry["match_id"] = payment["id"]
+                entry["match_ref"] = f"{payment.get('party_name', '')} · {payment.get('reference', '')}".strip(" ·")
+
+            # 2. Fall back: match against invoice/purchase total
+            if not entry["matched"]:
+                if is_credit:
+                    invoice = await db.invoices.find_one(
+                        org_filter(ctx, {"total": {"$gte": amount * 0.99, "$lte": amount * 1.01},
+                                         "type": "sale", "status": {"$ne": "draft"}}), {"_id": 0})
+                    if invoice:
+                        entry["matched"] = True
+                        entry["match_type"] = "invoice"
+                        entry["match_id"] = invoice["id"]
+                        entry["match_ref"] = invoice.get("invoice_no", invoice["id"])
+                else:
+                    purchase = await db.invoices.find_one(
+                        org_filter(ctx, {"total": {"$gte": amount * 0.99, "$lte": amount * 1.01},
+                                         "type": "purchase", "status": {"$ne": "draft"}}), {"_id": 0})
+                    if purchase:
+                        entry["matched"] = True
+                        entry["match_type"] = "purchase"
+                        entry["match_id"] = purchase["id"]
+                        entry["match_ref"] = purchase.get("invoice_no", purchase["id"])
         await db.bank_statement_rows.insert_one(entry)
         results.append({k: v for k, v in entry.items() if k != "_id"})
     matched = sum(1 for r in results if r["matched"])
-    return {"uploaded": len(results), "matched": matched, "rows": results}
+    # Save batch metadata
+    dates = sorted([r["date"] for r in results if r.get("date")])
+    batch_doc = {
+        "id": batch_id, "org_id": ctx["org_id"],
+        "bank_account_id": body.bank_account_id,
+        "filename": body.filename or "upload",
+        "row_count": len(results), "matched_count": matched,
+        "date_from": dates[0] if dates else "", "date_to": dates[-1] if dates else "",
+        "uploaded_at": now_iso(),
+    }
+    await db.bank_statement_uploads.insert_one(batch_doc)
+    return {"uploaded": len(results), "matched": matched, "rows": results, "batch_id": batch_id}
 
 @api.get("/bank-statement")
 async def get_bank_statement(bank_account_id: str = Query(None), ctx=Depends(get_org_ctx)):
     q = org_filter(ctx)
     if bank_account_id:
         q["bank_account_id"] = bank_account_id
-    rows = await db.bank_statement_rows.find(q, {"_id": 0}).sort("date", -1).to_list(1000)
+    rows = await db.bank_statement_rows.find(q, {"_id": 0}).sort("date", -1).to_list(10000)
     return rows
 
 @api.patch("/bank-statement/{row_id}/match")
@@ -2882,6 +3900,156 @@ async def manual_match(row_id: str, body: dict, ctx=Depends(get_org_ctx)):
 async def delete_statement_row(row_id: str, ctx=Depends(get_org_ctx)):
     await db.bank_statement_rows.delete_one(org_filter(ctx, {"id": row_id}))
     return {"ok": True}
+
+
+# ---------------- INVENTORY ----------------
+
+@api.get("/inventory/summary")
+async def inventory_summary(ctx=Depends(get_org_ctx)):
+    """Return current stock level per product with movement totals."""
+    products = await db.products.find(org_filter(ctx), {"_id": 0,
+        "id": 1, "name": 1, "sku": 1, "unit": 1, "stock": 1, "low_stock_alert": 1, "category": 1, "sale_price": 1}).to_list(1000)
+    if not products:
+        return []
+    prod_ids = [p["id"] for p in products]
+    # Aggregate total IN and OUT from stock_movements
+    in_map: Dict[str, float] = {}
+    out_map: Dict[str, float] = {}
+    async for r in db.stock_movements.aggregate([
+        {"$match": {"org_id": ctx["org_id"], "product_id": {"$in": prod_ids}}},
+        {"$group": {"_id": "$product_id",
+                    "total_in":  {"$sum": {"$cond": [{"$gt": ["$qty", 0]}, "$qty", 0]}},
+                    "total_out": {"$sum": {"$cond": [{"$lt": ["$qty", 0]}, {"$abs": "$qty"}, 0]}}}},
+    ]):
+        in_map[r["_id"]] = round(r["total_in"], 3)
+        out_map[r["_id"]] = round(r["total_out"], 3)
+    result = []
+    for p in products:
+        pid = p["id"]
+        stock = p.get("stock", 0) or 0
+        low = p.get("low_stock_alert", 5) or 5
+        result.append({
+            **p,
+            "total_in":  in_map.get(pid, 0),
+            "total_out": out_map.get(pid, 0),
+            "stock_value": round(stock * (p.get("sale_price") or 0), 2),
+            "is_low_stock": stock <= low,
+        })
+    result.sort(key=lambda x: x["name"])
+    return result
+
+
+@api.get("/inventory/movements")
+async def inventory_movements(
+    product_id: str = Query(None),
+    movement_type: str = Query(None),
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    ctx=Depends(get_org_ctx)
+):
+    """Return stock movement log."""
+    q = org_filter(ctx)
+    if product_id: q["product_id"] = product_id
+    if movement_type: q["movement_type"] = movement_type
+    if date_from: q.setdefault("date", {})["$gte"] = date_from
+    if date_to:   q.setdefault("date", {})["$lte"] = date_to
+    movements = await db.stock_movements.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    # Enrich with product names
+    prod_ids = list({m["product_id"] for m in movements if m.get("product_id")})
+    if prod_ids:
+        pmap = {p["id"]: p async for p in db.products.find(org_filter(ctx, {"id": {"$in": prod_ids}}), {"_id": 0, "id": 1, "name": 1, "sku": 1, "unit": 1})}
+        for m in movements:
+            p = pmap.get(m.get("product_id"), {})
+            m["product_name"] = p.get("name", "")
+            m["product_sku"]  = p.get("sku", "")
+            m["unit"]         = p.get("unit", "")
+    # Enrich with warehouse names
+    org = await get_org_doc(ctx["org_id"])
+    wmap = {w["id"]: w["name"] for w in org.get("warehouses", [])}
+    for m in movements:
+        m["warehouse_name"] = wmap.get(m.get("warehouse_id", ""), "")
+    return movements
+
+
+class StockAdjustIn(BaseModel):
+    product_id: str
+    qty: float           # positive = add, negative = remove
+    reason: str = ""
+    warehouse_id: str = ""
+    date: str = ""
+
+@api.post("/inventory/adjust")
+async def stock_adjust(body: StockAdjustIn, ctx=Depends(require_permission("settings.edit"))):
+    """Manual stock adjustment."""
+    await db.products.update_one(org_filter(ctx, {"id": body.product_id}), {"$inc": {"stock": body.qty}})
+    if body.warehouse_id:
+        await _adjust_warehouse_stock(ctx["org_id"], body.warehouse_id, body.product_id, body.qty,
+            movement_type="adjustment", ref_no=body.reason or "Manual adjustment",
+            date=body.date or now_iso()[:10])
+    else:
+        await _log_stock_movement(ctx["org_id"], body.product_id, body.qty,
+            movement_type="adjustment", ref_no=body.reason or "Manual adjustment",
+            date=body.date or now_iso()[:10])
+    return {"ok": True}
+
+
+@api.post("/inventory/sync-history")
+async def sync_inventory_history(ctx=Depends(require_permission("settings.edit"))):
+    """Backfill stock_movements from existing GRNs and finalized sale invoices.
+    Safe to run multiple times — skips records that already have a movement logged."""
+    org_id = ctx["org_id"]
+    added = 0
+
+    # Get already-logged ref_ids to avoid duplicates
+    existing_refs = set()
+    async for m in db.stock_movements.find({"org_id": org_id}, {"ref_id": 1, "_id": 0}):
+        if m.get("ref_id"):
+            existing_refs.add(m["ref_id"])
+
+    # Backfill GRNs
+    async for grn in db.grns.find({"org_id": org_id}, {"_id": 0}):
+        if grn["id"] in existing_refs:
+            continue
+        for it in grn.get("items", []):
+            if not it.get("product_id"):
+                continue
+            await db.stock_movements.insert_one({
+                "id": str(uuid.uuid4()), "org_id": org_id,
+                "product_id": it["product_id"],
+                "warehouse_id": grn.get("warehouse_id", ""),
+                "qty": it["qty"],
+                "movement_type": "grn",
+                "ref_id": grn["id"],
+                "ref_no": grn.get("grn_no", ""),
+                "party_name": grn.get("vendor_name", ""),
+                "date": grn.get("grn_date", now_iso()[:10]),
+                "created_at": grn.get("created_at", now_iso()),
+            })
+            added += 1
+
+    # Backfill finalized stock invoices (include docs without invoice_category — legacy = stock)
+    async for inv in db.invoices.find({"org_id": org_id, "type": "sale", "status": "finalized",
+                                       "$or": [{"invoice_category": "stock"}, {"invoice_category": {"$exists": False}}, {"invoice_category": ""}]}, {"_id": 0}):
+        if inv["id"] in existing_refs:
+            continue
+        for it in inv.get("items", []):
+            if not it.get("product_id"):
+                continue
+            await db.stock_movements.insert_one({
+                "id": str(uuid.uuid4()), "org_id": org_id,
+                "product_id": it["product_id"],
+                "warehouse_id": inv.get("warehouse_id", ""),
+                "qty": -it["qty"],
+                "movement_type": "sale",
+                "ref_id": inv["id"],
+                "ref_no": inv.get("invoice_no", ""),
+                "party_name": inv.get("party_name", ""),
+                "date": inv.get("invoice_date", now_iso()[:10]),
+                "created_at": inv.get("created_at", now_iso()),
+            })
+            added += 1
+
+    return {"ok": True, "added": added}
 
 
 # ---------------- TDS ----------------
@@ -3823,7 +4991,7 @@ async def poker_join(room_id: str, player: str):
     if player not in _P_NAMES:
         raise HTTPException(400, "Player must be Subhi or Viju")
     if room_id not in _POKER_ROOMS:
-        _POKER_ROOMS[room_id] = {"game": None, "connected": [], "chips": {"Subhi":1000,"Viju":1000}}
+        _POKER_ROOMS[room_id] = {"game": None, "connected": [], "chips": {"Subhi":1000,"Viju":1000}, "chat": []}
     room = _POKER_ROOMS[room_id]
     if player not in room["connected"]:
         room["connected"].append(player)
@@ -3848,7 +5016,7 @@ async def poker_state(room_id: str, player: str):
         fp[pname] = fd
     out = {**game, "players": fp, "commVisible": game["comm"][:game["revealed"]]}
     out.pop("comm", None)
-    return {"ok": True, "game": out, "connected": room["connected"]}
+    return {"ok": True, "game": out, "connected": room["connected"], "chat": room.get("chat", [])[-50:]}
 
 @app.post("/api/poker/{room_id}/action")
 async def poker_action(room_id: str, player: str, action: str, amount: int = 0):
@@ -3906,6 +5074,20 @@ async def poker_deal(room_id: str):
     room["game"]  = _new_poker_game(chips, dealer)
     return {"ok": True}
 
+@app.post("/api/poker/{room_id}/chat")
+async def poker_chat(room_id: str, player: str, msg: str):
+    import time as _time
+    if room_id not in _POKER_ROOMS:
+        raise HTTPException(404, "Room not found")
+    room = _POKER_ROOMS[room_id]
+    if "chat" not in room:
+        room["chat"] = []
+    # Keep last 100 messages
+    room["chat"].append({"player": player, "msg": msg[:200], "t": int(_time.time())})
+    if len(room["chat"]) > 100:
+        room["chat"] = room["chat"][-100:]
+    return {"ok": True}
+
 @app.delete("/api/poker/{room_id}/leave")
 async def poker_leave(room_id: str, player: str):
     if room_id in _POKER_ROOMS:
@@ -3915,6 +5097,415 @@ async def poker_leave(room_id: str, player: str):
         if not room["connected"]:
             del _POKER_ROOMS[room_id]
     return {"ok": True}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🃏  RUMMY  — Indian Points Rummy, 13-card, wild joker
+# ══════════════════════════════════════════════════════════════════════════════
+_RUMMY_ROOMS: dict = {}
+_RUM_PTS  = {"A":1,"2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,"9":9,"10":10,"J":10,"Q":10,"K":10}
+_RUM_SEQ  = {"A":1,"2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,"9":9,"10":10,"J":11,"Q":12,"K":13}
+
+def _rum_deck():
+    d=[{"r":r,"s":s} for s in ["S","H","D","C"] for r in ["A","2","3","4","5","6","7","8","9","10","J","Q","K"]]
+    _random.shuffle(d); return d
+
+def _new_rummy(scores=None, dealer="Subhi"):
+    scores = scores or {"Subhi":0,"Viju":0}
+    d = _rum_deck()
+    hands = {"Subhi":d[:13],"Viju":d[13:26]}
+    rest  = d[26:]
+    joker = rest.pop(0)
+    first_disc = rest.pop(0)
+    first = "Viju" if dealer=="Subhi" else "Subhi"
+    return {
+        "hands":hands, "stock":rest, "discard":[first_disc], "joker":joker,
+        "actor":first, "dealer":dealer, "drawn":False,
+        "stage":"playing","winner":None,"loser_points":0,"scores":scores,
+        "msg":f"Wild Joker: {joker['r']} ✨  {first} goes first.",
+    }
+
+def _sv(r): return _RUM_SEQ.get(r,0)
+
+def _rum_pure_seq(cards, jrank):
+    if len(cards)<3: return False
+    if any(c["r"]==jrank for c in cards): return False
+    if len(set(c["s"] for c in cards))>1: return False
+    vals=sorted(_sv(c["r"]) for c in cards)
+    if len(vals)!=len(set(vals)): return False
+    return all(vals[i]+1==vals[i+1] for i in range(len(vals)-1))
+
+def _rum_impure_seq(cards, jrank):
+    if len(cards)<3: return False
+    jokers=[c for c in cards if c["r"]==jrank]
+    norms =[c for c in cards if c["r"]!=jrank]
+    if not norms: return False
+    if len(set(c["s"] for c in norms))>1: return False
+    vals=sorted(_sv(c["r"]) for c in norms)
+    if len(vals)!=len(set(vals)): return False
+    if not jokers:
+        return all(vals[i]+1==vals[i+1] for i in range(len(vals)-1))
+    gaps=sum(vals[i+1]-vals[i]-1 for i in range(len(vals)-1))
+    if gaps>len(jokers): return False
+    extra=len(jokers)-gaps
+    return (vals[-1]-vals[0]+1)+extra==len(cards)
+
+def _rum_set(cards, jrank):
+    if len(cards)<3 or len(cards)>4: return False
+    norms=[c for c in cards if c["r"]!=jrank]
+    if not norms: return False
+    if len(set(c["r"] for c in norms))>1: return False
+    suits=[c["s"] for c in norms]
+    return len(suits)==len(set(suits))
+
+def _rum_validate(groups, joker):
+    jrank=joker["r"]
+    total=sum(len(g) for g in groups)
+    if total!=13: return False,f"Groups cover {total} cards (need 13)"
+    pure=0; seqs=0
+    for g in groups:
+        if _rum_pure_seq(g,jrank): pure+=1; seqs+=1
+        elif _rum_impure_seq(g,jrank): seqs+=1
+        elif not _rum_set(g,jrank):
+            return False,f"Invalid group: {[c['r']+c['s'] for c in g]}"
+    if pure<1: return False,"Need ≥1 pure sequence (no wild joker)"
+    if seqs<2: return False,"Need ≥2 sequences total"
+    return True,"Valid!"
+
+def _rum_pts(hand,jrank):
+    return min(80,sum(_RUM_PTS.get(c["r"],10) for c in hand if c["r"]!=jrank))
+
+from pydantic import BaseModel as _PBM
+class _RumDecBody(_PBM):
+    discard: dict
+    groups: list
+
+@app.get("/api/rummy/{room_id}/join")
+async def rummy_join(room_id:str, player:str):
+    if player not in ("Subhi","Viju"): raise HTTPException(400,"Invalid player")
+    if room_id not in _RUMMY_ROOMS:
+        _RUMMY_ROOMS[room_id]={"game":None,"connected":[],"scores":{"Subhi":0,"Viju":0},"chat":[]}
+    room=_RUMMY_ROOMS[room_id]
+    if player not in room["connected"]: room["connected"].append(player)
+    if len(room["connected"])==2 and room["game"] is None:
+        room["game"]=_new_rummy(room["scores"])
+    return {"ok":True,"connected":room["connected"],"ready":len(room["connected"])>=2}
+
+@app.get("/api/rummy/{room_id}/state")
+async def rummy_state(room_id:str, player:str):
+    if room_id not in _RUMMY_ROOMS: return {"ok":False,"msg":"Room not found"}
+    room=_RUMMY_ROOMS[room_id]
+    game=room.get("game")
+    if game is None:
+        return {"ok":True,"game":None,"connected":room["connected"],"chat":room.get("chat",[])[-50:]}
+    other="Viju" if player=="Subhi" else "Subhi"
+    out={
+        "myHand":       game["hands"][player],
+        "opponentCount":len(game["hands"][other]),
+        "opponentHand": game["hands"][other] if game["stage"]=="finished" else None,
+        "discardTop":   game["discard"][-1] if game["discard"] else None,
+        "stockCount":   len(game["stock"]),
+        "joker":        game["joker"],
+        "actor":        game["actor"],
+        "drawn":        game["drawn"],
+        "stage":        game["stage"],
+        "winner":       game["winner"],
+        "loser_points": game.get("loser_points",0),
+        "scores":       game.get("scores",{}),
+        "msg":          game["msg"],
+        "invalidMsg":   game.get("invalidMsg",""),
+    }
+    return {"ok":True,"game":out,"connected":room["connected"],"chat":room.get("chat",[])[-50:]}
+
+@app.post("/api/rummy/{room_id}/draw")
+async def rummy_draw(room_id:str, player:str, source:str="stock"):
+    if room_id not in _RUMMY_ROOMS: raise HTTPException(404)
+    room=_RUMMY_ROOMS[room_id]; game=room.get("game")
+    if not game or game["stage"]!="playing": raise HTTPException(400,"Game not active")
+    if game["actor"]!=player: raise HTTPException(400,"Not your turn")
+    if game["drawn"]: raise HTTPException(400,"Already drew this turn")
+    if source=="discard":
+        if not game["discard"]: raise HTTPException(400,"Discard pile empty")
+        card=game["discard"].pop()
+        game["msg"]=f"{player} picked from discard pile."
+    else:
+        if not game["stock"]:
+            top=game["discard"][-1]; game["stock"]=game["discard"][:-1]
+            _random.shuffle(game["stock"]); game["discard"]=[top]
+        card=game["stock"].pop()
+        game["msg"]=f"{player} drew from stock."
+    game["hands"][player].append(card); game["drawn"]=True
+    return {"ok":True,"card":card}
+
+@app.post("/api/rummy/{room_id}/discard")
+async def rummy_discard(room_id:str, player:str, card_index:int):
+    if room_id not in _RUMMY_ROOMS: raise HTTPException(404)
+    room=_RUMMY_ROOMS[room_id]; game=room.get("game")
+    if not game or game["stage"]!="playing": raise HTTPException(400)
+    if game["actor"]!=player: raise HTTPException(400,"Not your turn")
+    if not game["drawn"]: raise HTTPException(400,"Draw a card first")
+    hand=game["hands"][player]
+    if card_index<0 or card_index>=len(hand): raise HTTPException(400,"Bad index")
+    disc=hand.pop(card_index); game["discard"].append(disc)
+    other="Viju" if player=="Subhi" else "Subhi"
+    game["actor"]=other; game["drawn"]=False
+    game["msg"]=f"{player} discarded {disc['r']}{disc['s']}. {other}'s turn."
+    return {"ok":True}
+
+@app.post("/api/rummy/{room_id}/declare")
+async def rummy_declare(room_id:str, player:str, body:_RumDecBody):
+    if room_id not in _RUMMY_ROOMS: raise HTTPException(404)
+    room=_RUMMY_ROOMS[room_id]; game=room.get("game")
+    if not game or game["stage"]!="playing": raise HTTPException(400)
+    if game["actor"]!=player: raise HTTPException(400,"Not your turn")
+    if not game["drawn"]: raise HTTPException(400,"Draw first")
+    hand=game["hands"][player]
+    dc=body.discard
+    try:
+        idx=next(i for i,c in enumerate(hand) if c["r"]==dc["r"] and c["s"]==dc["s"])
+        hand.pop(idx)
+    except StopIteration:
+        raise HTTPException(400,"Discard card not in hand")
+    game["discard"].append(dc)
+    valid,reason=_rum_validate(body.groups,game["joker"])
+    other="Viju" if player=="Subhi" else "Subhi"
+    if valid:
+        pts=_rum_pts(game["hands"][other],game["joker"]["r"])
+        game["scores"][other]=game["scores"].get(other,0)+pts
+        game["winner"]=player; game["loser_points"]=pts; game["stage"]="finished"
+        game["msg"]=f"🎉 {player} declares! {other} gets {pts} penalty points."
+        game["invalidMsg"]=""
+    else:
+        game["scores"][player]=game["scores"].get(player,0)+80
+        game["winner"]=other; game["loser_points"]=80; game["stage"]="finished"
+        game["msg"]=f"❌ Invalid declare by {player}! +80 penalty. {other} wins."
+        game["invalidMsg"]=reason
+    return {"ok":True,"valid":valid,"reason":reason}
+
+@app.post("/api/rummy/{room_id}/deal")
+async def rummy_new_deal(room_id:str):
+    if room_id not in _RUMMY_ROOMS: raise HTTPException(404)
+    room=_RUMMY_ROOMS[room_id]; game=room.get("game")
+    if not game or game.get("stage")!="finished": raise HTTPException(400)
+    scores=game.get("scores",{"Subhi":0,"Viju":0})
+    dealer="Viju" if game["dealer"]=="Subhi" else "Subhi"
+    room["scores"]=scores; room["game"]=_new_rummy(scores,dealer)
+    return {"ok":True}
+
+@app.delete("/api/rummy/{room_id}/leave")
+async def rummy_leave(room_id:str, player:str):
+    if room_id in _RUMMY_ROOMS:
+        room=_RUMMY_ROOMS[room_id]
+        if player in room["connected"]: room["connected"].remove(player)
+        if not room["connected"]: del _RUMMY_ROOMS[room_id]
+    return {"ok":True}
+
+@app.post("/api/rummy/{room_id}/chat")
+async def rummy_chat(room_id:str, player:str, msg:str):
+    import time as _time
+    if room_id not in _RUMMY_ROOMS: raise HTTPException(404)
+    room=_RUMMY_ROOMS[room_id]
+    if "chat" not in room: room["chat"]=[]
+    room["chat"].append({"player":player,"msg":msg[:200],"t":int(_time.time())})
+    if len(room["chat"])>100: room["chat"]=room["chat"][-100:]
+    return {"ok":True}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  🎮 IT TAKES TWO — Co-op Adventure Game
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import random as _rnd
+import math as _math
+import time as _adv_time
+
+_ADV_ROOMS: dict = {}
+
+SYMBOLS = ["🔴","🔵","🟡","🟢","🟣","🟠","⭐","💎"]
+
+MAZE_W, MAZE_H = 7, 7  # odd dimensions for clean maze gen
+
+def _gen_maze(w=MAZE_W, h=MAZE_H):
+    """Generate a maze using recursive backtracking. Returns 2D grid: 0=path, 1=wall."""
+    grid = [[1]*w for _ in range(h)]
+    def carve(cx, cy):
+        dirs = [(0,2),(0,-2),(2,0),(-2,0)]
+        _rnd.shuffle(dirs)
+        for dx, dy in dirs:
+            nx, ny = cx+dx, cy+dy
+            if 0<=nx<w and 0<=ny<h and grid[ny][nx]==1:
+                grid[cy+dy//2][cx+dx//2]=0
+                grid[ny][nx]=0
+                carve(nx,ny)
+    grid[1][1]=0
+    carve(1,1)
+    grid[1][1]=0
+    grid[h-2][w-2]=0
+    return grid
+
+def _new_adv():
+    seq = _rnd.sample(SYMBOLS, 4)
+    maze = _gen_maze()
+    return {
+        "players": {},
+        "chat": [],
+        "level": 1,
+        "completed": [],   # levels completed
+        "won": False,
+        # Level 1 — The Code
+        "code_seq": seq,
+        "code_input": [],
+        "code_attempts": 0,
+        "code_done": False,
+        "code_failed": False,
+        # Level 2 — The Balance
+        "balance_pos": 0.0,       # -1.0 … 1.0, 0 = centre
+        "balance_hold": 0,        # frames held in zone
+        "balance_done": False,
+        "balance_last": 0,
+        # Level 3 — The Maze
+        "maze": maze,
+        "maze_px": 1, "maze_py": 1,   # player position
+        "maze_done": False,
+    }
+
+@api.post("/adventure/{room}/join")
+async def adv_join(room:str, player:str):
+    if room not in _ADV_ROOMS:
+        _ADV_ROOMS[room] = _new_adv()
+    r = _ADV_ROOMS[room]
+    if player not in r["players"]:
+        if len(r["players"]) >= 2:
+            return {"ok":False,"msg":"Room full"}
+        r["players"][player] = True
+    return {"ok":True}
+
+@api.get("/adventure/{room}/state")
+async def adv_state(room:str, player:str):
+    if room not in _ADV_ROOMS:
+        return {"ok":False,"msg":"Room not found"}
+    r = _ADV_ROOMS[room]
+    connected = list(r["players"].keys())
+    players = [p for p in ["Subhi","Viju"] if p in r["players"]]
+    # Assign roles deterministically: first joiner = "revealer", second = "actor"
+    # Subhi always sees the code; Viju always has the buttons
+    role = "revealer" if player=="Subhi" else "actor"
+
+    base = {
+        "ok": True,
+        "connected": connected,
+        "level": r["level"],
+        "completed": r["completed"],
+        "won": r["won"],
+        "role": role,
+        "chat": r["chat"][-50:],
+        # Level 1
+        "code_done": r["code_done"],
+        "code_failed": r["code_failed"],
+        "code_attempts": r["code_attempts"],
+        "code_input": r["code_input"],
+        # Level 2
+        "balance_pos": r["balance_pos"],
+        "balance_hold": r["balance_hold"],
+        "balance_done": r["balance_done"],
+        # Level 3
+        "maze": r["maze"],
+        "maze_px": r["maze_px"],
+        "maze_py": r["maze_py"],
+        "maze_done": r["maze_done"],
+    }
+    # Only the revealer (Subhi) sees the code sequence
+    if role == "revealer":
+        base["code_seq"] = r["code_seq"]
+    return base
+
+@api.post("/adventure/{room}/code_press")
+async def adv_code_press(room:str, player:str, symbol:str):
+    if room not in _ADV_ROOMS: return {"ok":False}
+    r = _ADV_ROOMS[room]
+    if r["level"]!=1 or r["code_done"] or r["code_failed"]: return {"ok":False}
+    r["code_input"].append(symbol)
+    pos = len(r["code_input"])-1
+    if r["code_input"][pos] != r["code_seq"][pos]:
+        # Wrong — fail this attempt
+        r["code_attempts"] += 1
+        r["code_input"] = []
+        if r["code_attempts"] >= 3:
+            r["code_failed"] = True
+        return {"ok":True,"wrong":True}
+    if len(r["code_input"]) == 4:
+        r["code_done"] = True
+        r["completed"].append(1)
+        r["level"] = 2
+        r["code_input"] = []
+    return {"ok":True,"wrong":False}
+
+@api.post("/adventure/{room}/code_reset")
+async def adv_code_reset(room:str):
+    if room not in _ADV_ROOMS: return {"ok":False}
+    r = _ADV_ROOMS[room]
+    seq = _rnd.sample(SYMBOLS, 4)
+    r["code_seq"] = seq
+    r["code_input"] = []
+    r["code_attempts"] = 0
+    r["code_failed"] = False
+    r["code_done"] = False
+    return {"ok":True}
+
+@api.post("/adventure/{room}/balance_push")
+async def adv_balance(room:str, player:str, direction:str):
+    """direction: left | right"""
+    if room not in _ADV_ROOMS: return {"ok":False}
+    r = _ADV_ROOMS[room]
+    if r["level"]!=2 or r["balance_done"]: return {"ok":False}
+    delta = -0.08 if direction=="left" else 0.08
+    r["balance_pos"] = max(-1.0, min(1.0, r["balance_pos"]+delta))
+    # Natural drift back toward 0 (gravity)
+    r["balance_pos"] *= 0.95
+    # Check hold in zone
+    now = int(_adv_time.time()*10)
+    if abs(r["balance_pos"]) < 0.15:
+        if r["balance_last"]==0: r["balance_last"]=now
+        held = now - r["balance_last"]
+        r["balance_hold"] = held
+        if held >= 30:   # 3 seconds at ~10 updates/sec
+            r["balance_done"] = True
+            r["completed"].append(2)
+            r["level"] = 3
+    else:
+        r["balance_last"] = 0
+        r["balance_hold"] = 0
+    return {"ok":True}
+
+@api.post("/adventure/{room}/maze_move")
+async def adv_maze(room:str, player:str, direction:str):
+    """direction: up|down|left|right"""
+    if room not in _ADV_ROOMS: return {"ok":False}
+    r = _ADV_ROOMS[room]
+    if r["level"]!=3 or r["maze_done"]: return {"ok":False}
+    dx,dy = {"up":(0,-1),"down":(0,1),"left":(-1,0),"right":(1,0)}.get(direction,(0,0))
+    nx,ny = r["maze_px"]+dx, r["maze_py"]+dy
+    maze = r["maze"]
+    if 0<=nx<MAZE_W and 0<=ny<MAZE_H and maze[ny][nx]==0:
+        r["maze_px"],r["maze_py"] = nx,ny
+        if nx==MAZE_W-2 and ny==MAZE_H-2:
+            r["maze_done"] = True
+            r["completed"].append(3)
+            r["won"] = True
+    return {"ok":True}
+
+@api.post("/adventure/{room}/chat")
+async def adv_chat(room:str, player:str, msg:str):
+    if room not in _ADV_ROOMS: return {"ok":False}
+    r = _ADV_ROOMS[room]
+    r["chat"].append({"player":player,"msg":msg[:200],"t":int(_adv_time.time())})
+    if len(r["chat"])>100: r["chat"]=r["chat"][-100:]
+    return {"ok":True}
+
+@api.post("/adventure/{room}/reset")
+async def adv_reset(room:str):
+    if room not in _ADV_ROOMS: return {"ok":False}
+    _ADV_ROOMS[room] = _new_adv()
+    return {"ok":True}
 
 app.include_router(api)
 app.add_middleware(
