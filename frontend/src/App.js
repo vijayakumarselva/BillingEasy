@@ -46,6 +46,7 @@ import QuickUpload from "@/pages/QuickUpload";
 import GRN from "@/pages/GRN";
 import DeliveryOrders from "@/pages/DeliveryOrders";
 import Inventory from "@/pages/Inventory";
+import Entities from "@/pages/Entities";
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -167,6 +168,7 @@ export default function App() {
               <Route path="/reports" element={<Reports />} />
               <Route path="/tds" element={<TDS />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/entities" element={<Entities />} />
               <Route path="/pos" element={<RetailPOS />} />
               <Route path="/pos/admin" element={<POSAdmin />} />
               <Route path="/restaurant" element={<Restaurant />} />

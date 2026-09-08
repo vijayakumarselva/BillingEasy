@@ -42,6 +42,7 @@ const ALL_NAV = [
   { to: "/tools",  label: "Tax Toolkit", icon: Wrench, tid: "nav-tools", badge: "Free", group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos"] },
   { to: "/wallet",   label: "Wallet & Credits", icon: Coins,    tid: "nav-wallet",  group: "Account", modes: ["b2b","b2c","restaurant","pos"] },
   { to: "/credits",  label: "Buy Credits",      icon: Zap,      tid: "nav-credits", badge: "New", group: "Account", modes: ["b2b","b2c","restaurant","pos"] },
+  { to: "/entities", label: "Entities",          icon: Store,    tid: "nav-entities",               group: "Account", modes: ["b2b","b2c","restaurant","pos"] },
   { to: "/settings", label: "Settings",         icon: Settings, tid: "nav-settings", shortcut: "Alt+,", group: "Account", modes: ["b2b","b2c","restaurant","pos"] },
 ];
 
@@ -71,10 +72,50 @@ export default function AppLayout() {
   const [orgOpen, setOrgOpen] = useState(false);
   const [businessMode, setBusinessMode] = useState(() => localStorage.getItem(`biz_mode_${orgId}`) || "");
   const [showModeSelect, setShowModeSelect] = useState(false);
+  // Multi-entity
+  const [entities, setEntities] = useState([]);
+  const [activeEntityId, setActiveEntityId] = useState(() => orgId ? localStorage.getItem(`active_entity_${orgId}`) : null);
+  const [entityOpen, setEntityOpen] = useState(false);
 
   useEffect(() => {
     if (orgId) api.get("/wallet").then(r => setWallet(r.data)).catch(() => {});
   }, [orgId, loc.pathname]);
+
+  // Load entities
+  useEffect(() => {
+    if (!orgId) return;
+    api.get("/orgs/current/entities").then(r => setEntities(r.data)).catch(() => {});
+    const stored = localStorage.getItem(`active_entity_${orgId}`);
+    setActiveEntityId(stored || null);
+  }, [orgId]);
+
+  // Listen for entity changes from Entities page
+  useEffect(() => {
+    const handler = (e) => {
+      setActiveEntityId(e.detail.entityId);
+      // Reload entities list to reflect any changes
+      if (orgId) api.get("/orgs/current/entities").then(r => setEntities(r.data)).catch(() => {});
+    };
+    window.addEventListener("be:entity-changed", handler);
+    return () => window.removeEventListener("be:entity-changed", handler);
+  }, [orgId]);
+
+  const switchEntity = (entityId) => {
+    if (!orgId) return;
+    if (entityId === activeEntityId) {
+      localStorage.removeItem(`active_entity_${orgId}`);
+      setActiveEntityId(null);
+      window.dispatchEvent(new CustomEvent("be:entity-changed", { detail: { entityId: null } }));
+    } else {
+      localStorage.setItem(`active_entity_${orgId}`, entityId);
+      setActiveEntityId(entityId);
+      window.dispatchEvent(new CustomEvent("be:entity-changed", { detail: { entityId } }));
+    }
+    setEntityOpen(false);
+    setDrawerOpen(false);
+  };
+
+  const activeEntity = entities.find(e => e.id === activeEntityId);
 
   useEffect(() => {
     if (!orgId) return;
@@ -292,6 +333,43 @@ export default function AppLayout() {
             </div>
           </div>
 
+          {/* Entity switcher — desktop sidebar */}
+          {entities.length > 0 && (
+            <div className="px-2 pt-1 pb-1 border-b" style={{ borderColor: "hsl(var(--sidebar-border))" }}>
+              <div className="relative">
+                <button onClick={() => setEntityOpen(v => !v)}
+                  className={`w-full text-left text-[10px] px-2 py-1.5 rounded flex items-center gap-1.5 transition-colors font-semibold
+                    ${activeEntity ? "bg-violet-600 text-white" : "bg-muted/40 text-muted-foreground hover:bg-muted/70"}`}>
+                  <Store className="h-3 w-3 shrink-0" />
+                  <span className="flex-1 truncate">{activeEntity ? activeEntity.name : "All Entities"}</span>
+                  <ChevronDown className="h-2.5 w-2.5 shrink-0 opacity-70" />
+                </button>
+                {entityOpen && (
+                  <div className="absolute left-0 right-0 top-full mt-1 rounded border shadow-lg z-50 bg-card border-border overflow-hidden">
+                    <button onClick={() => switchEntity(null)}
+                      className={`w-full text-left px-2.5 py-1.5 text-[11px] hover:bg-accent flex items-center justify-between ${!activeEntityId ? "font-bold text-primary" : ""}`}>
+                      <span>All Entities</span>
+                      {!activeEntityId && <span className="text-[10px] text-primary">●</span>}
+                    </button>
+                    {entities.map(e => (
+                      <button key={e.id} onClick={() => switchEntity(e.id)}
+                        className={`w-full text-left px-2.5 py-1.5 text-[11px] hover:bg-accent flex items-center justify-between ${activeEntityId === e.id ? "font-bold text-primary" : ""}`}>
+                        <span className="truncate">{e.name}</span>
+                        {activeEntityId === e.id && <span className="text-[10px] text-primary">●</span>}
+                      </button>
+                    ))}
+                    <div className="border-t border-border">
+                      <button onClick={() => { setEntityOpen(false); nav("/entities"); }}
+                        className="w-full text-left px-2.5 py-1.5 text-[10px] text-primary font-medium hover:bg-accent flex items-center gap-1">
+                        <Plus className="h-2.5 w-2.5" /> Manage Entities
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="px-2 pt-2">
             <NavLink to="/dashboard" data-testid="nav-dashboard"
               className={({ isActive }) => `sidebar-link ${isActive ? "active" : ""}`}>
@@ -389,6 +467,33 @@ export default function AppLayout() {
                   </div>
                 )}
               </div>
+
+              {/* Entity switcher — mobile drawer */}
+              {entities.length > 0 && (
+                <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800 shrink-0">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Business Entity</p>
+                  <div className="space-y-1.5">
+                    <button onClick={() => switchEntity(null)}
+                      className={`w-full text-left px-3 py-2 rounded-xl text-sm font-medium flex items-center justify-between transition-colors
+                        ${!activeEntityId ? "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300" : "text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"}`}>
+                      <span>All Entities</span>
+                      {!activeEntityId && <span className="text-[11px] text-blue-600 font-bold">● Active</span>}
+                    </button>
+                    {entities.map(e => (
+                      <button key={e.id} onClick={() => switchEntity(e.id)}
+                        className={`w-full text-left px-3 py-2 rounded-xl text-sm font-medium flex items-center justify-between transition-colors
+                          ${activeEntityId === e.id ? "bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300" : "text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"}`}>
+                        <span className="truncate">{e.name}</span>
+                        {activeEntityId === e.id && <span className="text-[11px] text-violet-600 font-bold">● Active</span>}
+                      </button>
+                    ))}
+                    <button onClick={() => { setDrawerOpen(false); nav("/entities"); }}
+                      className="w-full text-left px-3 py-2 text-xs text-blue-600 font-semibold flex items-center gap-2">
+                      <Plus className="h-3.5 w-3.5" /> Manage Entities
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Nav items */}
               <div className="flex-1 overflow-y-auto px-3 py-3 space-y-0.5">

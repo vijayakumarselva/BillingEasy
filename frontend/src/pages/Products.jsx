@@ -45,6 +45,9 @@ export default function Products() {
   const [upcSelected, setUpcSelected] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkModes, setBulkModes] = useState(null); // null = not open, [] = selecting modes
+  const [bulkEditMode, setBulkEditMode] = useState(false);
+  const [bulkEdits, setBulkEdits] = useState({}); // id → {name, purchase_price, sale_price, gst_rate, hsn, category}
+  const [bulkSaving, setBulkSaving] = useState(false);
   const barcodeDialogRef = useRef(null);
 
   const load = async () => {
@@ -115,6 +118,47 @@ export default function Products() {
       toast.success(`Updated ${selectedIds.length} product(s)`);
       setSelectedIds([]); setBulkModes(null); load();
     } catch { toast.error("Failed to update"); }
+  };
+
+  // Bulk inline edit
+  const startBulkEdit = () => {
+    const initial = {};
+    list.forEach(p => {
+      initial[p.id] = {
+        name: p.name || "",
+        purchase_price: p.purchase_price ?? 0,
+        sale_price: p.sale_price ?? 0,
+        gst_rate: p.gst_rate ?? 18,
+        hsn: p.hsn || "",
+        category: p.category || "General",
+        unit: p.unit || "NOS",
+        low_stock_alert: p.low_stock_alert ?? 5,
+      };
+    });
+    setBulkEdits(initial);
+    setBulkEditMode(true);
+  };
+  const cancelBulkEdit = () => { setBulkEditMode(false); setBulkEdits({}); };
+  const patchBulkEdit = (id, field, value) => {
+    setBulkEdits(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+  };
+  const saveBulkEdit = async () => {
+    setBulkSaving(true);
+    try {
+      const updates = Object.entries(bulkEdits).map(([id, fields]) => ({
+        id,
+        ...fields,
+        purchase_price: parseFloat(fields.purchase_price) || 0,
+        sale_price: parseFloat(fields.sale_price) || 0,
+        gst_rate: parseFloat(fields.gst_rate) || 0,
+        low_stock_alert: parseInt(fields.low_stock_alert) || 0,
+      }));
+      await api.put("/products/bulk-update", { updates });
+      toast.success(`✅ Saved ${updates.length} products`);
+      setBulkEditMode(false); setBulkEdits({});
+      load();
+    } catch { toast.error("Save failed"); }
+    setBulkSaving(false);
   };
 
   const printBarcode = () => {
@@ -228,11 +272,27 @@ export default function Products() {
           <h1 className="text-3xl font-semibold tracking-tight">Products & Stock</h1>
           <p className="text-sm text-muted-foreground mt-1">What you sell — with GST rate and current stock.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button variant="outline" onClick={openUpcDownload} title="Download UPC sticker sheet">
             <Download className="h-4 w-4 mr-1.5" /> Download UPCs
           </Button>
-          {canEdit && <Button onClick={startCreate} className="bg-blue-600 hover:bg-blue-700" data-testid="product-new-button-desktop">
+          {canEdit && !bulkEditMode && (
+            <Button variant="outline" onClick={startBulkEdit} title="Edit all products at once">
+              <Edit className="h-4 w-4 mr-1.5" /> Edit All
+            </Button>
+          )}
+          {bulkEditMode && (
+            <>
+              <Button variant="outline" onClick={cancelBulkEdit} className="border-rose-300 text-rose-600 hover:bg-rose-50">
+                <X className="h-4 w-4 mr-1.5" /> Cancel
+              </Button>
+              <Button onClick={saveBulkEdit} disabled={bulkSaving} className="bg-emerald-600 hover:bg-emerald-700">
+                {bulkSaving ? <RefreshCw className="h-4 w-4 animate-spin mr-1.5" /> : <DollarSign className="h-4 w-4 mr-1.5" />}
+                Save All
+              </Button>
+            </>
+          )}
+          {canEdit && !bulkEditMode && <Button onClick={startCreate} className="bg-blue-600 hover:bg-blue-700" data-testid="product-new-button-desktop">
             <Plus className="h-4 w-4 mr-1.5" /> Add Product
           </Button>}
         </div>
@@ -326,76 +386,144 @@ export default function Products() {
         <div className="overflow-x-auto">
           <table className="app-table">
             <thead><tr>
-              <th className="w-8">
-                <input type="checkbox" className="rounded" checked={list.length > 0 && selectedIds.length === list.length}
-                  onChange={toggleSelectAll} title="Select all" />
-              </th>
-              <th>Product</th><th>HSN</th><th>Category</th><th>Used In</th><th className="text-right">Purchase</th><th className="text-right">Sale</th><th className="text-right">GST%</th><th className="text-right">Stock</th><th></th>
+              {!bulkEditMode && (
+                <th className="w-8">
+                  <input type="checkbox" className="rounded" checked={list.length > 0 && selectedIds.length === list.length}
+                    onChange={toggleSelectAll} title="Select all" />
+                </th>
+              )}
+              <th>Product</th>
+              <th>HSN</th>
+              <th>Category</th>
+              {!bulkEditMode && <th>Used In</th>}
+              <th className="text-right">Purchase ₹</th>
+              <th className="text-right">Sale ₹</th>
+              <th className="text-right">GST%</th>
+              <th className="text-right">Stock</th>
+              {!bulkEditMode && <th></th>}
             </tr></thead>
             <tbody>
-              {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={9}><Skeleton className="h-8 w-full" /></td></tr>) :
-                list.length === 0 ? <tr><td colSpan={9} className="text-center text-muted-foreground py-8">No products yet.</td></tr> :
-                list.map(p => (
-                  <tr key={p.id} data-testid={`product-row-${p.name}`} className={selectedIds.includes(p.id) ? "bg-blue-50/50 dark:bg-blue-950/20" : ""}>
-                    <td className="w-8" onClick={e => e.stopPropagation()}>
-                      <input type="checkbox" className="rounded" checked={selectedIds.includes(p.id)}
-                        onChange={() => toggleSelect(p.id)} />
-                    </td>
+              {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={bulkEditMode ? 7 : 10}><Skeleton className="h-8 w-full" /></td></tr>) :
+                list.length === 0 ? <tr><td colSpan={bulkEditMode ? 7 : 10} className="text-center text-muted-foreground py-8">No products yet.</td></tr> :
+                list.map(p => {
+                  const ed = bulkEdits[p.id] || {};
+                  return (
+                  <tr key={p.id} data-testid={`product-row-${p.name}`}
+                    className={bulkEditMode ? "bg-amber-50/30 dark:bg-amber-950/10" : selectedIds.includes(p.id) ? "bg-blue-50/50 dark:bg-blue-950/20" : ""}>
+                    {!bulkEditMode && (
+                      <td className="w-8" onClick={e => e.stopPropagation()}>
+                        <input type="checkbox" className="rounded" checked={selectedIds.includes(p.id)}
+                          onChange={() => toggleSelect(p.id)} />
+                      </td>
+                    )}
                     <td>
-                      <div className="flex items-center gap-2">
-                        {p.image_b64
-                          ? <img src={p.image_b64} alt="" className="w-8 h-8 rounded object-cover flex-shrink-0 border" />
-                          : <div className="w-8 h-8 rounded bg-muted flex items-center justify-center flex-shrink-0"><Package className="h-4 w-4 text-muted-foreground" /></div>
-                        }
-                        <div>
-                          <div className="font-medium">{p.name}</div>
-                          <div className="text-xs text-muted-foreground font-mono-fin">{p.sku || "—"}</div>
+                      {bulkEditMode ? (
+                        <Input
+                          className="h-7 text-sm w-44 px-2"
+                          value={ed.name ?? p.name}
+                          onChange={e => patchBulkEdit(p.id, "name", e.target.value)}
+                        />
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          {p.image_b64
+                            ? <img src={p.image_b64} alt="" className="w-8 h-8 rounded object-cover flex-shrink-0 border" />
+                            : <div className="w-8 h-8 rounded bg-muted flex items-center justify-center flex-shrink-0"><Package className="h-4 w-4 text-muted-foreground" /></div>
+                          }
+                          <div>
+                            <div className="font-medium">{p.name}</div>
+                            <div className="text-xs text-muted-foreground font-mono-fin">{p.sku || "—"}</div>
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </td>
-                    <td className="font-mono-fin text-xs">{p.hsn || "—"}</td>
-                    <td><Badge variant="secondary">{p.category}</Badge></td>
+                    <td className="font-mono-fin text-xs">
+                      {bulkEditMode ? (
+                        <Input className="h-7 text-xs w-24 px-2 font-mono" value={ed.hsn ?? p.hsn ?? ""} onChange={e => patchBulkEdit(p.id, "hsn", e.target.value)} />
+                      ) : (p.hsn || "—")}
+                    </td>
                     <td>
-                      <div className="flex gap-1 flex-wrap">
-                        {(p.modes || ["b2b","b2c","restaurant","pos"]).map(m => {
-                          const def = ALL_MODES.find(x => x.value === m);
-                          return def ? <span key={m} className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${def.color}`}>{def.label}</span> : null;
-                        })}
-                      </div>
+                      {bulkEditMode ? (
+                        <Input className="h-7 text-sm w-28 px-2" value={ed.category ?? p.category ?? "General"} onChange={e => patchBulkEdit(p.id, "category", e.target.value)} />
+                      ) : (
+                        <Badge variant="secondary">{p.category}</Badge>
+                      )}
                     </td>
-                    <td className="num text-muted-foreground">{inr(p.purchase_price)}</td>
-                    <td className="num">{inr(p.sale_price)}</td>
-                    <td className="num">{p.gst_rate}%</td>
+                    {!bulkEditMode && (
+                      <td>
+                        <div className="flex gap-1 flex-wrap">
+                          {(p.modes || ["b2b","b2c","restaurant","pos"]).map(m => {
+                            const def = ALL_MODES.find(x => x.value === m);
+                            return def ? <span key={m} className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${def.color}`}>{def.label}</span> : null;
+                          })}
+                        </div>
+                      </td>
+                    )}
+                    <td className="num">
+                      {bulkEditMode ? (
+                        <Input type="number" className="h-7 text-sm w-24 px-2 text-right" value={ed.purchase_price ?? p.purchase_price ?? 0}
+                          onChange={e => patchBulkEdit(p.id, "purchase_price", e.target.value)} />
+                      ) : <span className="text-muted-foreground">{inr(p.purchase_price)}</span>}
+                    </td>
+                    <td className="num">
+                      {bulkEditMode ? (
+                        <Input type="number" className="h-7 text-sm w-24 px-2 text-right" value={ed.sale_price ?? p.sale_price ?? 0}
+                          onChange={e => patchBulkEdit(p.id, "sale_price", e.target.value)} />
+                      ) : inr(p.sale_price)}
+                    </td>
+                    <td className="num">
+                      {bulkEditMode ? (
+                        <Select value={String(ed.gst_rate ?? p.gst_rate ?? 18)} onValueChange={v => patchBulkEdit(p.id, "gst_rate", v)}>
+                          <SelectTrigger className="h-7 text-xs w-16"><SelectValue /></SelectTrigger>
+                          <SelectContent>{[0,5,12,18,28].map(r => <SelectItem key={r} value={String(r)}>{r}%</SelectItem>)}</SelectContent>
+                        </Select>
+                      ) : `${p.gst_rate}%`}
+                    </td>
                     <td className="num">
                       <span className={p.stock <= p.low_stock_alert ? "text-rose-600 font-semibold" : ""}>
                         {p.stock} {p.unit_qty ? `${p.unit_qty} ${p.unit}` : p.unit}
                       </span>
                       {p.stock <= p.low_stock_alert && <AlertTriangle className="inline h-3 w-3 text-rose-500 ml-1" />}
                     </td>
-                    <td className="text-right">
-                      <Button size="icon" variant="ghost" onClick={() => setBarcodeProduct(p)} title="Show Barcode"><QrCode className="h-4 w-4" /></Button>
-                      <Button size="icon" variant="ghost"
-                        onClick={() => p.upc ? downloadUPC(p) : toast.info("No UPC — edit this product and click Generate to assign one")}
-                        title={p.upc ? `Download UPC: ${p.upc}` : "No UPC yet — edit product to generate"}
-                        className={p.upc ? "" : "opacity-30"}>
-                        <Download className={`h-4 w-4 ${p.upc ? "text-indigo-500" : ""}`} />
-                      </Button>
-                      {canEdit && <Button size="icon" variant="ghost" onClick={() => startEdit(p)} data-testid={`product-edit-${p.name}`}><Edit className="h-4 w-4" /></Button>}
-                      {canEdit && <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button size="icon" variant="ghost" data-testid={`product-delete-${p.name}`}><Trash2 className="h-4 w-4 text-rose-500" /></Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader><AlertDialogTitle>Delete {p.name}?</AlertDialogTitle><AlertDialogDescription>This cannot be undone.</AlertDialogDescription></AlertDialogHeader>
-                          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => remove(p.id)}>Delete</AlertDialogAction></AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>}
-                    </td>
+                    {!bulkEditMode && (
+                      <td className="text-right">
+                        <Button size="icon" variant="ghost" onClick={() => setBarcodeProduct(p)} title="Show Barcode"><QrCode className="h-4 w-4" /></Button>
+                        <Button size="icon" variant="ghost"
+                          onClick={() => p.upc ? downloadUPC(p) : toast.info("No UPC — edit this product and click Generate to assign one")}
+                          title={p.upc ? `Download UPC: ${p.upc}` : "No UPC yet — edit product to generate"}
+                          className={p.upc ? "" : "opacity-30"}>
+                          <Download className={`h-4 w-4 ${p.upc ? "text-indigo-500" : ""}`} />
+                        </Button>
+                        {canEdit && <Button size="icon" variant="ghost" onClick={() => startEdit(p)} data-testid={`product-edit-${p.name}`}><Edit className="h-4 w-4" /></Button>}
+                        {canEdit && <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button size="icon" variant="ghost" data-testid={`product-delete-${p.name}`}><Trash2 className="h-4 w-4 text-rose-500" /></Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader><AlertDialogTitle>Delete {p.name}?</AlertDialogTitle><AlertDialogDescription>This cannot be undone.</AlertDialogDescription></AlertDialogHeader>
+                            <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => remove(p.id)}>Delete</AlertDialogAction></AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>}
+                      </td>
+                    )}
                   </tr>
-                ))}
+                  );
+                })}
             </tbody>
           </table>
         </div>
+        {bulkEditMode && (
+          <div className="flex items-center justify-between px-4 py-3 border-t bg-amber-50/50 dark:bg-amber-950/10">
+            <span className="text-sm text-amber-700 dark:text-amber-400 font-medium">
+              ✏️ Editing {list.length} products — change values inline then Save All
+            </span>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={cancelBulkEdit} className="border-rose-300 text-rose-600 hover:bg-rose-50">Cancel</Button>
+              <Button size="sm" onClick={saveBulkEdit} disabled={bulkSaving} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                {bulkSaving ? "Saving…" : `✅ Save All (${list.length})`}
+              </Button>
+            </div>
+          </div>
+        )}
       </Card>
 
       <BarcodeDialog product={barcodeProduct} svgRef={barcodeDialogRef} onClose={() => setBarcodeProduct(null)} onPrint={printBarcode} onDownload={downloadPng} />
