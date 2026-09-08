@@ -3516,6 +3516,20 @@ async def create_payment(body: PaymentIn, ctx=Depends(get_org_ctx)):
                     {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
                 )
                 doc["invoice_auto_closed"] = True
+        else:
+            # Check if it's a purchase (PO) instead of a sale invoice
+            pur = await db.purchases.find_one({"org_id": ctx["org_id"], "id": body.invoice_id}, {"_id": 0, "id": 1, "totals": 1, "status": 1})
+            if pur and pur.get("status") not in ("cancelled", "paid"):
+                total_paid = 0
+                async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
+                    total_paid += p["amount"]
+                grand_total = pur.get("totals", {}).get("grand_total", 0)
+                if grand_total > 0 and total_paid >= grand_total * 0.99:
+                    await db.purchases.update_one(
+                        {"org_id": ctx["org_id"], "id": body.invoice_id},
+                        {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
+                    )
+                    doc["purchase_auto_closed"] = True
     return strip_id(doc)
 
 
@@ -3554,6 +3568,19 @@ async def update_payment(pid: str, body: PaymentIn, ctx=Depends(get_org_ctx)):
                     org_filter(ctx, {"id": body.invoice_id}),
                     {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
                 )
+        else:
+            # Check if it's a purchase (PO)
+            pur = await db.purchases.find_one({"org_id": ctx["org_id"], "id": body.invoice_id}, {"_id": 0, "id": 1, "totals": 1, "status": 1})
+            if pur and pur.get("status") not in ("cancelled", "paid"):
+                total_paid = 0
+                async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
+                    total_paid += p["amount"]
+                grand_total = pur.get("totals", {}).get("grand_total", 0)
+                if grand_total > 0 and total_paid >= grand_total * 0.99:
+                    await db.purchases.update_one(
+                        {"org_id": ctx["org_id"], "id": body.invoice_id},
+                        {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
+                    )
     return {"ok": True}
 
 

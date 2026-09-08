@@ -201,9 +201,9 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
         const filtered = form.party_id
           ? allPurchases.filter(p => p.party_id === form.party_id)
           : allPurchases;
-        // Map to same shape as open-items invoices
+        // Map to same shape as open-items invoices — exclude paid and cancelled
         const invoices = filtered
-          .filter(p => (p.status || "").toLowerCase() !== "cancelled")
+          .filter(p => !["cancelled", "paid"].includes((p.status || "").toLowerCase()))
           .map(p => ({
             id: p.id,
             invoice_no: `PO-${p.bill_no || ""}`,
