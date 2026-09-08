@@ -45,6 +45,8 @@ export default function Products() {
   const [upcSelected, setUpcSelected] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkModes, setBulkModes] = useState(null); // null = not open, [] = selecting modes
+  const [entities, setEntities] = useState([]); // org entities for assignment
+  const [bulkEntityId, setBulkEntityId] = useState(""); // entity being assigned
   const [bulkEditMode, setBulkEditMode] = useState(false);
   const [bulkEdits, setBulkEdits] = useState({}); // id → {name, purchase_price, sale_price, gst_rate, hsn, category}
   const [bulkSaving, setBulkSaving] = useState(false);
@@ -58,6 +60,7 @@ export default function Products() {
     setList(data); setLoading(false);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [search, modeFilter]);
+  useEffect(() => { api.get("/orgs/current/entities").then(r => setEntities(r.data)).catch(() => {}); }, []);
 
   const genSku = () => `PRD-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
 
@@ -118,6 +121,17 @@ export default function Products() {
       toast.success(`Updated ${selectedIds.length} product(s)`);
       setSelectedIds([]); setBulkModes(null); load();
     } catch { toast.error("Failed to update"); }
+  };
+
+  const applyBulkEntity = async (entityId) => {
+    if (selectedIds.length === 0) return;
+    try {
+      const updates = selectedIds.map(id => ({ id, entity_id: entityId || null }));
+      await api.put("/products/bulk-update", { updates });
+      const ent = entities.find(e => e.id === entityId);
+      toast.success(`${selectedIds.length} product(s) assigned to "${ent?.name || "All Entities"}"`);
+      setSelectedIds([]); setBulkEntityId(""); load();
+    } catch { toast.error("Failed to assign"); }
   };
 
   // Bulk inline edit
@@ -317,36 +331,72 @@ export default function Products() {
 
       {/* Bulk action bar */}
       {selectedIds.length > 0 && (
-        <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 flex-wrap">
-          <span className="text-sm font-semibold text-blue-700 dark:text-blue-300">{selectedIds.length} selected</span>
-          <div className="flex gap-2 flex-wrap flex-1">
-            {bulkModes !== null ? (
-              <>
-                <span className="text-xs text-muted-foreground self-center">Set visible in:</span>
-                {ALL_MODES.map(m => {
-                  const active = bulkModes.includes(m.value);
-                  return (
-                    <button key={m.value} type="button"
-                      onClick={() => setBulkModes(prev => prev.includes(m.value) ? prev.filter(x => x !== m.value) : [...prev, m.value])}
-                      className={`text-xs px-2.5 py-1 rounded-full font-semibold border transition-colors ${active ? m.color + " border-transparent" : "border-current text-muted-foreground opacity-50"}`}>
-                      {active ? "✓ " : ""}{m.label}
-                    </button>
-                  );
-                })}
-                <Button size="sm" className="h-7 text-xs bg-blue-600 hover:bg-blue-700" onClick={applyBulkModes}>Apply</Button>
-                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setBulkModes(null)}>Cancel</Button>
-              </>
-            ) : (
-              <>
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={openBulkModes}>
-                  <Layers className="h-3 w-3 mr-1" /> Set Business Mode
-                </Button>
-              </>
-            )}
+        <div className="rounded-xl border border-blue-300 bg-blue-50 dark:bg-blue-950/40 dark:border-blue-800 px-4 py-3 space-y-2.5">
+          {/* Header row */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-sm font-bold text-blue-700 dark:text-blue-300">
+              ✓ {selectedIds.length} of {list.length} product{selectedIds.length !== 1 ? "s" : ""} selected
+            </span>
+            <button className="text-xs text-blue-500 underline underline-offset-2 hover:text-blue-700"
+              onClick={toggleSelectAll}>
+              {selectedIds.length === list.length ? "Deselect all" : "Select all"}
+            </button>
+            <Button size="sm" variant="ghost" className="h-6 text-xs ml-auto text-muted-foreground"
+              onClick={() => { setSelectedIds([]); setBulkModes(null); setBulkEntityId(""); }}>
+              <X className="h-3 w-3 mr-1" /> Clear
+            </Button>
           </div>
-          <Button size="sm" variant="ghost" className="h-7 text-xs ml-auto" onClick={() => { setSelectedIds([]); setBulkModes(null); }}>
-            <X className="h-3 w-3 mr-1" /> Clear
-          </Button>
+
+          {/* Actions row */}
+          <div className="flex gap-4 flex-wrap items-start">
+
+            {/* ── Assign to Business Entity ── */}
+            {entities.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Assign Entity</p>
+                <div className="flex gap-1.5 flex-wrap">
+                  <button
+                    onClick={() => applyBulkEntity("")}
+                    className="text-xs px-2.5 py-1 rounded-full font-semibold border transition-colors border-gray-300 text-muted-foreground hover:bg-gray-100 dark:hover:bg-gray-800">
+                    All / None
+                  </button>
+                  {entities.map(e => (
+                    <button key={e.id}
+                      onClick={() => applyBulkEntity(e.id)}
+                      className="text-xs px-2.5 py-1 rounded-full font-semibold border transition-colors bg-violet-100 text-violet-800 border-violet-200 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-300 dark:border-violet-700">
+                      {e.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Set Business Mode ── */}
+            <div className="space-y-1">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Visible In (Business Mode)</p>
+              {bulkModes !== null ? (
+                <div className="flex gap-1.5 flex-wrap items-center">
+                  {ALL_MODES.map(m => {
+                    const active = bulkModes.includes(m.value);
+                    return (
+                      <button key={m.value} type="button"
+                        onClick={() => setBulkModes(prev => prev.includes(m.value) ? prev.filter(x => x !== m.value) : [...prev, m.value])}
+                        className={`text-xs px-2.5 py-1 rounded-full font-semibold border transition-colors ${active ? m.color + " border-transparent" : "border-current text-muted-foreground opacity-40 hover:opacity-70"}`}>
+                        {active ? "✓ " : ""}{m.label}
+                      </button>
+                    );
+                  })}
+                  <Button size="sm" className="h-6 text-xs bg-blue-600 hover:bg-blue-700 ml-1" onClick={applyBulkModes}>Apply</Button>
+                  <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setBulkModes(null)}>✕</Button>
+                </div>
+              ) : (
+                <button onClick={openBulkModes}
+                  className="text-xs px-3 py-1.5 rounded-lg border border-dashed border-blue-400 text-blue-600 font-semibold hover:bg-blue-100 dark:hover:bg-blue-900/30 flex items-center gap-1.5">
+                  <Layers className="h-3 w-3" /> Choose modes…
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -451,6 +501,14 @@ export default function Products() {
                     {!bulkEditMode && (
                       <td>
                         <div className="flex gap-1 flex-wrap">
+                          {p.entity_id && (() => {
+                            const ent = entities.find(e => e.id === p.entity_id);
+                            return ent ? (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300 border border-violet-200 dark:border-violet-700">
+                                🏷 {ent.name}
+                              </span>
+                            ) : null;
+                          })()}
                           {(p.modes || ["b2b","b2c","restaurant","pos"]).map(m => {
                             const def = ALL_MODES.find(x => x.value === m);
                             return def ? <span key={m} className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${def.color}`}>{def.label}</span> : null;
