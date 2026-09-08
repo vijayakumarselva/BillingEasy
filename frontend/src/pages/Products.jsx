@@ -40,7 +40,14 @@ export default function Products() {
   const [form, setForm] = useState(empty); const [editId, setEditId] = useState(null);
   const originalUpcRef = useRef(""); // cache the original UPC so saves never accidentally clear it
   const [barcodeProduct, setBarcodeProduct] = useState(null);
-  const [modeFilter, setModeFilter] = useState("all");
+  const [modeFilter, setModeFilter] = useState(() => {
+    // Auto-filter by active business mode (B2B shows only B2B products, etc.)
+    const orgId = localStorage.getItem("be_org_id");
+    const entityId = orgId ? localStorage.getItem(`active_entity_${orgId}`) : null;
+    if (entityId) return "all"; // entity mode — show all, entity scoping done by backend
+    const biz = orgId ? localStorage.getItem(`biz_mode_${orgId}`) : null;
+    return biz || "all";
+  });
   const [upcDlOpen, setUpcDlOpen] = useState(false);
   const [upcSelected, setUpcSelected] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -61,6 +68,18 @@ export default function Products() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [search, modeFilter]);
   useEffect(() => { api.get("/orgs/current/entities").then(r => setEntities(r.data)).catch(() => {}); }, []);
+
+  // When business mode changes (from sidebar switcher), update filter
+  useEffect(() => {
+    const handler = (e) => {
+      const { mode, orgId } = e.detail || {};
+      const entityId = orgId ? localStorage.getItem(`active_entity_${orgId}`) : null;
+      if (entityId) setModeFilter("all");
+      else setModeFilter(mode || "all");
+    };
+    window.addEventListener("be:mode-changed", handler);
+    return () => window.removeEventListener("be:mode-changed", handler);
+  }, []);
 
   const genSku = () => `PRD-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
 
