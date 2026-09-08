@@ -187,8 +187,38 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
 
   // Load open items when party or direction changes
   useEffect(() => {
-    if (open) {
-      setOpenItemsLoading(true);
+    if (!open) return;
+    setOpenItemsLoading(true);
+
+    if (activeDir === "paid") {
+      // Money Out — fetch directly from /purchases (always works) + expenses
+      Promise.all([
+        api.get("/purchases"),
+        api.get("/payments/open-items", { params: { direction: "paid" } }),
+      ]).then(([purRes, expRes]) => {
+        const allPurchases = purRes.data || [];
+        // Filter by party if selected; otherwise show all
+        const filtered = form.party_id
+          ? allPurchases.filter(p => p.party_id === form.party_id)
+          : allPurchases;
+        // Map to same shape as open-items invoices
+        const invoices = filtered
+          .filter(p => (p.status || "").toLowerCase() !== "cancelled")
+          .map(p => ({
+            id: p.id,
+            invoice_no: `PO-${p.bill_no || ""}`,
+            total: p.totals?.grand_total || 0,
+            paid: 0,
+            outstanding: p.totals?.grand_total || 0,
+            date: p.purchase_date || "",
+            party_name: p.party_name || "",
+            item_type: "invoice",
+          }));
+        setOpenItems({ invoices, expenses: expRes.data?.expenses || [] });
+      }).catch(() => setOpenItems({ invoices: [], expenses: [] }))
+        .finally(() => setOpenItemsLoading(false));
+    } else {
+      // Money In — use open-items as before
       const params = { direction: activeDir };
       if (form.party_id) params.party_id = form.party_id;
       api.get("/payments/open-items", { params })
