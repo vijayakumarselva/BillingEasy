@@ -65,12 +65,13 @@ export default function Payments() {
               <tr>
                 <th>Date</th><th>Party</th><th>Mode</th>
                 <th>Bank Account</th><th>Reference</th>
+                <th>{tab === "paid" ? "Linked PO / Bill" : "Linked Invoice"}</th>
                 <th className="text-right">Amount</th><th></th>
               </tr>
             </thead>
             <tbody>
-              {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={7}><Skeleton className="h-8 w-full" /></td></tr>) :
-                list.length === 0 ? <tr><td colSpan={7} className="text-center text-muted-foreground py-8">No payments.</td></tr> :
+              {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={8}><Skeleton className="h-8 w-full" /></td></tr>) :
+                list.length === 0 ? <tr><td colSpan={8} className="text-center text-muted-foreground py-8">No payments.</td></tr> :
                 list.map(p => (
                   <tr key={p.id} data-testid={`payment-row-${p.id}`}>
                     <td className="text-muted-foreground">{fmtDate(p.date)}</td>
@@ -89,13 +90,14 @@ export default function Payments() {
                         </span>
                       ) : <span className="text-muted-foreground text-xs">—</span>}
                     </td>
-                    <td className="text-xs">
-                      <div className="font-mono-fin">{p.reference || "—"}</div>
-                      {p.linked_ref && (
-                        <div className="text-muted-foreground mt-0.5 flex items-center gap-1">
-                          <span className="text-[10px] px-1 rounded bg-muted">{p.linked_type === "expense" ? "Expense" : p.linked_type === "invoice" ? "SO" : "PO"}</span>
-                          {p.linked_ref}
-                        </div>
+                    <td className="text-xs font-mono-fin">{p.reference || "—"}</td>
+                    <td>
+                      {p.linked_ref ? (
+                        <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:border-emerald-800">
+                          🔗 {p.linked_ref}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">—</span>
                       )}
                     </td>
                     <td className="num font-semibold">{inr(p.amount)}</td>
@@ -310,7 +312,8 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
         toast.success("Payment updated");
       } else {
         const { data } = await api.post("/payments", payload);
-        if (data.invoice_auto_closed) toast.success("✅ Payment saved — Invoice marked as Paid!");
+        if (data.purchase_auto_closed) toast.success("✅ Payment saved — Purchase Bill marked as Paid!");
+        else if (data.invoice_auto_closed) toast.success("✅ Payment saved — Invoice marked as Paid!");
         else toast.success("Payment saved");
       }
       // Also create expense if category selected (wallet recharge, logistics)
