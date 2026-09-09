@@ -60,7 +60,7 @@ from launch_offer import (
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
-from ai_helpers import ai_chat_stream, ai_hsn_suggest, ai_categorize_expense, ai_product_suggest, ai_extract_invoice, ai_analyze_bank_vendors, ai_bank_insights, ai_parse_payment
+from ai_helpers import ai_chat_stream, ai_hsn_suggest, ai_categorize_expense, ai_product_suggest, ai_extract_invoice, ai_analyze_bank_vendors, ai_bank_insights, ai_parse_payment, ai_parse_party
 
 # ---------------- Setup ----------------
 MONGO_URL = os.environ["MONGO_URL"]
@@ -2593,6 +2593,15 @@ async def bulk_party_balances(org_id: str, parties: List[dict]) -> Dict[str, flo
             out[r["_id"]] = out.get(r["_id"], 0) - r["total"]
     return {k: round(v, 2) for k, v in out.items()}
 
+
+class PartyParseIn(BaseModel):
+    text: str
+
+@api.post("/parties/ai-parse")
+async def ai_parse_party_endpoint(body: PartyParseIn, ctx=Depends(get_org_ctx)):
+    """Parse natural-language text or OCR into party (supplier/customer) fields using AI."""
+    result = await ai_parse_party(body.text)
+    return result
 
 @api.get("/parties")
 async def list_parties(type: Optional[str] = None, search: Optional[str] = None, ctx=Depends(get_org_ctx)):

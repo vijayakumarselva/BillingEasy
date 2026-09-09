@@ -350,3 +350,37 @@ async def ai_parse_payment(text: str, today: str = "") -> Dict:
         except Exception:
             pass
     return {}
+
+PARTY_PARSE_SYSTEM = """You are a business contact data extractor for an Indian GST billing app.
+Extract supplier/customer details from text or OCR. Return ONLY a JSON object (no explanation):
+{
+  "name": "Company or person name",
+  "phone": "phone number digits only",
+  "email": "email address",
+  "gstin": "15-char GSTIN if present",
+  "pan": "10-char PAN if present",
+  "billing_address": "full address string",
+  "state": "Indian state name",
+  "state_code": "2-digit state code e.g. 33 for Tamil Nadu"
+}
+Omit fields you cannot find. State code must match the GSTIN first 2 digits if GSTIN is present.
+State codes: 01=JK, 02=HP, 03=PB, 04=CH, 05=UT, 06=HR, 07=DL, 08=RJ, 09=UP, 10=BR, 11=SK, 12=AR, 13=NL, 14=MN, 15=MZ, 16=TR, 17=ML, 18=AS, 19=WB, 20=JH, 21=OR, 22=CG, 23=MP, 24=GJ, 25=DD, 26=DNH, 27=MH, 28=AP, 29=KA, 30=GA, 31=LD, 32=KL, 33=TN, 34=PY, 35=AN, 36=TG, 37=AP"""
+
+async def ai_parse_party(text: str) -> Dict:
+    """Parse a natural-language or OCR text into structured party (supplier/customer) fields."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return {}
+    client = anthropic.AsyncAnthropic(api_key=key)
+    msg = await client.messages.create(
+        model=MODEL_NAME, max_tokens=500, system=PARTY_PARSE_SYSTEM,
+        messages=[{"role": "user", "content": text}],
+    )
+    raw = msg.content[0].text.strip()
+    obj_match = re.search(r"\{.*\}", raw, re.S)
+    if obj_match:
+        try:
+            return json.loads(obj_match.group(0))
+        except Exception:
+            pass
+    return {}

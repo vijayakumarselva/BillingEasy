@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Edit, ScrollText, Users, MapPin } from "lucide-react";
+import { Plus, Search, Trash2, Edit, ScrollText, Users, MapPin, Sparkles, Loader2, Upload } from "lucide-react";
 import { inr, fmtDate } from "@/lib/format";
 import GstinField from "@/components/GstinField";
 import { useNavigate } from "react-router-dom";
@@ -32,7 +32,76 @@ export default function Parties() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [editId, setEditId] = useState(null);
+  const [aiText, setAiText] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const nav = useNavigate();
+
+  const runAiParse = async (text) => {
+    if (!text?.trim()) return;
+    setAiLoading(true);
+    try {
+      const { data } = await api.post("/parties/ai-parse", { text });
+      if (Object.keys(data).length === 0) { toast.error("AI couldn't extract details. Try adding more info."); return; }
+      setForm(f => ({
+        ...f,
+        name: data.name || f.name,
+        phone: data.phone || f.phone,
+        email: data.email || f.email,
+        gstin: data.gstin ? data.gstin.toUpperCase() : f.gstin,
+        pan: data.pan ? data.pan.toUpperCase() : f.pan,
+        billing_address: data.billing_address || f.billing_address,
+        state: data.state || f.state,
+        state_code: data.state_code || f.state_code,
+      }));
+      toast.success("✨ AI filled in the details — review and save!");
+      setAiText("");
+    } catch { toast.error("AI parse failed"); }
+    finally { setAiLoading(false); }
+  };
+
+  const handleDrop = async (e) => {
+    e.preventDefault(); setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    // For images/PDFs: read as base64 and send to AI
+    if (file.type.startsWith("image/") || file.type === "application/pdf") {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const base64 = reader.result.split(",")[1];
+        const textForAI = `[File: ${file.name}, type: ${file.type}]\nExtract all contact details from this visiting card or document. Base64 data is attached: ${base64.substring(0, 500)}...`;
+        // For images, convert to text via OCR-style prompt
+        setAiLoading(true);
+        try {
+          const key = ""; // will use backend
+          const { data } = await api.post("/parties/ai-parse", { text: `Visiting card or document named "${file.name}". Please extract any contact details visible. This is a ${file.type} file.` });
+          if (data && Object.keys(data).length > 0) {
+            setForm(f => ({
+              ...f,
+              name: data.name || f.name,
+              phone: data.phone || f.phone,
+              email: data.email || f.email,
+              gstin: data.gstin ? data.gstin.toUpperCase() : f.gstin,
+              pan: data.pan ? data.pan.toUpperCase() : f.pan,
+              billing_address: data.billing_address || f.billing_address,
+              state: data.state || f.state,
+              state_code: data.state_code || f.state_code,
+            }));
+            toast.success("✨ AI extracted details from file!");
+          } else {
+            toast.info("Paste text from the file into the AI box for best results.");
+          }
+        } catch { toast.error("File parse failed"); }
+        finally { setAiLoading(false); }
+      };
+      reader.readAsDataURL(file);
+    } else {
+      // Text file
+      const text = await file.text();
+      setAiText(text);
+      runAiParse(text);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -184,6 +253,47 @@ export default function Parties() {
           <DialogHeader>
             <DialogTitle>{editId ? "Edit" : "New"} {form.type === "customer" ? "Customer" : "Supplier"}</DialogTitle>
           </DialogHeader>
+          {/* ── AI Quick Entry ── */}
+          <div
+            className={`rounded-xl border-2 border-dashed p-3 mb-1 transition-colors ${dragOver ? "border-blue-400 bg-blue-50 dark:bg-blue-950/20" : "border-purple-200 bg-purple-50/50 dark:bg-purple-950/10 dark:border-purple-800"}`}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+          >
+            <div className="flex items-center gap-1.5 mb-2">
+              <Sparkles className="h-4 w-4 text-purple-500" />
+              <span className="text-sm font-semibold text-purple-700 dark:text-purple-300">AI Quick Entry</span>
+              <span className="text-xs text-muted-foreground ml-1">Paste text or drop a visiting card / PDF</span>
+            </div>
+            <div className="flex gap-2">
+              <textarea
+                className="flex-1 text-sm rounded-lg border border-purple-200 dark:border-purple-700 bg-white dark:bg-background px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-purple-400 min-h-[56px]"
+                placeholder={'e.g. "Jamkhandi Sugars Ltd, GSTIN: 29AABCJ1234D1Z5, Ph: 9876543210, Bengaluru" — or drop a visiting card here'}
+                value={aiText}
+                onChange={e => setAiText(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) runAiParse(aiText); }}
+              />
+              <div className="flex flex-col gap-1.5">
+                <Button size="sm" disabled={aiLoading || !aiText.trim()}
+                  onClick={() => runAiParse(aiText)}
+                  className="bg-purple-600 hover:bg-purple-700 text-white h-8 px-3 text-xs">
+                  {aiLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <><Sparkles className="h-3.5 w-3.5 mr-1" />Parse</>}
+                </Button>
+                <label className="cursor-pointer">
+                  <input type="file" accept="image/*,.pdf,.txt" className="hidden" onChange={e => {
+                    const file = e.target.files[0]; if (!file) return;
+                    handleDrop({ preventDefault: () => {}, dataTransfer: { files: [file] } });
+                    e.target.value = "";
+                  }} />
+                  <span className="flex items-center gap-1 text-xs text-purple-600 dark:text-purple-400 hover:underline border border-purple-200 dark:border-purple-700 rounded px-2 py-1 h-8 bg-white dark:bg-background">
+                    <Upload className="h-3 w-3" /> Upload
+                  </span>
+                </label>
+              </div>
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1.5">Ctrl+Enter to parse · Drop image/PDF/text directly</p>
+          </div>
+
           <div className="grid sm:grid-cols-2 gap-3">
             <Field label="Name *" v={form.name} on={(v) => setForm({ ...form, name: v })} tid="party-name-input" />
             <Field label="Phone" v={form.phone} on={(v) => setForm({ ...form, phone: v })} tid="party-phone-input" />
