@@ -317,16 +317,16 @@ export default function Purchases() {
                     <td className="num">{inr(p.totals.cgst + p.totals.sgst + p.totals.igst)}</td>
                     <td className="num font-semibold">{inr(p.totals.grand_total)}</td>
                     <td>
-                      {p.status === "paid" ? (
-                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-violet-100 text-violet-700">✓ Paid</span>
-                      ) : p.status === "cancelled" ? (
+                      {(p.payment_status || p.status) === "cancelled" ? (
                         <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">cancelled</span>
-                      ) : p.due > 0 ? (
-                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-rose-100 text-rose-600">Due {inr(p.due)}</span>
-                      ) : p.paid > 0 ? (
+                      ) : p.payment_status === "paid" || p.status === "paid" ? (
                         <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-violet-100 text-violet-700">✓ Paid</span>
+                      ) : p.payment_status === "partial" ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-700" title={`Paid ${inr(p.paid)} of ${inr(p.totals?.grand_total)}`}>
+                          Partial · due {inr(p.due)}
+                        </span>
                       ) : (
-                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700">Unpaid</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-rose-100 text-rose-600">Unpaid</span>
                       )}
                     </td>
                     <td className="text-right whitespace-nowrap">

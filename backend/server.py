@@ -3305,7 +3305,70 @@ async def list_purchases(ctx=Depends(get_org_ctx)):
     pmap = {p["id"]: p["name"] async for p in db.parties.find(
         {"id": {"$in": party_ids}, "org_id": ctx["org_id"]}, {"_id": 0, "id": 1, "name": 1})}
     for i in items:
-        i["party_name"] = pmap.get(i["party_id"], "—")
+        i["party_name"] = pmap.get(i["party_id"], "\u2014")
+
+    # ── Compute paid / due from payments ──────────────────────────────────────
+    # Directly-linked payments first, then FIFO-allocate any unlinked supplier
+    # payments from the same party across that party's open bills (Tally-style).
+    pur_ids = {i["id"] for i in items}
+    direct_paid = {}
+    unlinked_by_party = {}
+    async for pay in db.payments.find(
+        {"org_id": ctx["org_id"], "direction": "paid"},
+        {"_id": 0, "invoice_id": 1, "party_id": 1, "amount": 1, "date": 1}):
+        amt = pay.get("amount") or 0
+        if amt <= 0:
+            continue
+        inv_id = pay.get("invoice_id")
+        if inv_id and inv_id in pur_ids:
+            direct_paid[inv_id] = direct_paid.get(inv_id, 0) + amt
+        elif not inv_id and pay.get("party_id"):
+            unlinked_by_party.setdefault(pay["party_id"], []).append(pay)
+
+    for i in items:
+        i["paid"] = direct_paid.get(i["id"], 0)
+
+    # FIFO-allocate unlinked payments to that party's oldest open bills
+    for party_id, pays in unlinked_by_party.items():
+        pool = sum(p.get("amount") or 0 for p in pays)
+        if pool <= 0:
+            continue
+        bills = sorted(
+            (b for b in items
+             if b["party_id"] == party_id
+             and (b.get("status") or "").lower() not in ("cancelled",)),
+            key=lambda b: b.get("purchase_date") or "")
+        for b in bills:
+            if pool <= 0:
+                break
+            grand = (b.get("totals") or {}).get("grand_total", 0) or 0
+            remaining = grand - b.get("paid", 0)
+            if remaining <= 0:
+                continue
+            take = min(pool, remaining)
+            b["paid"] = b.get("paid", 0) + take
+            pool -= take
+
+    # Derive payment status + persist a "paid" status back so it sticks
+    for i in items:
+        grand = (i.get("totals") or {}).get("grand_total", 0) or 0
+        paid = i.get("paid", 0)
+        i["due"] = max(grand - paid, 0)
+        cur = (i.get("status") or "").lower()
+        if cur == "cancelled":
+            i["payment_status"] = "cancelled"
+        elif grand > 0 and paid >= grand * 0.99:
+            i["payment_status"] = "paid"
+            if cur != "paid":
+                i["status"] = "paid"
+                await db.purchases.update_one(
+                    {"org_id": ctx["org_id"], "id": i["id"]},
+                    {"$set": {"status": "paid",
+                              "status_changed_at": datetime.utcnow().isoformat()}})
+        elif paid > 0:
+            i["payment_status"] = "partial"
+        else:
+            i["payment_status"] = "unpaid"
     return items
 
 
@@ -3484,7 +3547,39 @@ async def list_payments(direction: Optional[str] = None, ctx=Depends(get_org_ctx
     pmap = {p["id"]: p["name"] async for p in db.parties.find(
         {"id": {"$in": party_ids}, "org_id": ctx["org_id"]}, {"_id": 0, "id": 1, "name": 1})}
     for i in items:
-        i["party_name"] = pmap.get(i["party_id"], "—")
+        i["party_name"] = pmap.get(i["party_id"], "\u2014")
+
+    # ── Backfill the linked PO for money-out payments saved without one ───────
+    # Match on party + amount (within 1%) against that party's purchase bills,
+    # then persist the link so the PO auto-closes on the next payment write.
+    unlinked = [i for i in items
+                if i.get("direction") == "paid"
+                and not i.get("linked_ref")
+                and i.get("party_id") and (i.get("amount") or 0) > 0]
+    if unlinked:
+        cand_parties = list({i["party_id"] for i in unlinked})
+        purchases = await db.purchases.find(
+            {"org_id": ctx["org_id"], "party_id": {"$in": cand_parties},
+             "status": {"$ne": "cancelled"}},
+            {"_id": 0, "id": 1, "bill_no": 1, "party_id": 1, "totals": 1}).to_list(500)
+        used = set()
+        for i in unlinked:
+            amt = i["amount"]
+            for pur in purchases:
+                if pur["id"] in used or pur["party_id"] != i["party_id"]:
+                    continue
+                grand = (pur.get("totals") or {}).get("grand_total", 0) or 0
+                if grand > 0 and abs(grand - amt) / grand <= 0.01:
+                    ref = f"PO-{pur.get('bill_no', '')}"
+                    i["invoice_id"] = pur["id"]
+                    i["linked_ref"] = ref
+                    i["linked_type"] = "invoice"
+                    used.add(pur["id"])
+                    await db.payments.update_one(
+                        {"org_id": ctx["org_id"], "id": i["id"]},
+                        {"$set": {"invoice_id": pur["id"], "linked_ref": ref,
+                                  "linked_type": "invoice"}})
+                    break
     return items
 
 
