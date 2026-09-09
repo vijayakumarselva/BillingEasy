@@ -3514,6 +3514,7 @@ async def create_payment(body: PaymentIn, ctx=Depends(get_org_ctx)):
     await db.payments.insert_one(doc)
     # Auto-mark invoice as paid if total payments now cover it
     if body.invoice_id:
+        # First check sale invoices
         inv = await db.invoices.find_one(org_filter(ctx, {"id": body.invoice_id}), {"_id": 0, "id": 1, "total": 1, "status": 1})
         if inv and inv.get("status") not in ("void", "cancelled", "paid"):
             total_paid = 0
@@ -3525,20 +3526,56 @@ async def create_payment(body: PaymentIn, ctx=Depends(get_org_ctx)):
                     {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
                 )
                 doc["invoice_auto_closed"] = True
-        else:
-            # Check if it's a purchase (PO) instead of a sale invoice
-            pur = await db.purchases.find_one({"org_id": ctx["org_id"], "id": body.invoice_id}, {"_id": 0, "id": 1, "totals": 1, "status": 1})
-            if pur and pur.get("status") not in ("cancelled", "paid"):
-                total_paid = 0
-                async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
-                    total_paid += p["amount"]
-                grand_total = pur.get("totals", {}).get("grand_total", 0)
-                if grand_total > 0 and total_paid >= grand_total * 0.99:
-                    await db.purchases.update_one(
-                        {"org_id": ctx["org_id"], "id": body.invoice_id},
-                        {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
-                    )
-                    doc["purchase_auto_closed"] = True
+        # Always check purchases too (invoice_id may point to a PO)
+        pur = await db.purchases.find_one({"org_id": ctx["org_id"], "id": body.invoice_id}, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1, "status": 1})
+        if pur and pur.get("status") not in ("cancelled", "paid"):
+            total_paid = 0
+            async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
+                total_paid += p["amount"]
+            grand_total = pur.get("totals", {}).get("grand_total", 0)
+            if grand_total > 0 and total_paid >= grand_total * 0.99:
+                await db.purchases.update_one(
+                    {"org_id": ctx["org_id"], "id": body.invoice_id},
+                    {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
+                )
+                doc["purchase_auto_closed"] = True
+                if not doc.get("linked_ref"):
+                    doc["linked_ref"] = f"PO-{pur.get('bill_no', '')}"
+                    doc["linked_type"] = "invoice"
+                    await db.payments.update_one({"id": doc["id"], "org_id": ctx["org_id"]},
+                        {"$set": {"linked_ref": doc["linked_ref"], "linked_type": "invoice"}})
+    elif body.direction == "paid" and body.party_id and body.amount:
+        # No explicit PO linked — try to auto-match by party + amount
+        amt = body.amount
+        q = {"org_id": ctx["org_id"], "party_id": body.party_id,
+             "status": {"$nin": ["cancelled", "paid"]}}
+        best_pur = None
+        async for pur in db.purchases.find(q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1, "status": 1}):
+            grand_total = pur.get("totals", {}).get("grand_total", 0)
+            if grand_total > 0 and abs(grand_total - amt) / grand_total <= 0.01:
+                best_pur = pur
+                break
+        if best_pur:
+            po_id = best_pur["id"]
+            linked_ref = f"PO-{best_pur.get('bill_no', '')}"
+            # Compute total paid so far for this PO
+            total_paid = amt
+            async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": po_id}, {"_id": 0, "amount": 1}):
+                total_paid += p["amount"]
+            grand_total = best_pur.get("totals", {}).get("grand_total", 0)
+            # Link payment to this PO
+            await db.payments.update_one({"id": doc["id"], "org_id": ctx["org_id"]},
+                {"$set": {"invoice_id": po_id, "linked_ref": linked_ref, "linked_type": "invoice"}})
+            doc["invoice_id"] = po_id
+            doc["linked_ref"] = linked_ref
+            doc["linked_type"] = "invoice"
+            # Close PO if fully paid
+            if grand_total > 0 and total_paid >= grand_total * 0.99:
+                await db.purchases.update_one(
+                    {"org_id": ctx["org_id"], "id": po_id},
+                    {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
+                )
+                doc["purchase_auto_closed"] = True
     return strip_id(doc)
 
 
@@ -3566,7 +3603,9 @@ async def update_payment(pid: str, body: PaymentIn, ctx=Depends(get_org_ctx)):
         update["linked_type"] = ""
     await db.payments.update_one(org_filter(ctx, {"id": pid}), {"$set": update})
     # Re-check invoice auto-close
+    result_flags = {}
     if body.invoice_id:
+        # Check sale invoice
         inv = await db.invoices.find_one(org_filter(ctx, {"id": body.invoice_id}), {"_id": 0, "id": 1, "total": 1, "status": 1})
         if inv and inv.get("status") not in ("void", "cancelled", "paid"):
             total_paid = 0
@@ -3577,20 +3616,45 @@ async def update_payment(pid: str, body: PaymentIn, ctx=Depends(get_org_ctx)):
                     org_filter(ctx, {"id": body.invoice_id}),
                     {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
                 )
-        else:
-            # Check if it's a purchase (PO)
-            pur = await db.purchases.find_one({"org_id": ctx["org_id"], "id": body.invoice_id}, {"_id": 0, "id": 1, "totals": 1, "status": 1})
-            if pur and pur.get("status") not in ("cancelled", "paid"):
-                total_paid = 0
-                async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
-                    total_paid += p["amount"]
-                grand_total = pur.get("totals", {}).get("grand_total", 0)
-                if grand_total > 0 and total_paid >= grand_total * 0.99:
-                    await db.purchases.update_one(
-                        {"org_id": ctx["org_id"], "id": body.invoice_id},
-                        {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
-                    )
-    return {"ok": True}
+                result_flags["invoice_auto_closed"] = True
+        # Always check purchase (PO) too
+        pur = await db.purchases.find_one({"org_id": ctx["org_id"], "id": body.invoice_id}, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1, "status": 1})
+        if pur and pur.get("status") not in ("cancelled", "paid"):
+            total_paid = 0
+            async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
+                total_paid += p["amount"]
+            grand_total = pur.get("totals", {}).get("grand_total", 0)
+            if grand_total > 0 and total_paid >= grand_total * 0.99:
+                await db.purchases.update_one(
+                    {"org_id": ctx["org_id"], "id": body.invoice_id},
+                    {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
+                )
+                result_flags["purchase_auto_closed"] = True
+    elif body.direction == "paid" and body.party_id and body.amount:
+        # No PO linked — auto-match by party + amount
+        amt = body.amount
+        q = {"org_id": ctx["org_id"], "party_id": body.party_id, "status": {"$nin": ["cancelled", "paid"]}}
+        best_pur = None
+        async for pur in db.purchases.find(q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1}):
+            grand_total = pur.get("totals", {}).get("grand_total", 0)
+            if grand_total > 0 and abs(grand_total - amt) / grand_total <= 0.01:
+                best_pur = pur; break
+        if best_pur:
+            po_id = best_pur["id"]
+            linked_ref = f"PO-{best_pur.get('bill_no', '')}"
+            total_paid = amt
+            async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": po_id}, {"_id": 0, "amount": 1}):
+                total_paid += p["amount"]
+            grand_total = best_pur.get("totals", {}).get("grand_total", 0)
+            await db.payments.update_one({"id": pid, "org_id": ctx["org_id"]},
+                {"$set": {"invoice_id": po_id, "linked_ref": linked_ref, "linked_type": "invoice"}})
+            if grand_total > 0 and total_paid >= grand_total * 0.99:
+                await db.purchases.update_one(
+                    {"org_id": ctx["org_id"], "id": po_id},
+                    {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
+                )
+                result_flags["purchase_auto_closed"] = True
+    return {"ok": True, **result_flags}
 
 
 @api.delete("/payments/{pid}")

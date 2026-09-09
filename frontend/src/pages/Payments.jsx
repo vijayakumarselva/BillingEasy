@@ -308,8 +308,10 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
         bank_account_id: form.bank_account_id === "__none__" ? "" : form.bank_account_id,
       };
       if (editId) {
-        await api.patch(`/payments/${editId}`, payload);
-        toast.success("Payment updated");
+        const { data: editData } = await api.patch(`/payments/${editId}`, payload);
+        if (editData?.purchase_auto_closed) toast.success("✅ Payment updated — Purchase Bill marked as Paid!");
+        else if (editData?.invoice_auto_closed) toast.success("✅ Payment updated — Invoice marked as Paid!");
+        else toast.success("Payment updated");
       } else {
         const { data } = await api.post("/payments", payload);
         if (data.purchase_auto_closed) toast.success("✅ Payment saved — Purchase Bill marked as Paid!");
