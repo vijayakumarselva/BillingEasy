@@ -9,7 +9,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Ban, Eye, FileDown, Share2, ChevronRight, FileText, Pencil, ChevronDown } from "lucide-react";
+import { Plus, Search, Ban, Eye, FileDown, Share2, ChevronRight, FileText, Pencil, ChevronDown, IndianRupee } from "lucide-react";
+import { PaymentDialog } from "@/pages/Payments";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { inr, fmtDate } from "@/lib/format";
 import { openExternalUrl, downloadFile } from "@/lib/mobile";
@@ -30,6 +31,8 @@ export default function Sales() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [receiveTarget, setReceiveTarget] = useState(null); // invoice to record a receipt against
+  const canReceive = (inv) => inv.type === "sale" && inv.due > 0.5 && !["cancelled", "void", "draft"].includes(inv.status);
   const nav = useNavigate();
 
   const load = async () => {
@@ -171,6 +174,12 @@ export default function Sales() {
                   }
                 </div>
                 <div className="flex flex-col gap-1 shrink-0">
+                  {canReceive(inv) && (
+                    <button onClick={(e) => { e.stopPropagation(); setReceiveTarget(inv); }} title="Receive payment"
+                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-emerald-50 hover:bg-emerald-100">
+                      <IndianRupee className="w-3.5 h-3.5 text-emerald-600" />
+                    </button>
+                  )}
                   <button onClick={(e) => { e.stopPropagation(); downloadPdf(inv); }}
                     className="w-8 h-8 flex items-center justify-center rounded-lg bg-muted hover:bg-muted/80">
                     <FileDown className="w-3.5 h-3.5 text-muted-foreground" />
@@ -240,6 +249,13 @@ export default function Sales() {
                       )}
                     </td>
                     <td className="text-right whitespace-nowrap">
+                      {canReceive(inv) && (
+                        <Button size="icon" variant="ghost" title={`Receive payment — balance ${inr(inv.due)}`}
+                          onClick={() => setReceiveTarget(inv)}
+                          className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50">
+                          <IndianRupee className="h-4 w-4" />
+                        </Button>
+                      )}
                       <Button size="icon" variant="ghost" onClick={() => nav(`/sales/${inv.id}`)} title="View"><Eye className="h-4 w-4" /></Button>
                       {inv.status !== "cancelled" && inv.status !== "void" && (
                         <Button size="icon" variant="ghost" onClick={() => nav(`/sales/${inv.id}/edit`)} title="Edit"><Pencil className="h-4 w-4 text-blue-500" /></Button>
@@ -270,6 +286,25 @@ export default function Sales() {
           </table>
         </div>
       </Card>
+
+      {receiveTarget && (
+        <PaymentDialog
+          open={!!receiveTarget}
+          onClose={() => setReceiveTarget(null)}
+          direction="received"
+          defaultPartyId={receiveTarget.party_id}
+          defaultAmount={receiveTarget.due}
+          initialData={{
+            direction: "received",
+            party_id: receiveTarget.party_id,
+            amount: receiveTarget.due,
+            invoice_id: receiveTarget.id,
+            linked_type: "invoice",
+            linked_ref: receiveTarget.invoice_no,
+          }}
+          onSaved={() => { setReceiveTarget(null); load(); }}
+        />
+      )}
     </div>
   );
 }

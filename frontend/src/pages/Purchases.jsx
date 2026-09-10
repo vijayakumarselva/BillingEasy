@@ -434,16 +434,16 @@ export default function Purchases() {
           onClose={() => setPayTarget(null)}
           direction="paid"
           defaultPartyId={payTarget.party_id}
-          defaultAmount={payTarget.totals?.grand_total || 0}
+          defaultAmount={payTarget.due ?? (payTarget.totals?.grand_total || 0)}
           initialData={{
             direction: "paid",
             party_id: payTarget.party_id,
-            amount: payTarget.totals?.grand_total || 0,
+            amount: payTarget.due ?? (payTarget.totals?.grand_total || 0),
             invoice_id: payTarget.id,
             linked_type: "invoice",
             linked_ref: payTarget.po_no || `PO-${payTarget.bill_no || ""}`,
           }}
-          onSaved={() => { setPayTarget(null); load(); toast.success("Payment recorded"); }}
+          onSaved={() => { setPayTarget(null); load(); }}
         />
       )}
 

@@ -3697,12 +3697,13 @@ async def create_payment(body: PaymentIn, ctx=Depends(get_org_ctx)):
     # Auto-mark invoice as paid if total payments now cover it
     if body.invoice_id:
         # First check sale invoices
-        inv = await db.invoices.find_one(org_filter(ctx, {"id": body.invoice_id}), {"_id": 0, "id": 1, "total": 1, "status": 1})
+        inv = await db.invoices.find_one(org_filter(ctx, {"id": body.invoice_id}), {"_id": 0, "id": 1, "totals": 1, "status": 1})
         if inv and inv.get("status") not in ("void", "cancelled", "paid"):
             total_paid = 0
             async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
                 total_paid += p["amount"]
-            if total_paid >= inv.get("total", 0) * 0.99:
+            inv_total = (inv.get("totals") or {}).get("grand_total", 0) or 0
+            if inv_total > 0 and total_paid >= inv_total * 0.99:
                 await db.invoices.update_one(
                     org_filter(ctx, {"id": body.invoice_id}),
                     {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
@@ -3788,12 +3789,13 @@ async def update_payment(pid: str, body: PaymentIn, ctx=Depends(get_org_ctx)):
     result_flags = {}
     if body.invoice_id:
         # Check sale invoice
-        inv = await db.invoices.find_one(org_filter(ctx, {"id": body.invoice_id}), {"_id": 0, "id": 1, "total": 1, "status": 1})
+        inv = await db.invoices.find_one(org_filter(ctx, {"id": body.invoice_id}), {"_id": 0, "id": 1, "totals": 1, "status": 1})
         if inv and inv.get("status") not in ("void", "cancelled", "paid"):
             total_paid = 0
             async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
                 total_paid += p["amount"]
-            if total_paid >= inv.get("total", 0) * 0.99:
+            inv_total = (inv.get("totals") or {}).get("grand_total", 0) or 0
+            if inv_total > 0 and total_paid >= inv_total * 0.99:
                 await db.invoices.update_one(
                     org_filter(ctx, {"id": body.invoice_id}),
                     {"$set": {"status": "paid", "status_changed_at": datetime.utcnow().isoformat()}}
@@ -3859,7 +3861,11 @@ async def get_open_items(party_id: str = Query(None), direction: str = Query("re
         inv_q = {**org_filter(ctx), "type": "sale",
                   "status": {"$in": ["finalized", "dispatched", "delivered"]}}
         if party_id: inv_q["party_id"] = party_id
-        invoices = await db.invoices.find(inv_q, {"_id": 0, "id": 1, "invoice_no": 1, "total": 1, "date": 1, "party_name": 1}).sort("date", -1).to_list(100)
+        invoices = await db.invoices.find(inv_q, {"_id": 0, "id": 1, "invoice_no": 1, "totals": 1, "invoice_date": 1,
+                                                  "party_id": 1, "po_number": 1}).sort("invoice_date", 1).to_list(300)
+        pnames = {pp["id"]: pp["name"] async for pp in db.parties.find(
+            {"org_id": ctx["org_id"], "id": {"$in": list({i["party_id"] for i in invoices})}},
+            {"_id": 0, "id": 1, "name": 1})}
         inv_ids = [i["id"] for i in invoices]
         paid_map = {}
         if inv_ids:
@@ -3869,10 +3875,16 @@ async def get_open_items(party_id: str = Query(None), direction: str = Query("re
             ]):
                 paid_map[p["_id"]] = p["paid"]
         for inv in invoices:
-            paid = paid_map.get(inv["id"], 0)
-            outstanding = round(inv.get("total", 0) - paid, 2)
+            paid = round(paid_map.get(inv["id"], 0), 2)
+            total = (inv.get("totals") or {}).get("grand_total", 0) or 0
+            outstanding = round(total - paid, 2)
             if outstanding > 0.5:
-                result_invoices.append({**inv, "paid": paid, "outstanding": outstanding, "item_type": "invoice"})
+                result_invoices.append({
+                    "id": inv["id"], "invoice_no": inv.get("invoice_no", ""),
+                    "total": total, "paid": paid, "outstanding": outstanding,
+                    "date": inv.get("invoice_date", ""), "party_id": inv.get("party_id"),
+                    "party_name": pnames.get(inv.get("party_id"), ""),
+                    "customer_po": inv.get("po_number", ""), "item_type": "invoice"})
     else:
         # Money Out — link to Purchase bills (db.purchases collection)
         # Query org-wide (no biz_type scoping) — payments cross business modes
@@ -3986,19 +3998,38 @@ async def ai_parse_payment_endpoint(body: PaymentParseIn, ctx=Depends(get_org_ct
                 # Money in — look for sale invoices
                 inv_q = {"org_id": ctx["org_id"], "type": "sale",
                          "status": {"$in": ["finalized", "dispatched", "delivered"]}}
-                async for inv in db.invoices.find(inv_q, {"_id": 0, "id": 1, "invoice_no": 1,
-                        "total": 1, "date": 1, "party_name": 1}).sort("date", -1).limit(200):
-                    total = inv.get("total", 0)
-                    if total and abs(total - parsed_amount) / max(total, 1) <= 0.02:
-                        p_name = inv.get("party_name", "")
-                        score = 2 if parsed_party and parsed_party in p_name.lower() else 1
-                        if not suggested_link or score > suggested_link.get("score", 0):
-                            suggested_link = {
-                                "id": inv["id"], "invoice_no": inv.get("invoice_no", ""),
-                                "total": total, "outstanding": total,
-                                "date": inv.get("date", ""),
-                                "party_name": p_name, "item_type": "invoice", "score": score,
-                            }
+                cands = await db.invoices.find(inv_q, {"_id": 0, "id": 1, "invoice_no": 1, "totals": 1,
+                        "invoice_date": 1, "party_id": 1}).sort("invoice_date", 1).to_list(300)
+                paid_map = {}
+                if cands:
+                    async for r in db.payments.aggregate([
+                        {"$match": {"org_id": ctx["org_id"], "invoice_id": {"$in": [c["id"] for c in cands]}}},
+                        {"$group": {"_id": "$invoice_id", "paid": {"$sum": "$amount"}}}]):
+                        paid_map[r["_id"]] = r["paid"]
+                    names = {pp["id"]: pp["name"] async for pp in db.parties.find(
+                        {"org_id": ctx["org_id"], "id": {"$in": list({c["party_id"] for c in cands})}},
+                        {"_id": 0, "id": 1, "name": 1})}
+                for inv in cands:
+                    total = (inv.get("totals") or {}).get("grand_total", 0) or 0
+                    outstanding = round(total - paid_map.get(inv["id"], 0), 2)
+                    if outstanding <= 0.5:
+                        continue
+                    # A receipt can settle the balance in full, or be a part-payment of it
+                    exact = abs(outstanding - parsed_amount) / max(outstanding, 1) <= 0.02
+                    if not exact and parsed_amount > outstanding * 1.02:
+                        continue
+                    p_name = names.get(inv.get("party_id"), "")
+                    party_hit = bool(parsed_party and parsed_party in p_name.lower())
+                    if not exact and not party_hit:
+                        continue  # part-payments only suggested when the customer matches
+                    score = (2 if party_hit else 0) + (1 if exact else 0)
+                    if not suggested_link or score > suggested_link.get("score", 0):
+                        suggested_link = {
+                            "id": inv["id"], "invoice_no": inv.get("invoice_no", ""),
+                            "total": total, "outstanding": outstanding,
+                            "date": inv.get("invoice_date", ""),
+                            "party_name": p_name, "item_type": "invoice", "score": score,
+                        }
     except Exception:
         pass  # suggestion is best-effort
 
