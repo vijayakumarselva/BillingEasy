@@ -60,7 +60,7 @@ from launch_offer import (
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
-from ai_helpers import ai_chat_stream, ai_hsn_suggest, ai_categorize_expense, ai_product_suggest, ai_extract_invoice, ai_analyze_bank_vendors, ai_bank_insights, ai_parse_payment, ai_parse_party
+from ai_helpers import ai_chat_stream, ai_hsn_suggest, ai_categorize_expense, ai_product_suggest, ai_extract_invoice, ai_analyze_bank_vendors, ai_bank_insights, ai_parse_payment, ai_parse_party, ai_extract_bill_ref
 
 # ---------------- Setup ----------------
 MONGO_URL = os.environ["MONGO_URL"]
@@ -3515,7 +3515,8 @@ async def update_purchase(pid: str, body: PurchaseIn, ctx=Depends(require_permis
 @api.post("/purchases/{pid}/attach-invoice")
 async def attach_vendor_invoice(pid: str, file: UploadFile = File(...), ctx=Depends(require_permission("purchase.create"))):
     """Upload vendor invoice PDF or image and attach it to a purchase bill."""
-    p = await db.purchases.find_one(org_filter(ctx, {"id": pid}), {"_id": 0, "id": 1})
+    p = await db.purchases.find_one(org_filter(ctx, {"id": pid}),
+                                    {"_id": 0, "id": 1, "bill_no": 1, "totals": 1, "party_snapshot": 1})
     if not p: raise HTTPException(404, "Purchase not found")
     if file.size and file.size > 5 * 1024 * 1024:
         raise HTTPException(413, "File must be under 5 MB")
@@ -3530,7 +3531,50 @@ async def attach_vendor_invoice(pid: str, file: UploadFile = File(...), ctx=Depe
         org_filter(ctx, {"id": pid}),
         {"$set": {"vendor_invoice_b64": data_uri, "vendor_invoice_name": file.filename or "invoice", "updated_at": now_iso()}}
     )
-    return {"ok": True, "filename": file.filename}
+    result = {"ok": True, "filename": file.filename, "bill_no_updated": False, "warnings": []}
+
+    # Read the vendor's real invoice number off the file and put it on the PO.
+    # Best-effort: the attachment is already saved, so AI problems never fail the upload.
+    try:
+        ref = await ai_extract_bill_ref(content, mime)
+    except Exception:
+        logging.exception("bill ref extraction failed for purchase %s", pid)
+        ref = {}
+    bill_no = str(ref.get("bill_no") or "").strip()
+    result["extracted"] = ref
+    if bill_no:
+        old = str(p.get("bill_no") or "")
+        update = {"vendor_invoice_no": bill_no}
+        if ref.get("bill_date"):
+            update["vendor_invoice_date"] = ref["bill_date"]
+        if bill_no != old:
+            dup = await db.purchases.find_one(
+                {"org_id": ctx["org_id"], "id": {"$ne": pid}, "bill_no": bill_no,
+                 "party_id": (p.get("party_snapshot") or {}).get("id"), "status": {"$ne": "cancelled"}},
+                {"_id": 0, "po_no": 1})
+            if dup:
+                result["warnings"].append(
+                    f"Invoice {bill_no} is already recorded on {dup.get('po_no') or 'another purchase'} for this supplier — possible duplicate bill")
+            update["bill_no"] = bill_no
+            update["bill_no_entered"] = old  # keep what the user originally typed
+            result.update(bill_no_updated=True, old_bill_no=old)
+        result["bill_no"] = bill_no
+        await db.purchases.update_one(org_filter(ctx, {"id": pid}), {"$set": update})
+    else:
+        result["warnings"].append("Could not read the invoice number from the file — please update Bill # manually")
+
+    grand = (p.get("totals") or {}).get("grand_total", 0) or 0
+    try:
+        ext_total = float(ref.get("grand_total") or 0)
+    except (TypeError, ValueError):
+        ext_total = 0
+    if grand and ext_total and abs(ext_total - grand) > max(1, grand * 0.01):
+        result["warnings"].append(f"Invoice total ₹{ext_total:,.2f} does not match PO total ₹{grand:,.2f}")
+    po_gstin = ((p.get("party_snapshot") or {}).get("gstin") or "").upper()
+    ext_gstin = str(ref.get("supplier_gstin") or "").upper()
+    if po_gstin and ext_gstin and po_gstin != ext_gstin:
+        result["warnings"].append(f"Supplier GSTIN on invoice ({ext_gstin}) differs from the PO supplier ({po_gstin})")
+    return result
 
 
 @api.delete("/purchases/{pid}/attach-invoice")

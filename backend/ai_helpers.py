@@ -401,3 +401,39 @@ async def ai_parse_party(text: str = "", file_b64: str = "", media_type: str = "
         except Exception:
             pass
     return {}
+
+
+BILL_REF_SYSTEM = """You read Indian GST purchase invoices / vendor bills.
+Return ONLY a JSON object, no explanation:
+{"bill_no": "the vendor's invoice / bill number exactly as printed",
+ "bill_date": "YYYY-MM-DD",
+ "supplier_gstin": "15-char GSTIN of the SELLER (not the buyer)",
+ "grand_total": 0}
+Use the number labelled Invoice No / Bill No / Tax Invoice No — never the e-way bill,
+PO, challan, order, or IRN/ack number. Use "" or 0 for anything not visible."""
+
+
+async def ai_extract_bill_ref(raw: bytes, media_type: str) -> Dict[str, Any]:
+    """Pull just the invoice number, date, seller GSTIN and total from a vendor bill file."""
+    import base64
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key or not raw:
+        return {}
+    media_type = (media_type or "").lower()
+    b64 = base64.standard_b64encode(raw).decode()
+    if media_type == "application/pdf":
+        block = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}}
+    else:
+        if media_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+            media_type = "image/jpeg"
+        block = {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}}
+    client = anthropic.AsyncAnthropic(api_key=key)
+    msg = await client.messages.create(
+        model=MODEL_NAME, max_tokens=300, system=BILL_REF_SYSTEM,
+        messages=[{"role": "user", "content": [block, {"type": "text", "text": "Extract the fields."}]}],
+    )
+    m = re.search(r"\{.*\}", msg.content[0].text, re.S)
+    try:
+        return json.loads(m.group(0)) if m else {}
+    except Exception:
+        return {}

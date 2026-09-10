@@ -198,8 +198,18 @@ export default function Purchases() {
     fd.append("file", file);
     setAttachUploading(true);
     try {
-      await api.post(`/purchases/${purchaseId}/attach-invoice`, fd, { headers: { "Content-Type": "multipart/form-data" } });
-      toast.success(`Vendor invoice uploaded ✓ (${file.name})`);
+      const { data } = await api.post(`/purchases/${purchaseId}/attach-invoice`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+      if (data?.bill_no_updated) {
+        toast.success(`Invoice uploaded — Bill # updated to ${data.bill_no}`, {
+          description: data.old_bill_no ? `Was "${data.old_bill_no}" · read from ${file.name}` : `Read from ${file.name}`,
+          duration: 7000,
+        });
+      } else if (data?.bill_no) {
+        toast.success(`Invoice uploaded ✓ — Bill # ${data.bill_no} confirmed`);
+      } else {
+        toast.success(`Vendor invoice uploaded ✓ (${file.name})`);
+      }
+      (data?.warnings || []).forEach(w => toast.warning(w, { duration: 10000 }));
       setAttachTarget(null);
       load();
     } catch (e) { toast.error(e?.response?.data?.detail || "Upload failed"); }
@@ -462,7 +472,7 @@ export default function Purchases() {
             {attachUploading ? (
               <>
                 <Loader2 className="h-10 w-10 text-indigo-500 animate-spin" />
-                <span className="text-sm font-medium">Uploading…</span>
+                <span className="text-sm font-medium">Uploading & reading invoice number…</span>
               </>
             ) : (
               <>
@@ -472,7 +482,7 @@ export default function Purchases() {
               </>
             )}
           </label>
-          <p className="text-[11px] text-muted-foreground">Tip: you can also drop a file directly onto a purchase row.</p>
+          <p className="text-[11px] text-muted-foreground">The invoice number is read from the file and replaces the Bill # on this PO. You can also drop a file directly onto a purchase row.</p>
           <DialogFooter>
             <Button variant="outline" disabled={attachUploading} onClick={() => setAttachTarget(null)}>Cancel</Button>
           </DialogFooter>
