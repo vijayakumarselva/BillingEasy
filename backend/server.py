@@ -2705,19 +2705,8 @@ async def create_product(body: ProductIn, ctx=Depends(get_org_ctx)):
     return strip_id(doc)
 
 
-@api.put("/products/{pid}")
-async def update_product(pid: str, body: ProductIn, ctx=Depends(get_org_ctx)):
-    await ensure_active_subscription(ctx)
-    update_data = body.model_dump()
-    # Never overwrite an existing UPC with empty — UPC is permanent once set
-    if not update_data.get("upc"):
-        existing = await db.products.find_one(org_filter(ctx, {"id": pid}), {"_id": 0, "upc": 1})
-        if existing and existing.get("upc"):
-            update_data["upc"] = existing["upc"]
-    await db.products.update_one(org_filter(ctx, {"id": pid}), {"$set": update_data})
-    return await db.products.find_one(org_filter(ctx, {"id": pid}), {"_id": 0})
-
-
+# Registered before /products/{pid}: FastAPI matches routes in order, so
+# otherwise 'bulk-modes' is captured as a product id and fails validation (422).
 class BulkModesIn(BaseModel):
     ids: List[str]
     modes: List[str]
@@ -2733,6 +2722,19 @@ async def bulk_update_product_modes(body: BulkModesIn, ctx=Depends(get_org_ctx))
         {"$set": {"modes": modes, "updated_at": now_iso()}}
     )
     return {"ok": True, "updated": result.modified_count}
+
+
+@api.put("/products/{pid}")
+async def update_product(pid: str, body: ProductIn, ctx=Depends(get_org_ctx)):
+    await ensure_active_subscription(ctx)
+    update_data = body.model_dump()
+    # Never overwrite an existing UPC with empty — UPC is permanent once set
+    if not update_data.get("upc"):
+        existing = await db.products.find_one(org_filter(ctx, {"id": pid}), {"_id": 0, "upc": 1})
+        if existing and existing.get("upc"):
+            update_data["upc"] = existing["upc"]
+    await db.products.update_one(org_filter(ctx, {"id": pid}), {"$set": update_data})
+    return await db.products.find_one(org_filter(ctx, {"id": pid}), {"_id": 0})
 
 
 @api.delete("/products/{pid}")

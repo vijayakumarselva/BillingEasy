@@ -39,6 +39,14 @@ async function tryRefresh() {
 api.interceptors.response.use(
   (r) => r,
   async (err) => {
+    // FastAPI 422s send `detail` as an array of {type, loc, msg, input} objects.
+    // Pages pass `detail` straight into toast.error(), and rendering an object
+    // crashes React (error #31, blank screen) — so always hand pages a string.
+    const data = err?.response?.data;
+    if (data && data.detail != null && typeof data.detail !== "string") {
+      data.detail_raw = data.detail;
+      data.detail = formatApiErrorDetail(data.detail);
+    }
     const status = err?.response?.status;
     const original = err.config || {};
     if (status === 401 && !original._retried && !(original.url || "").includes("/auth/")) {
