@@ -176,6 +176,9 @@ export default function Purchases() {
   const [payTarget, setPayTarget] = useState(null); // purchase to record payment against
   const [attachTarget, setAttachTarget] = useState(null); // {id, name} of purchase to attach vendor invoice
   const [viewAttachment, setViewAttachment] = useState(null); // {b64, name} to view
+  const [attachDrag, setAttachDrag] = useState(false);
+  const [attachUploading, setAttachUploading] = useState(false);
+  const [rowDragId, setRowDragId] = useState(null);
   const cancelPurchase = async (id) => {
     try {
       await api.patch(`/purchases/${id}/cancel`);
@@ -186,13 +189,21 @@ export default function Purchases() {
   const openEdit = (p) => { setPrefill(null); setEditPurchase(p); setOpen(true); };
 
   const attachVendorInvoice = async (purchaseId, file) => {
+    if (!file) return;
+    if (!(file.type === "application/pdf" || file.type.startsWith("image/"))) {
+      toast.error("Only PDF or image files are supported"); return;
+    }
+    if (file.size > 5 * 1024 * 1024) { toast.error("File too large (max 5 MB)"); return; }
     const fd = new FormData();
     fd.append("file", file);
+    setAttachUploading(true);
     try {
       await api.post(`/purchases/${purchaseId}/attach-invoice`, fd, { headers: { "Content-Type": "multipart/form-data" } });
-      toast.success("Vendor invoice attached ✓");
+      toast.success(`Vendor invoice uploaded ✓ (${file.name})`);
+      setAttachTarget(null);
       load();
-    } catch { toast.error("Upload failed"); }
+    } catch (e) { toast.error(e?.response?.data?.detail || "Upload failed"); }
+    finally { setAttachUploading(false); }
   };
 
   const removeAttachment = async (purchaseId) => {
@@ -302,10 +313,14 @@ export default function Purchases() {
           <table className="app-table">
             <thead><tr><th>Bill #</th><th>Supplier</th><th>Date</th><th>Warehouse</th><th>Type</th><th className="text-right">Taxable</th><th className="text-right">GST</th><th className="text-right">Total</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={8}><Skeleton className="h-8 w-full" /></td></tr>) :
-                list.length === 0 ? <tr><td colSpan={8} className="text-center text-muted-foreground py-8">No purchases yet.</td></tr> :
+              {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={10}><Skeleton className="h-8 w-full" /></td></tr>) :
+                list.length === 0 ? <tr><td colSpan={10} className="text-center text-muted-foreground py-8">No purchases yet.</td></tr> :
                 list.map(p => (
-                  <tr key={p.id} data-testid={`purchase-row-${p.bill_no}`}>
+                  <tr key={p.id} data-testid={`purchase-row-${p.bill_no}`}
+                    className={rowDragId === p.id ? "outline outline-2 outline-dashed outline-indigo-400 bg-indigo-50/60" : ""}
+                    onDragOver={(e) => { if (p.status === "cancelled" || !e.dataTransfer.types.includes("Files")) return; e.preventDefault(); setRowDragId(p.id); }}
+                    onDragLeave={() => setRowDragId(null)}
+                    onDrop={(e) => { if (p.status === "cancelled") return; e.preventDefault(); setRowDragId(null); attachVendorInvoice(p.id, e.dataTransfer.files[0]); }}>
                     <td className="font-mono-fin text-blue-600 font-medium">{p.bill_no}</td>
                     <td className="font-medium">{p.party_name}</td>
                     <td className="text-muted-foreground">{fmtDate(p.purchase_date)}</td>
@@ -345,9 +360,9 @@ export default function Purchases() {
                           </Button>
                         </span>
                       ) : (
-                        <Button size="icon" variant="ghost" title="Attach vendor invoice (PDF/image)"
-                          onClick={() => { const inp = document.createElement("input"); inp.type="file"; inp.accept="application/pdf,image/*"; inp.onchange = e => { if(e.target.files[0]) attachVendorInvoice(p.id, e.target.files[0]); }; inp.click(); }}>
-                          <Paperclip className="h-4 w-4 text-muted-foreground" />
+                        <Button size="icon" variant="ghost" title="Upload vendor invoice (drag & drop or browse)"
+                          onClick={() => setAttachTarget({ id: p.id, name: p.party_name, bill_no: p.bill_no })}>
+                          <Upload className="h-4 w-4 text-indigo-500" />
                         </Button>
                       )}
                       {p.status !== "cancelled" && (
@@ -418,6 +433,48 @@ export default function Purchases() {
           onSaved={() => { setPayTarget(null); load(); toast.success("Payment recorded"); }}
         />
       )}
+
+      {/* Vendor invoice upload (drag & drop) */}
+      <Dialog open={!!attachTarget} onOpenChange={(o) => { if (!o && !attachUploading) { setAttachTarget(null); setAttachDrag(false); } }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Upload className="h-4 w-4 text-indigo-500" />
+              Upload Vendor Invoice
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground -mt-2">
+            {attachTarget?.name} · Bill #{attachTarget?.bill_no}
+          </p>
+          <label
+            className={`flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-6 py-10 text-center cursor-pointer transition-colors ${
+              attachDrag ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/30" : "border-muted-foreground/30 hover:border-indigo-400 hover:bg-muted/40"
+            } ${attachUploading ? "pointer-events-none opacity-70" : ""}`}
+            onDragOver={(e) => { e.preventDefault(); setAttachDrag(true); }}
+            onDragLeave={() => setAttachDrag(false)}
+            onDrop={(e) => { e.preventDefault(); setAttachDrag(false); attachVendorInvoice(attachTarget.id, e.dataTransfer.files[0]); }}
+          >
+            <input type="file" accept="application/pdf,image/*" className="hidden" disabled={attachUploading}
+              onChange={(e) => { attachVendorInvoice(attachTarget.id, e.target.files[0]); e.target.value = ""; }} />
+            {attachUploading ? (
+              <>
+                <Loader2 className="h-10 w-10 text-indigo-500 animate-spin" />
+                <span className="text-sm font-medium">Uploading…</span>
+              </>
+            ) : (
+              <>
+                <Upload className={`h-10 w-10 ${attachDrag ? "text-indigo-600" : "text-muted-foreground"}`} />
+                <span className="text-sm font-semibold">{attachDrag ? "Drop to upload" : "Drag & drop the invoice here"}</span>
+                <span className="text-xs text-muted-foreground">or <span className="text-indigo-600 font-medium underline">browse files</span> · PDF, JPG, PNG · max 5 MB</span>
+              </>
+            )}
+          </label>
+          <p className="text-[11px] text-muted-foreground">Tip: you can also drop a file directly onto a purchase row.</p>
+          <DialogFooter>
+            <Button variant="outline" disabled={attachUploading} onClick={() => setAttachTarget(null)}>Cancel</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Vendor invoice viewer */}
       <Dialog open={!!viewAttachment} onOpenChange={() => setViewAttachment(null)}>
