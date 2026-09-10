@@ -205,13 +205,15 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
           : allPurchases;
         // Map to same shape as open-items invoices — exclude paid and cancelled
         const invoices = filtered
-          .filter(p => !["cancelled", "paid"].includes((p.status || "").toLowerCase()))
+          .filter(p => (p.status || "").toLowerCase() !== "cancelled"
+            && ((p.payment_status || p.status || "").toLowerCase() !== "paid" || p.id === form.invoice_id))
           .map(p => ({
             id: p.id,
-            invoice_no: `PO-${p.bill_no || ""}`,
+            invoice_no: p.po_no || `PO-${p.bill_no || ""}`,
+            bill_no: p.bill_no || "",
             total: p.totals?.grand_total || 0,
-            paid: 0,
-            outstanding: p.totals?.grand_total || 0,
+            paid: p.paid || 0,
+            outstanding: p.due ?? (p.totals?.grand_total || 0),
             date: p.purchase_date || "",
             party_name: p.party_name || "",
             item_type: "invoice",
@@ -505,6 +507,7 @@ export function PaymentDialog({ open, onClose, direction = "received", onSaved, 
                             </span>
                           </div>
                           <div className="text-muted-foreground mt-0.5">
+                            {item.bill_no && <span>Bill #{item.bill_no} · </span>}
                             {item.party_name && <span>{item.party_name} · </span>}
                             {item.date}
                             {item.paid > 0 && <span className="ml-1 text-amber-600">· Partial ₹{item.paid?.toLocaleString("en-IN")} paid</span>}

@@ -574,6 +574,11 @@ async def next_invoice_number(org_id: str, prefix: str = "INV") -> str:
     return f"{prefix}-{year}-{(res['seq'] if res else 1):04d}"
 
 
+def po_label(pur: dict) -> str:
+    """Display number for a purchase: system PO number, falling back to the supplier bill no."""
+    return pur.get("po_no") or po_label(pur)
+
+
 # ---------------- AUTH ----------------
 @api.post("/auth/register")
 async def register(body: RegisterIn, request: Request, response: Response):
@@ -3233,6 +3238,7 @@ If a field is not visible, leave it empty string or 0. Return ONLY the JSON."""
     purchase_doc = {
         "id": str(uuid.uuid4()), "org_id": target_org_id,
         "party_id": party["id"], "party_snapshot": party,
+        "po_no": await next_invoice_number(target_org_id, "PO"),
         "bill_no": bill_no, "purchase_date": bill_date,
         "items": totals["items"],
         "totals": {k: v for k, v in totals.items() if k != "items"},
@@ -3315,6 +3321,20 @@ async def list_purchases(ctx=Depends(get_org_ctx)):
         {"id": {"$in": party_ids}, "org_id": ctx["org_id"]}, {"_id": 0, "id": 1, "name": 1})}
     for i in items:
         i["party_name"] = pmap.get(i["party_id"], "\u2014")
+
+    # Assign system PO numbers to purchases created before PO numbering existed
+    missing = sorted((i for i in items if not i.get("po_no")),
+                     key=lambda i: (i.get("purchase_date") or "", i.get("created_at") or ""))
+    for i in missing:
+        po_no = await next_invoice_number(ctx["org_id"], "PO")
+        res = await db.purchases.update_one(
+            {"org_id": ctx["org_id"], "id": i["id"], "po_no": {"$in": [None, ""]}},
+            {"$set": {"po_no": po_no}})
+        if res.modified_count:
+            i["po_no"] = po_no
+        else:  # assigned concurrently by another request
+            cur = await db.purchases.find_one({"org_id": ctx["org_id"], "id": i["id"]}, {"_id": 0, "po_no": 1})
+            i["po_no"] = (cur or {}).get("po_no", "")
 
     # ── Compute paid / due from payments ──────────────────────────────────────
     # Directly-linked payments first, then FIFO-allocate any unlinked supplier
@@ -3410,6 +3430,7 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
         "id": str(uuid.uuid4()), "org_id": ctx["org_id"],
         "biz_type": ctx.get("biz_type"),
         "party_id": body.party_id, "party_snapshot": party,
+        "po_no": await next_invoice_number(ctx["org_id"], "PO"),
         "bill_no": body.bill_no, "purchase_date": body.purchase_date,
         "items": totals["items"],
         "totals": {k: v for k, v in totals.items() if k != "items"},
@@ -3561,6 +3582,19 @@ async def list_payments(direction: Optional[str] = None, ctx=Depends(get_org_ctx
     # ── Backfill the linked PO for money-out payments saved without one ───────
     # Match on party + amount (within 1%) against that party's purchase bills,
     # then persist the link so the PO auto-closes on the next payment write.
+    linked_po_ids = list({i["invoice_id"] for i in items
+                          if i.get("direction") == "paid" and i.get("invoice_id")})
+    if linked_po_ids:
+        po_map = {pur["id"]: po_label(pur) async for pur in db.purchases.find(
+            {"org_id": ctx["org_id"], "id": {"$in": linked_po_ids}},
+            {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1})}
+        for i in items:
+            label = po_map.get(i.get("invoice_id"))
+            if label and i.get("linked_ref") != label:
+                i["linked_ref"] = label
+                await db.payments.update_one({"org_id": ctx["org_id"], "id": i["id"]},
+                                             {"$set": {"linked_ref": label}})
+
     unlinked = [i for i in items
                 if i.get("direction") == "paid"
                 and not i.get("linked_ref")
@@ -3570,7 +3604,7 @@ async def list_payments(direction: Optional[str] = None, ctx=Depends(get_org_ctx
         purchases = await db.purchases.find(
             {"org_id": ctx["org_id"], "party_id": {"$in": cand_parties},
              "status": {"$ne": "cancelled"}},
-            {"_id": 0, "id": 1, "bill_no": 1, "party_id": 1, "totals": 1}).to_list(500)
+            {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1, "party_id": 1, "totals": 1}).to_list(500)
         used = set()
         for i in unlinked:
             amt = i["amount"]
@@ -3579,7 +3613,7 @@ async def list_payments(direction: Optional[str] = None, ctx=Depends(get_org_ctx
                     continue
                 grand = (pur.get("totals") or {}).get("grand_total", 0) or 0
                 if grand > 0 and abs(grand - amt) / grand <= 0.01:
-                    ref = f"PO-{pur.get('bill_no', '')}"
+                    ref = po_label(pur)
                     i["invoice_id"] = pur["id"]
                     i["linked_ref"] = ref
                     i["linked_type"] = "invoice"
@@ -3631,7 +3665,7 @@ async def create_payment(body: PaymentIn, ctx=Depends(get_org_ctx)):
                 )
                 doc["invoice_auto_closed"] = True
         # Always check purchases too (invoice_id may point to a PO)
-        pur = await db.purchases.find_one({"org_id": ctx["org_id"], "id": body.invoice_id}, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1, "status": 1})
+        pur = await db.purchases.find_one({"org_id": ctx["org_id"], "id": body.invoice_id}, {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1, "totals": 1, "status": 1})
         if pur and pur.get("status") not in ("cancelled", "paid"):
             total_paid = 0
             async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
@@ -3644,7 +3678,7 @@ async def create_payment(body: PaymentIn, ctx=Depends(get_org_ctx)):
                 )
                 doc["purchase_auto_closed"] = True
                 if not doc.get("linked_ref"):
-                    doc["linked_ref"] = f"PO-{pur.get('bill_no', '')}"
+                    doc["linked_ref"] = po_label(pur)
                     doc["linked_type"] = "invoice"
                     await db.payments.update_one({"id": doc["id"], "org_id": ctx["org_id"]},
                         {"$set": {"linked_ref": doc["linked_ref"], "linked_type": "invoice"}})
@@ -3654,14 +3688,14 @@ async def create_payment(body: PaymentIn, ctx=Depends(get_org_ctx)):
         q = {"org_id": ctx["org_id"], "party_id": body.party_id,
              "status": {"$nin": ["cancelled", "paid"]}}
         best_pur = None
-        async for pur in db.purchases.find(q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1, "status": 1}):
+        async for pur in db.purchases.find(q, {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1, "totals": 1, "status": 1}):
             grand_total = pur.get("totals", {}).get("grand_total", 0)
             if grand_total > 0 and abs(grand_total - amt) / grand_total <= 0.01:
                 best_pur = pur
                 break
         if best_pur:
             po_id = best_pur["id"]
-            linked_ref = f"PO-{best_pur.get('bill_no', '')}"
+            linked_ref = po_label(best_pur)
             # Compute total paid so far for this PO
             total_paid = amt
             async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": po_id}, {"_id": 0, "amount": 1}):
@@ -3722,7 +3756,7 @@ async def update_payment(pid: str, body: PaymentIn, ctx=Depends(get_org_ctx)):
                 )
                 result_flags["invoice_auto_closed"] = True
         # Always check purchase (PO) too
-        pur = await db.purchases.find_one({"org_id": ctx["org_id"], "id": body.invoice_id}, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1, "status": 1})
+        pur = await db.purchases.find_one({"org_id": ctx["org_id"], "id": body.invoice_id}, {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1, "totals": 1, "status": 1})
         if pur and pur.get("status") not in ("cancelled", "paid"):
             total_paid = 0
             async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": body.invoice_id}, {"_id": 0, "amount": 1}):
@@ -3739,13 +3773,13 @@ async def update_payment(pid: str, body: PaymentIn, ctx=Depends(get_org_ctx)):
         amt = body.amount
         q = {"org_id": ctx["org_id"], "party_id": body.party_id, "status": {"$nin": ["cancelled", "paid"]}}
         best_pur = None
-        async for pur in db.purchases.find(q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1}):
+        async for pur in db.purchases.find(q, {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1, "totals": 1}):
             grand_total = pur.get("totals", {}).get("grand_total", 0)
             if grand_total > 0 and abs(grand_total - amt) / grand_total <= 0.01:
                 best_pur = pur; break
         if best_pur:
             po_id = best_pur["id"]
-            linked_ref = f"PO-{best_pur.get('bill_no', '')}"
+            linked_ref = po_label(best_pur)
             total_paid = amt
             async for p in db.payments.find({"org_id": ctx["org_id"], "invoice_id": po_id}, {"_id": 0, "amount": 1}):
                 total_paid += p["amount"]
@@ -3802,20 +3836,20 @@ async def get_open_items(party_id: str = Query(None), direction: str = Query("re
         # First try: filter by party
         if party_id:
             pur_q = {**org_q, "party_id": party_id}
-            purchases = await db.purchases.find(pur_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
+            purchases = await db.purchases.find(pur_q, {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1, "totals": 1,
                 "purchase_date": 1, "party_id": 1, "status": 1}).sort("purchase_date", -1).to_list(100)
             # Fallback 1: try without status restriction (in case status field differs)
             if not purchases:
                 purchases = await db.purchases.find(
                     {"org_id": ctx["org_id"], "party_id": party_id},
-                    {"_id": 0, "id": 1, "bill_no": 1, "totals": 1, "purchase_date": 1, "party_id": 1, "status": 1}
+                    {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1, "totals": 1, "purchase_date": 1, "party_id": 1, "status": 1}
                 ).sort("purchase_date", -1).to_list(100)
             # Fallback 2: show all org purchases so user can manually pick
             if not purchases:
-                purchases = await db.purchases.find(org_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
+                purchases = await db.purchases.find(org_q, {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1, "totals": 1,
                     "purchase_date": 1, "party_id": 1, "status": 1}).sort("purchase_date", -1).to_list(100)
         else:
-            purchases = await db.purchases.find(org_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
+            purchases = await db.purchases.find(org_q, {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1, "totals": 1,
                 "purchase_date": 1, "party_id": 1, "status": 1}).sort("purchase_date", -1).to_list(100)
         # Enrich party names
         pur_party_ids = list({p["party_id"] for p in purchases if p.get("party_id")})
@@ -3839,7 +3873,7 @@ async def get_open_items(party_id: str = Query(None), direction: str = Query("re
             # the "No open purchases" message on edit. Let the user re-link freely.
             result_invoices.append({
                 "id": pur["id"],
-                "invoice_no": f"PO-{pur.get('bill_no', '')}",
+                "invoice_no": po_label(pur),
                 "total": total, "paid": paid, "outstanding": outstanding,
                 "date": pur.get("purchase_date", ""),
                 "party_name": pmap.get(pur.get("party_id", ""), ""),
@@ -3887,7 +3921,7 @@ async def ai_parse_payment_endpoint(body: PaymentParseIn, ctx=Depends(get_org_ct
             if direction == "paid":
                 # Look for purchase bills with similar amount (within 1%)
                 pur_q = {"org_id": ctx["org_id"], "status": {"$nin": ["cancelled"]}}
-                async for pur in db.purchases.find(pur_q, {"_id": 0, "id": 1, "bill_no": 1, "totals": 1,
+                async for pur in db.purchases.find(pur_q, {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1, "totals": 1,
                         "purchase_date": 1, "party_id": 1}).sort("purchase_date", -1).limit(200):
                     total = pur.get("totals", {}).get("grand_total", 0)
                     if total and abs(total - parsed_amount) / max(total, 1) <= 0.02:
@@ -3899,7 +3933,7 @@ async def ai_parse_payment_endpoint(body: PaymentParseIn, ctx=Depends(get_org_ct
                         score = 2 if parsed_party and parsed_party in party_name.lower() else 1
                         if not suggested_link or score > suggested_link.get("score", 0):
                             suggested_link = {
-                                "id": pur["id"], "invoice_no": f"PO-{pur.get('bill_no', '')}",
+                                "id": pur["id"], "invoice_no": po_label(pur),
                                 "total": total, "outstanding": total,
                                 "date": pur.get("purchase_date", ""),
                                 "party_name": party_name, "item_type": "invoice", "score": score,

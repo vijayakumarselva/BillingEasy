@@ -311,7 +311,7 @@ export default function Purchases() {
       <Card>
         <div className="overflow-x-auto">
           <table className="app-table">
-            <thead><tr><th>Bill #</th><th>Supplier</th><th>Date</th><th>Warehouse</th><th>Type</th><th className="text-right">Taxable</th><th className="text-right">GST</th><th className="text-right">Total</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>PO # / Bill #</th><th>Supplier</th><th>Date</th><th>Warehouse</th><th>Type</th><th className="text-right">Taxable</th><th className="text-right">GST</th><th className="text-right">Total</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={10}><Skeleton className="h-8 w-full" /></td></tr>) :
                 list.length === 0 ? <tr><td colSpan={10} className="text-center text-muted-foreground py-8">No purchases yet.</td></tr> :
@@ -321,7 +321,10 @@ export default function Purchases() {
                     onDragOver={(e) => { if (p.status === "cancelled" || !e.dataTransfer.types.includes("Files")) return; e.preventDefault(); setRowDragId(p.id); }}
                     onDragLeave={() => setRowDragId(null)}
                     onDrop={(e) => { if (p.status === "cancelled") return; e.preventDefault(); setRowDragId(null); attachVendorInvoice(p.id, e.dataTransfer.files[0]); }}>
-                    <td className="font-mono-fin text-blue-600 font-medium">{p.bill_no}</td>
+                    <td className="font-mono-fin">
+                      {p.po_no && <div className="text-blue-600 font-semibold whitespace-nowrap">{p.po_no}</div>}
+                      <div className={p.po_no ? "text-[11px] text-muted-foreground whitespace-nowrap" : "text-blue-600 font-medium"}>{p.po_no ? `Bill #${p.bill_no}` : p.bill_no}</div>
+                    </td>
                     <td className="font-medium">{p.party_name}</td>
                     <td className="text-muted-foreground">{fmtDate(p.purchase_date)}</td>
                     <td className="text-muted-foreground text-sm">
@@ -428,7 +431,7 @@ export default function Purchases() {
             amount: payTarget.totals?.grand_total || 0,
             invoice_id: payTarget.id,
             linked_type: "invoice",
-            linked_ref: `PO-${payTarget.bill_no || ""}`,
+            linked_ref: payTarget.po_no || `PO-${payTarget.bill_no || ""}`,
           }}
           onSaved={() => { setPayTarget(null); load(); toast.success("Payment recorded"); }}
         />
