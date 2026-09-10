@@ -136,13 +136,19 @@ async def resolve_permissions(db, role_slug: str, org_id: str) -> set:
 
 
 async def resolve_allowed_modes(db, role_slug: str, org_id: str) -> List[str]:
-    """Return allowed business modes for a role. Empty list = unrestricted (sees all modes)."""
+    """Return allowed business modes for a role. Empty list = unrestricted (sees all modes).
+
+    The org's saved role row wins (owners can restrict system roles such as Sales
+    Staff to B2B from the Roles screen); code defaults apply only if no row exists.
+    The owner is never restricted."""
+    if role_slug == "owner":
+        return []
+    row = await db.roles.find_one({"slug": role_slug, "org_id": org_id}, {"_id": 0, "allowed_modes": 1})
+    if row is not None and "allowed_modes" in row:
+        return row.get("allowed_modes") or []
     if role_slug in SYSTEM_ROLES:
         return SYSTEM_ROLES[role_slug].get("allowed_modes", [])
-    custom = await db.roles.find_one({"slug": role_slug, "org_id": org_id}, {"_id": 0})
-    if not custom:
-        return []
-    return custom.get("allowed_modes", [])
+    return []
 
 
 async def ensure_system_roles(db, org_id: str):
@@ -163,8 +169,9 @@ async def ensure_system_roles(db, org_id: str):
             })
         else:
             # Keep allowed_modes up to date even for existing rows
+            # Only backfill rows missing the field — never overwrite an owner's customization
             await db.roles.update_one(
-                {"slug": slug, "org_id": org_id, "is_system": True},
+                {"slug": slug, "org_id": org_id, "is_system": True, "allowed_modes": {"$exists": False}},
                 {"$set": {"allowed_modes": role.get("allowed_modes", [])}}
             )
 

@@ -2686,20 +2686,60 @@ async def party_ledger(pid: str, ctx=Depends(get_org_ctx)):
 
 
 # ---------------- PRODUCTS ----------------
+VALID_MODES = ("b2b", "b2c", "restaurant", "pos")
+
+
+def product_mode_query(ctx: dict, mode: Optional[str]) -> dict:
+    """Mongo filter restricting products to what this user may see.
+
+    - Restricted users (role has allowed_modes): only products explicitly tagged
+      with one of their modes. Untagged products are hidden from them.
+    - Unrestricted users (owner etc.): mode="all" shows everything; an explicit
+      mode shows that mode; no mode follows the active business profile
+      (X-Biz-Type / entity). Untagged legacy products stay visible to them.
+    """
+    allowed = ctx.get("allowed_modes") or []
+    req = (mode or "").strip().lower()
+    if allowed:
+        if req not in allowed:
+            bt = ctx.get("biz_type")
+            req = bt if bt in allowed else ""
+        return {"modes": req} if req else {"modes": {"$in": allowed}}
+    if not req:
+        req = ctx.get("biz_type") or ""
+    if req and req != "all":
+        return {"$or": [{"modes": req}, {"modes": {"$exists": False}}, {"modes": []}]}
+    return {}
+
+
+async def get_accessible_product(ctx: dict, pid: str, projection: Optional[dict] = None) -> dict:
+    q = org_filter(ctx, {"id": pid})
+    if ctx.get("allowed_modes"):
+        q.update(product_mode_query(ctx, "all"))  # any of the user's modes
+    doc = await db.products.find_one(q, projection or {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Product not found")
+    return doc
+
+
 @api.get("/products")
 async def list_products(search: Optional[str] = None, mode: Optional[str] = None, ctx=Depends(get_org_ctx)):
     q = org_filter(ctx)
     if search: q["name"] = {"$regex": search, "$options": "i"}
-    if mode:
-        # Return products that include this mode OR have no modes field (legacy)
-        q["$or"] = [{"modes": mode}, {"modes": {"$exists": False}}, {"modes": []}]
+    q.update(product_mode_query(ctx, mode))
     return await db.products.find(q, {"_id": 0}).sort("name", 1).to_list(1000)
 
 
 @api.post("/products")
 async def create_product(body: ProductIn, ctx=Depends(get_org_ctx)):
     await ensure_active_subscription(ctx)
-    doc = {**body.model_dump(), "id": str(uuid.uuid4()),
+    data = body.model_dump()
+    allowed = ctx.get("allowed_modes") or []
+    modes = [m for m in (data.get("modes") or []) if m in VALID_MODES]
+    if allowed:
+        modes = [m for m in modes if m in allowed] or [ctx.get("biz_type") if ctx.get("biz_type") in allowed else allowed[0]]
+    data["modes"] = modes
+    doc = {**data, "id": str(uuid.uuid4()),
            "org_id": ctx["org_id"], "created_at": now_iso()}
     await db.products.insert_one(doc)
     return strip_id(doc)
@@ -2715,7 +2755,9 @@ class BulkModesIn(BaseModel):
 async def bulk_update_product_modes(body: BulkModesIn, ctx=Depends(get_org_ctx)):
     """Set the `modes` field (business types) for multiple products at once."""
     await ensure_active_subscription(ctx)
-    valid_modes = {"b2b", "b2c", "restaurant", "pos"}
+    if ctx.get("allowed_modes"):
+        raise HTTPException(403, "Only users with access to all business profiles can change product profiles")
+    valid_modes = set(VALID_MODES)
     modes = [m for m in body.modes if m in valid_modes]
     result = await db.products.update_many(
         org_filter(ctx, {"id": {"$in": body.ids}}),
@@ -2727,7 +2769,15 @@ async def bulk_update_product_modes(body: BulkModesIn, ctx=Depends(get_org_ctx))
 @api.put("/products/{pid}")
 async def update_product(pid: str, body: ProductIn, ctx=Depends(get_org_ctx)):
     await ensure_active_subscription(ctx)
+    current = await get_accessible_product(ctx, pid, {"_id": 0, "modes": 1})
     update_data = body.model_dump()
+    allowed = ctx.get("allowed_modes") or []
+    if allowed:
+        # Restricted users can only change tags inside their own profiles
+        existing = [m for m in (current.get("modes") or []) if m in VALID_MODES]
+        kept = [m for m in existing if m not in allowed]
+        mine = [m for m in (update_data.get("modes") or []) if m in allowed]
+        update_data["modes"] = (kept + mine) or existing
     # Never overwrite an existing UPC with empty — UPC is permanent once set
     if not update_data.get("upc"):
         existing = await db.products.find_one(org_filter(ctx, {"id": pid}), {"_id": 0, "upc": 1})
@@ -2739,6 +2789,7 @@ async def update_product(pid: str, body: ProductIn, ctx=Depends(get_org_ctx)):
 
 @api.delete("/products/{pid}")
 async def delete_product(pid: str, ctx=Depends(require_permission("product.delete"))):
+    await get_accessible_product(ctx, pid, {"_id": 0, "id": 1})
     await db.products.delete_one(org_filter(ctx, {"id": pid}))
     return {"ok": True}
 

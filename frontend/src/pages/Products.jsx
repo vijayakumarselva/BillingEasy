@@ -33,11 +33,20 @@ const empty = {
 };
 
 export default function Products() {
-  const { currentRole } = useAuth();
+  const { currentRole, allowedModes = [] } = useAuth();
+  // Restricted roles (e.g. B2B Staff) see only their profiles; owner/unrestricted see All + every profile
+  const restricted = allowedModes.length > 0;
+  const modeTabs = restricted
+    ? ALL_MODES.filter(m => allowedModes.includes(m.value))
+    : [{ value: "all", label: "All" }, ...ALL_MODES];
   const canEdit = currentRole !== "pos-staff" && currentRole !== "restaurant-staff";
   const [list, setList] = useState([]); const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState(""); const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty); const [editId, setEditId] = useState(null);
+  const newProductForm = () => {
+    const modes = modeFilter !== "all" ? [modeFilter] : (restricted ? allowedModes : empty.modes);
+    return { ...empty, modes: [...modes] };
+  };
   const originalUpcRef = useRef(""); // cache the original UPC so saves never accidentally clear it
   const [barcodeProduct, setBarcodeProduct] = useState(null);
   const [modeFilter, setModeFilter] = useState(() => {
@@ -62,11 +71,16 @@ export default function Products() {
   const load = async () => {
     setLoading(true);
     const params = { search };
-    if (modeFilter !== "all") params.mode = modeFilter;
+    params.mode = modeFilter; // "all" is honoured only for unrestricted users (enforced server-side)
     const { data } = await api.get("/products", { params });
     setList(data); setLoading(false);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [search, modeFilter]);
+  // Keep a restricted user's tab inside their allowed profiles
+  useEffect(() => {
+    if (restricted && !allowedModes.includes(modeFilter)) setModeFilter(allowedModes[0]);
+    // eslint-disable-next-line
+  }, [restricted, allowedModes.join(","), modeFilter]);
   useEffect(() => { api.get("/orgs/current/entities").then(r => setEntities(r.data)).catch(() => {}); }, []);
 
   // When business mode changes (from sidebar switcher), update filter
@@ -94,7 +108,7 @@ export default function Products() {
     return digits + check;
   };
 
-  const startCreate = () => { originalUpcRef.current = ""; setForm({ ...empty, sku: genSku(), upc: genUPC() }); setEditId(null); setOpen(true); };
+  const startCreate = () => { originalUpcRef.current = ""; setForm({ ...newProductForm(), sku: genSku(), upc: genUPC() }); setEditId(null); setOpen(true); };
   const startEdit = (p) => {
     originalUpcRef.current = p.upc || "";
     setForm({ ...empty, ...p, upc: p.upc || "" });
@@ -341,7 +355,7 @@ export default function Products() {
       {/* Filters */}
       <div className="mobile-search md:px-0 flex flex-col sm:flex-row gap-2 items-stretch sm:items-center justify-between">
         <div className="flex rounded-lg border overflow-hidden text-xs">
-          {[{ value: "all", label: "All" }, ...ALL_MODES].map(m => (
+          {modeTabs.map(m => (
             <button key={m.value} type="button" onClick={() => setModeFilter(m.value)}
               className={`px-3 py-2 font-semibold transition-colors border-l first:border-l-0 ${modeFilter === m.value ? "bg-blue-600 text-white" : "text-muted-foreground hover:bg-muted/50"}`}>
               {m.label}
