@@ -366,15 +366,32 @@ Extract supplier/customer details from text or OCR. Return ONLY a JSON object (n
 Omit fields you cannot find. State code must match the GSTIN first 2 digits if GSTIN is present.
 State codes: 01=JK, 02=HP, 03=PB, 04=CH, 05=UT, 06=HR, 07=DL, 08=RJ, 09=UP, 10=BR, 11=SK, 12=AR, 13=NL, 14=MN, 15=MZ, 16=TR, 17=ML, 18=AS, 19=WB, 20=JH, 21=OR, 22=CG, 23=MP, 24=GJ, 25=DD, 26=DNH, 27=MH, 28=AP, 29=KA, 30=GA, 31=LD, 32=KL, 33=TN, 34=PY, 35=AN, 36=TG, 37=AP"""
 
-async def ai_parse_party(text: str) -> Dict:
-    """Parse a natural-language or OCR text into structured party (supplier/customer) fields."""
+async def ai_parse_party(text: str = "", file_b64: str = "", media_type: str = "") -> Dict:
+    """Extract party (supplier/customer) fields from pasted text and/or an
+    image (visiting card, letterhead, GST certificate) or PDF, via Claude vision."""
     key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
+    if not key or not (text.strip() or file_b64):
         return {}
+    content: List[Dict[str, Any]] = []
+    if file_b64:
+        if file_b64.startswith("data:"):
+            head, file_b64 = file_b64.split(",", 1)
+            media_type = media_type or head[5:].split(";")[0]
+        media_type = (media_type or "image/jpeg").lower()
+        if media_type == "application/pdf":
+            content.append({"type": "document",
+                            "source": {"type": "base64", "media_type": "application/pdf", "data": file_b64}})
+        else:
+            if media_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+                media_type = "image/jpeg"
+            content.append({"type": "image",
+                            "source": {"type": "base64", "media_type": media_type, "data": file_b64}})
+    content.append({"type": "text", "text": text.strip() or
+                    "Extract the business contact details visible in this visiting card / document."})
     client = anthropic.AsyncAnthropic(api_key=key)
     msg = await client.messages.create(
-        model=MODEL_NAME, max_tokens=500, system=PARTY_PARSE_SYSTEM,
-        messages=[{"role": "user", "content": text}],
+        model=MODEL_NAME, max_tokens=600, system=PARTY_PARSE_SYSTEM,
+        messages=[{"role": "user", "content": content}],
     )
     raw = msg.content[0].text.strip()
     obj_match = re.search(r"\{.*\}", raw, re.S)

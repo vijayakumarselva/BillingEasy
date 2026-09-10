@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Trash2, Edit, ScrollText, Users, MapPin, Sparkles, Loader2, Upload } from "lucide-react";
+import { Plus, Search, Trash2, Edit, ScrollText, Users, MapPin, Sparkles, Loader2, Upload, ImagePlus, X } from "lucide-react";
 import { inr, fmtDate } from "@/lib/format";
 import GstinField from "@/components/GstinField";
 import { useNavigate } from "react-router-dom";
@@ -37,70 +37,87 @@ export default function Parties() {
   const [dragOver, setDragOver] = useState(false);
   const nav = useNavigate();
 
-  const runAiParse = async (text) => {
-    if (!text?.trim()) return;
+  const [aiFile, setAiFile] = useState(null); // { name, type, dataUrl }
+
+  const applyParsed = (data) => {
+    if (!data || Object.keys(data).length === 0) return false;
+    setForm(f => ({
+      ...f,
+      name: data.name || f.name,
+      phone: data.phone || f.phone,
+      email: data.email || f.email,
+      gstin: data.gstin ? data.gstin.toUpperCase() : f.gstin,
+      pan: data.pan ? data.pan.toUpperCase() : f.pan,
+      billing_address: data.billing_address || f.billing_address,
+      state: data.state || f.state,
+      state_code: data.state_code || f.state_code,
+    }));
+    return true;
+  };
+
+  const runAiParse = async (text = aiText, file = aiFile) => {
+    if (!text?.trim() && !file) return;
     setAiLoading(true);
     try {
-      const { data } = await api.post("/parties/ai-parse", { text });
-      if (Object.keys(data).length === 0) { toast.error("AI couldn't extract details. Try adding more info."); return; }
-      setForm(f => ({
-        ...f,
-        name: data.name || f.name,
-        phone: data.phone || f.phone,
-        email: data.email || f.email,
-        gstin: data.gstin ? data.gstin.toUpperCase() : f.gstin,
-        pan: data.pan ? data.pan.toUpperCase() : f.pan,
-        billing_address: data.billing_address || f.billing_address,
-        state: data.state || f.state,
-        state_code: data.state_code || f.state_code,
-      }));
+      const { data } = await api.post("/parties/ai-parse", {
+        text: text || "",
+        file_b64: file?.dataUrl || "",
+        media_type: file?.type || "",
+      });
+      if (!applyParsed(data)) { toast.error("AI couldn't find contact details — try a clearer image or add text."); return; }
       toast.success("✨ AI filled in the details — review and save!");
-      setAiText("");
-    } catch { toast.error("AI parse failed"); }
+      setAiText(""); setAiFile(null);
+    } catch (e) { toast.error(e?.response?.data?.detail || "AI parse failed"); }
     finally { setAiLoading(false); }
   };
 
-  const handleDrop = async (e) => {
-    e.preventDefault(); setDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (!file) return;
-    // For images/PDFs: read as base64 and send to AI
-    if (file.type.startsWith("image/") || file.type === "application/pdf") {
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64 = reader.result.split(",")[1];
-        const textForAI = `[File: ${file.name}, type: ${file.type}]\nExtract all contact details from this visiting card or document. Base64 data is attached: ${base64.substring(0, 500)}...`;
-        // For images, convert to text via OCR-style prompt
-        setAiLoading(true);
-        try {
-          const key = ""; // will use backend
-          const { data } = await api.post("/parties/ai-parse", { text: `Visiting card or document named "${file.name}". Please extract any contact details visible. This is a ${file.type} file.` });
-          if (data && Object.keys(data).length > 0) {
-            setForm(f => ({
-              ...f,
-              name: data.name || f.name,
-              phone: data.phone || f.phone,
-              email: data.email || f.email,
-              gstin: data.gstin ? data.gstin.toUpperCase() : f.gstin,
-              pan: data.pan ? data.pan.toUpperCase() : f.pan,
-              billing_address: data.billing_address || f.billing_address,
-              state: data.state || f.state,
-              state_code: data.state_code || f.state_code,
-            }));
-            toast.success("✨ AI extracted details from file!");
-          } else {
-            toast.info("Paste text from the file into the AI box for best results.");
-          }
-        } catch { toast.error("File parse failed"); }
-        finally { setAiLoading(false); }
+  // Downscale large photos (phone camera shots) so upload + AI are fast
+  const toDataUrl = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = () => {
+      if (!file.type.startsWith("image/") || file.size < 1.5 * 1024 * 1024) return resolve(reader.result);
+      const img = new Image();
+      img.onerror = () => resolve(reader.result);
+      img.onload = () => {
+        const scale = Math.min(1, 2000 / Math.max(img.width, img.height));
+        const c = document.createElement("canvas");
+        c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL("image/jpeg", 0.85));
       };
-      reader.readAsDataURL(file);
-    } else {
-      // Text file
-      const text = await file.text();
-      setAiText(text);
-      runAiParse(text);
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    const isImg = file.type.startsWith("image/");
+    const isPdf = file.type === "application/pdf";
+    if (!isImg && !isPdf) {
+      if (file.type.startsWith("text/") || file.name.endsWith(".txt")) {
+        const text = await file.text(); setAiText(text); runAiParse(text, null);
+      } else toast.error("Use an image (JPG/PNG), PDF, or text file");
+      return;
     }
+    if (isPdf && file.size > 5 * 1024 * 1024) { toast.error("PDF too large (max 5 MB)"); return; }
+    if (file.size > 20 * 1024 * 1024) { toast.error("Image too large (max 20 MB)"); return; }
+    const dataUrl = await toDataUrl(file);
+    const f = { name: file.name || "pasted-image.png", type: dataUrl.startsWith("data:image/jpeg") ? "image/jpeg" : file.type, dataUrl };
+    setAiFile(f);
+    runAiParse(aiText, f); // extract immediately
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault(); setDragOver(false);
+    handleFile(e.dataTransfer.files[0]);
+  };
+
+  // Ctrl/Cmd+V a screenshot straight into the AI box
+  const handlePaste = (e) => {
+    const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith("image/"));
+    if (item) { e.preventDefault(); handleFile(item.getAsFile()); }
   };
 
   const load = async () => {
@@ -271,27 +288,41 @@ export default function Parties() {
                 placeholder={'e.g. "Jamkhandi Sugars Ltd, GSTIN: 29AABCJ1234D1Z5, Ph: 9876543210, Bengaluru" — or drop a visiting card here'}
                 value={aiText}
                 onChange={e => setAiText(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) runAiParse(aiText); }}
+                onPaste={handlePaste}
+                onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) runAiParse(); }}
               />
               <div className="flex flex-col gap-1.5">
-                <Button size="sm" disabled={aiLoading || !aiText.trim()}
-                  onClick={() => runAiParse(aiText)}
+                <Button size="sm" disabled={aiLoading || (!aiText.trim() && !aiFile)}
+                  onClick={() => runAiParse()}
                   className="bg-purple-600 hover:bg-purple-700 text-white h-8 px-3 text-xs">
                   {aiLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <><Sparkles className="h-3.5 w-3.5 mr-1" />Parse</>}
                 </Button>
-                <label className="cursor-pointer">
-                  <input type="file" accept="image/*,.pdf,.txt" className="hidden" onChange={e => {
-                    const file = e.target.files[0]; if (!file) return;
-                    handleDrop({ preventDefault: () => {}, dataTransfer: { files: [file] } });
-                    e.target.value = "";
-                  }} />
-                  <span className="flex items-center gap-1 text-xs text-purple-600 dark:text-purple-400 hover:underline border border-purple-200 dark:border-purple-700 rounded px-2 py-1 h-8 bg-white dark:bg-background">
-                    <Upload className="h-3 w-3" /> Upload
+                <label className="cursor-pointer" title="Upload or take a photo of a visiting card">
+                  <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { handleFile(e.target.files[0]); e.target.value = ""; }} />
+                  <span className="flex items-center gap-1 text-xs text-purple-600 dark:text-purple-400 hover:bg-purple-50 border border-purple-200 dark:border-purple-700 rounded px-2 h-8 bg-white dark:bg-background">
+                    <ImagePlus className="h-3.5 w-3.5" /> Image
+                  </span>
+                </label>
+                <label className="cursor-pointer" title="Upload a PDF or text file">
+                  <input type="file" accept="application/pdf,.txt" className="hidden" onChange={e => { handleFile(e.target.files[0]); e.target.value = ""; }} />
+                  <span className="flex items-center gap-1 text-xs text-purple-600 dark:text-purple-400 hover:bg-purple-50 border border-purple-200 dark:border-purple-700 rounded px-2 h-8 bg-white dark:bg-background">
+                    <Upload className="h-3 w-3" /> PDF
                   </span>
                 </label>
               </div>
             </div>
-            <p className="text-[10px] text-muted-foreground mt-1.5">Ctrl+Enter to parse · Drop image/PDF/text directly</p>
+            {aiFile && (
+              <div className="mt-2 flex items-center gap-2 rounded-lg border border-purple-200 dark:border-purple-700 bg-white dark:bg-background p-1.5">
+                {aiFile.type.startsWith("image/")
+                  ? <img src={aiFile.dataUrl} alt="" className="h-12 w-20 object-cover rounded" />
+                  : <div className="h-12 w-12 rounded bg-rose-50 text-rose-600 text-[10px] font-bold flex items-center justify-center">PDF</div>}
+                <span className="text-xs truncate flex-1">{aiFile.name}</span>
+                {aiLoading
+                  ? <span className="flex items-center gap-1 text-xs text-purple-600 pr-1"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading…</span>
+                  : <button type="button" className="p-1 text-muted-foreground hover:text-rose-600" onClick={() => setAiFile(null)}><X className="h-3.5 w-3.5" /></button>}
+              </div>
+            )}
+            <p className="text-[10px] text-muted-foreground mt-1.5">Ctrl+Enter to parse · Drop, paste (Ctrl+V) or snap a visiting card / GST certificate image</p>
           </div>
 
           <div className="grid sm:grid-cols-2 gap-3">

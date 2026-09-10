@@ -2595,13 +2595,22 @@ async def bulk_party_balances(org_id: str, parties: List[dict]) -> Dict[str, flo
 
 
 class PartyParseIn(BaseModel):
-    text: str
+    text: str = ""
+    file_b64: str = ""   # data URL or raw base64 of an image / PDF
+    media_type: str = ""
 
 @api.post("/parties/ai-parse")
 async def ai_parse_party_endpoint(body: PartyParseIn, ctx=Depends(get_org_ctx)):
-    """Parse natural-language text or OCR into party (supplier/customer) fields using AI."""
-    result = await ai_parse_party(body.text)
-    return result
+    """Extract party (supplier/customer) fields from text, an image, or a PDF using AI."""
+    if not body.text.strip() and not body.file_b64:
+        raise HTTPException(400, "Provide text or a file")
+    if len(body.file_b64) > 7_000_000:  # ~5 MB file after base64 overhead
+        raise HTTPException(413, "File must be under 5 MB")
+    try:
+        return await ai_parse_party(body.text, body.file_b64, body.media_type)
+    except Exception as e:
+        logging.exception("party ai-parse failed")
+        raise HTTPException(502, f"AI extraction failed: {str(e)[:120]}")
 
 @api.get("/parties")
 async def list_parties(type: Optional[str] = None, search: Optional[str] = None, ctx=Depends(get_org_ctx)):
