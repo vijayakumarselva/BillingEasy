@@ -18,6 +18,7 @@ import { useAuth } from "@/context/AuthContext";
 import RolesPanel from "@/components/RolesPanel";
 import AuditLogPanel from "@/components/AuditLogPanel";
 import DropZone from "@/components/DropZone";
+import MomCubIntegration from "@/components/MomCubIntegration";
 
 export default function Settings() {
   const { currentOrg, currentRole } = useAuth();
@@ -165,6 +166,7 @@ export default function Settings() {
           <TabsTrigger value="audit" data-testid="settings-tab-audit">Audit Log</TabsTrigger>
           <TabsTrigger value="security" data-testid="settings-tab-security">Security</TabsTrigger>
           <TabsTrigger value="prefs" data-testid="settings-tab-prefs">Preferences</TabsTrigger>
+          <TabsTrigger value="integrations" data-testid="settings-tab-integrations">Integrations</TabsTrigger>
         </TabsList>
 
         <TabsContent value="biz">
@@ -735,6 +737,10 @@ export default function Settings() {
               </div>
             </div>
           </div>
+        </TabsContent>
+
+        <TabsContent value="integrations">
+          <MomCubIntegration canEdit={currentRole === "owner" || currentRole === "admin"} />
         </TabsContent>
 
         <TabsContent value="prefs">

@@ -5361,6 +5361,11 @@ async def on_startup():
         await db.users.create_index("email", unique=True)
         await db.memberships.create_index([("user_id", 1), ("org_id", 1)], unique=True)
         await db.organizations.create_index("id", unique=True)
+        # Website orders must never create two invoices (webhook retries)
+        await db.invoices.create_index(
+            [("org_id", 1), ("external_source", 1), ("external_id", 1)], unique=True,
+            partialFilterExpression={"external_id": {"$type": "string"}}, name="uniq_external_order")
+        await db.integration_keys.create_index("key_hash", unique=True)
         if await db.users.count_documents({}) == 0:
             await seed_demo_data(db, hash_password)
             logger.info("Seeded demo data")
@@ -6037,6 +6042,341 @@ async def adv_reset(room:str):
     if room not in _ADV_ROOMS: return {"ok":False}
     _ADV_ROOMS[room] = _new_adv()
     return {"ok":True}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mom & Cub storefront integration
+#   BillingsEasy PO (B2C)  ──► Mom & Cub admin "Purchase Orders" ──► website GRN
+#   website GRN received qty ──► back onto the PO here
+#   website order ──► Sales Invoice (SO) here (+ Money In receipt if prepaid)
+# Auth: per-org secret key in the X-Integration-Key header (only its SHA-256 is stored).
+# ─────────────────────────────────────────────────────────────────────────────
+MOMCUB = "momcub"
+GST_STATE_CODES = {
+    "jammu and kashmir": "01", "himachal pradesh": "02", "punjab": "03", "chandigarh": "04", "uttarakhand": "05",
+    "haryana": "06", "delhi": "07", "rajasthan": "08", "uttar pradesh": "09", "bihar": "10", "sikkim": "11",
+    "arunachal pradesh": "12", "nagaland": "13", "manipur": "14", "mizoram": "15", "tripura": "16",
+    "meghalaya": "17", "assam": "18", "west bengal": "19", "jharkhand": "20", "odisha": "21",
+    "chhattisgarh": "22", "madhya pradesh": "23", "gujarat": "24", "dadra and nagar haveli and daman and diu": "26",
+    "maharashtra": "27", "karnataka": "29", "goa": "30", "lakshadweep": "31", "kerala": "32",
+    "tamil nadu": "33", "puducherry": "34", "andaman and nicobar islands": "35", "telangana": "36",
+    "andhra pradesh": "37", "ladakh": "38",
+}
+
+
+def _key_hash(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+async def integration_ctx(request: Request) -> dict:
+    key = (request.headers.get("X-Integration-Key") or "").strip()
+    if not key:
+        raise HTTPException(401, "Missing X-Integration-Key")
+    row = await db.integration_keys.find_one({"key_hash": _key_hash(key), "provider": MOMCUB, "revoked": {"$ne": True}},
+                                             {"_id": 0})
+    if not row:
+        raise HTTPException(401, "Invalid integration key")
+    await db.integration_keys.update_one({"key_hash": row["key_hash"]}, {"$set": {"last_used_at": now_iso()}})
+    return {
+        "org_id": row["org_id"], "role": "owner", "permissions": [], "allowed_modes": [],
+        "biz_type": "b2c", "entity_id": None, "entity": None,
+        "user": {"id": f"integration:{MOMCUB}", "name": "Mom & Cub website", "email": ""},
+    }
+
+
+@api.get("/integrations/momcub")
+async def momcub_integration_status(ctx=Depends(require_permission("settings.view"))):
+    row = await db.integration_keys.find_one({"org_id": ctx["org_id"], "provider": MOMCUB, "revoked": {"$ne": True}},
+                                             {"_id": 0, "key_hash": 0})
+    orders = await db.invoices.count_documents({"org_id": ctx["org_id"], "external_source": MOMCUB})
+    grns = 0
+    async for p in db.purchases.find({"org_id": ctx["org_id"], "website_grns.0": {"$exists": True}}, {"_id": 0, "website_grns": 1}):
+        grns += len(p.get("website_grns") or [])
+    return {"connected": bool(row), "key_hint": (row or {}).get("key_hint", ""),
+            "created_at": (row or {}).get("created_at"), "last_used_at": (row or {}).get("last_used_at"),
+            "orders_synced": orders, "grns_received": grns,
+            "api_base": str(os.environ.get("PUBLIC_API_BASE", "")).rstrip("/")}
+
+
+@api.post("/integrations/momcub/key")
+async def momcub_generate_key(request: Request, ctx=Depends(require_permission("settings.edit"))):
+    """Create (or rotate) the Mom & Cub key. The full key is returned only once."""
+    key = "be_mc_" + secrets.token_urlsafe(32)
+    await db.integration_keys.update_many({"org_id": ctx["org_id"], "provider": MOMCUB},
+                                          {"$set": {"revoked": True, "revoked_at": now_iso()}})
+    await db.integration_keys.insert_one({
+        "id": str(uuid.uuid4()), "org_id": ctx["org_id"], "provider": MOMCUB,
+        "key_hash": _key_hash(key), "key_hint": key[-4:], "created_at": now_iso(),
+        "created_by": ctx["user"].get("id"),
+    })
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="integration.key_created",
+                    entity_type="integration", entity_id=MOMCUB, metadata={}, request=request)
+    return {"key": key, "key_hint": key[-4:]}
+
+
+@api.get("/integrations/momcub/ping")
+async def momcub_ping(ictx=Depends(integration_ctx)):
+    org = await db.organizations.find_one({"id": ictx["org_id"]}, {"_id": 0, "name": 1})
+    return {"ok": True, "org_name": (org or {}).get("name", "")}
+
+
+def _momcub_po_view(pur: dict, pmap: dict) -> dict:
+    received: Dict[str, float] = {}
+    for g in pur.get("website_grns") or []:
+        for ln in g.get("lines") or []:
+            received[ln["line_key"]] = received.get(ln["line_key"], 0) + (ln.get("qty") or 0)
+    lines, ordered_total, received_total = [], 0.0, 0.0
+    for idx, it in enumerate(pur.get("items") or []):
+        prod = pmap.get(it.get("product_id") or "") or {}
+        key = it.get("product_id") or f"line-{idx}"
+        qty = float(it.get("qty") or 0)
+        got = min(received.get(key, 0), qty)
+        ordered_total += qty; received_total += got
+        lines.append({
+            "line_key": key, "product_id": it.get("product_id") or "", "name": it.get("name", ""),
+            "sku": prod.get("sku", ""), "upc": prod.get("upc", ""), "barcode": prod.get("barcode", ""),
+            "hsn": it.get("hsn", ""), "unit": it.get("unit", ""), "rate": it.get("rate", 0),
+            "gst_rate": it.get("gst_rate", 0), "qty": qty, "received_qty": got,
+            "pending_qty": round(qty - got, 3),
+        })
+    status = "pending" if received_total <= 0 else ("received" if received_total >= ordered_total - 1e-6 else "partial")
+    return {
+        "id": pur["id"], "po_no": po_label(pur), "bill_no": pur.get("bill_no", ""),
+        "supplier": (pur.get("party_snapshot") or {}).get("name", ""),
+        "supplier_gstin": (pur.get("party_snapshot") or {}).get("gstin", ""),
+        "purchase_date": pur.get("purchase_date", ""), "created_at": pur.get("created_at", ""),
+        "grand_total": (pur.get("totals") or {}).get("grand_total", 0),
+        "grn_status": status, "lines": lines,
+        "grns": [{k: g.get(k) for k in ("grn_id", "grn_no", "received_at", "note")} for g in pur.get("website_grns") or []],
+    }
+
+
+async def _momcub_purchases(org_id: str, pid: Optional[str] = None) -> list:
+    q = {"org_id": org_id, "type": "purchase", "status": {"$ne": "cancelled"},
+         "purchase_category": {"$ne": "service"}, "biz_type": "b2c"}
+    if pid:
+        q["id"] = pid
+    purs = await db.purchases.find(q, {"_id": 0, "vendor_invoice_b64": 0}).sort("purchase_date", -1).to_list(300)
+    pids = list({it.get("product_id") for p in purs for it in (p.get("items") or []) if it.get("product_id")})
+    pmap = {p["id"]: p async for p in db.products.find({"org_id": org_id, "id": {"$in": pids}},
+                                                        {"_id": 0, "id": 1, "sku": 1, "upc": 1, "barcode": 1})}
+    return [_momcub_po_view(p, pmap) for p in purs]
+
+
+@api.get("/integrations/momcub/purchase-orders")
+async def momcub_list_pos(status: str = Query("open"), ictx=Depends(integration_ctx)):
+    """B2C stock purchase orders for the website. status=open (not fully received) | all."""
+    rows = await _momcub_purchases(ictx["org_id"])
+    if status != "all":
+        rows = [r for r in rows if r["grn_status"] != "received"]
+    return rows
+
+
+@api.get("/integrations/momcub/purchase-orders/{pid}")
+async def momcub_get_po(pid: str, ictx=Depends(integration_ctx)):
+    rows = await _momcub_purchases(ictx["org_id"], pid)
+    if not rows:
+        raise HTTPException(404, "Purchase order not found or not a B2C stock PO")
+    return rows[0]
+
+
+class MomcubGrnLine(BaseModel):
+    line_key: str
+    qty: float
+
+
+class MomcubGrnIn(BaseModel):
+    grn_id: str
+    grn_no: str = ""
+    received_at: str = ""
+    note: str = ""
+    lines: List[MomcubGrnLine]
+
+
+@api.post("/integrations/momcub/purchase-orders/{pid}/grn")
+async def momcub_record_grn(pid: str, body: MomcubGrnIn, ictx=Depends(integration_ctx)):
+    """Record goods received on the website against a PO. Idempotent on grn_id.
+    BillingsEasy stock was already added when the PO was saved, so stock is not changed here."""
+    rows = await _momcub_purchases(ictx["org_id"], pid)
+    if not rows:
+        raise HTTPException(404, "Purchase order not found or not a B2C stock PO")
+    po = rows[0]
+    if any(g.get("grn_id") == body.grn_id for g in po["grns"]):
+        return {"ok": True, "duplicate": True, "po": po}
+    pending = {ln["line_key"]: ln["pending_qty"] for ln in po["lines"]}
+    lines = []
+    for ln in body.lines:
+        if ln.qty <= 0:
+            continue
+        if ln.line_key not in pending:
+            raise HTTPException(400, f"Line {ln.line_key} is not on this PO")
+        if ln.qty > pending[ln.line_key] + 1e-6:
+            raise HTTPException(400, f"Received qty {ln.qty:g} exceeds pending {pending[ln.line_key]:g} for {ln.line_key}")
+        lines.append({"line_key": ln.line_key, "qty": ln.qty})
+    if not lines:
+        raise HTTPException(400, "Nothing received")
+    grn = {"grn_id": body.grn_id, "grn_no": body.grn_no, "note": body.note,
+           "received_at": body.received_at or now_iso(), "recorded_at": now_iso(), "lines": lines}
+    res = await db.purchases.update_one(
+        {"org_id": ictx["org_id"], "id": pid, "website_grns.grn_id": {"$ne": body.grn_id}},
+        {"$push": {"website_grns": grn}})
+    po = (await _momcub_purchases(ictx["org_id"], pid))[0]
+    await db.purchases.update_one({"org_id": ictx["org_id"], "id": pid},
+                                  {"$set": {"website_grn_status": po["grn_status"]}})
+    return {"ok": True, "duplicate": res.modified_count == 0, "po": po}
+
+
+class MomcubOrderItem(BaseModel):
+    id: str = ""
+    name: str
+    qty: float
+    price: float                 # GST-inclusive selling price per unit
+    sku: str = ""
+    upc: str = ""
+
+
+class MomcubCustomer(BaseModel):
+    name: str = ""
+    email: str = ""
+    phone: str = ""
+    address: str = ""
+    city: str = ""
+    state: str = ""
+    pincode: str = ""
+
+
+class MomcubOrder(BaseModel):
+    id: str
+    orderNumber: str = ""
+    customer: MomcubCustomer = MomcubCustomer()
+    items: List[MomcubOrderItem]
+    subtotal: float = 0
+    discount: float = 0
+    shipping: float = 0
+    total: float = 0
+    paymentMethod: str = "cod"
+    paymentStatus: str = "pending"
+    createdAt: str = ""
+
+
+class MomcubOrderEvent(BaseModel):
+    event: str = "order.created"
+    order: MomcubOrder
+
+
+async def _momcub_customer_party(org_id: str, c: MomcubCustomer, seller_state_code: str) -> dict:
+    phone = "".join(ch for ch in (c.phone or "") if ch.isdigit())[-10:]
+    email = (c.email or "").strip().lower()
+    party = None
+    if phone:
+        party = await db.parties.find_one({"org_id": org_id, "phone": {"$regex": f"{phone}$"}}, {"_id": 0})
+    if not party and email:
+        party = await db.parties.find_one({"org_id": org_id, "email": email}, {"_id": 0})
+    if party:
+        return party
+    state_code = GST_STATE_CODES.get((c.state or "").strip().lower(), seller_state_code)
+    addr = ", ".join(x for x in [c.address, c.city, c.state, c.pincode] if x)
+    party = {
+        "id": str(uuid.uuid4()), "org_id": org_id, "type": "customer", "biz_type": "b2c",
+        "name": c.name or email or phone or "Website customer", "phone": phone, "email": email,
+        "gstin": "", "pan": "", "state": (c.state or "").strip(),
+        "state_code": state_code, "billing_address": addr,
+        "shipping_address": addr, "shipping_addresses": [{"label": "Website", "address": addr}] if addr else [],
+        "opening_balance": 0, "credit_limit": 0, "tds_opening_balance": 0,
+        "source": MOMCUB, "created_at": now_iso(),
+    }
+    await db.parties.insert_one(party)
+    party.pop("_id", None)
+    return party
+
+
+@api.post("/integrations/momcub/orders")
+async def momcub_order_webhook(body: MomcubOrderEvent, request: Request, ictx=Depends(integration_ctx)):
+    """Create a B2C sales invoice for a website order. Idempotent on the website order id."""
+    o = body.order
+    org_id = ictx["org_id"]
+    existing = await db.invoices.find_one({"org_id": org_id, "external_source": MOMCUB, "external_id": o.id},
+                                          {"_id": 0, "id": 1, "invoice_no": 1})
+    if existing:
+        return {"ok": True, "duplicate": True, "invoice_id": existing["id"], "invoice_no": existing["invoice_no"]}
+    if not o.items:
+        raise HTTPException(400, "Order has no items")
+    org = await get_org_doc(org_id)
+    await check_limit(db, org, "invoice")
+    seller_state = org.get("state_code", "33")
+    party = await _momcub_customer_party(org_id, o.customer, seller_state)
+
+    # Match website items to BillingsEasy products by SKU, then UPC/barcode
+    items, unmatched = [], []
+    subtotal = sum(i.price * i.qty for i in o.items) or 1
+    disc_pct = round(min(max(o.discount, 0) / subtotal * 100, 100), 4) if o.discount else 0
+    for it in o.items:
+        prod = None
+        for field, val in (("sku", it.sku), ("upc", it.upc), ("barcode", it.upc)):
+            if val:
+                prod = await db.products.find_one({"org_id": org_id, field: val}, {"_id": 0})
+                if prod:
+                    break
+        gst = float((prod or {}).get("gst_rate", 0) or 0)
+        if not prod:
+            unmatched.append(it.sku or it.name)
+        items.append({
+            "product_id": (prod or {}).get("id", ""), "name": (prod or {}).get("name") or it.name,
+            "hsn": (prod or {}).get("hsn", ""), "qty": it.qty, "unit": (prod or {}).get("unit", "NOS"),
+            "rate": round(it.price / (1 + gst / 100), 4),   # website prices include GST
+            "discount_pct": disc_pct, "gst_rate": gst,
+        })
+    if o.shipping and o.shipping > 0:
+        items.append({"product_id": "", "name": "Shipping charges", "hsn": "996812", "qty": 1, "unit": "NOS",
+                      "rate": round(o.shipping, 2), "discount_pct": 0, "gst_rate": 0})
+
+    notes = f"Mom & Cub website order {o.orderNumber or o.id} · {o.paymentMethod.upper()}"
+    if unmatched:
+        notes += f" · Not matched to a product (no stock deducted): {', '.join(unmatched)}"
+    inv_in = InvoiceIn(party_id=party["id"], invoice_date=(o.createdAt or now_iso())[:10], due_date="",
+                       items=[LineItem(**i) for i in items], notes=notes, status="finalized", type="sale",
+                       invoice_category="stock", shipping_address=party.get("shipping_address", ""),
+                       po_number=o.orderNumber or "")
+    doc = await _build_invoice_doc(inv_in, ictx, "INV")
+    doc.update({"external_source": MOMCUB, "external_id": o.id, "external_ref": o.orderNumber,
+                "sales_channel": "Mom & Cub website"})
+    try:
+        await db.invoices.insert_one(doc)
+    except Exception:
+        existing = await db.invoices.find_one({"org_id": org_id, "external_source": MOMCUB, "external_id": o.id},
+                                              {"_id": 0, "id": 1, "invoice_no": 1})
+        if existing:
+            return {"ok": True, "duplicate": True, "invoice_id": existing["id"], "invoice_no": existing["invoice_no"]}
+        raise
+
+    for it in items:
+        if it["product_id"]:
+            await db.products.update_one({"org_id": org_id, "id": it["product_id"]}, {"$inc": {"stock": -it["qty"]}})
+            await _log_stock_movement(org_id, it["product_id"], -it["qty"], movement_type="sale",
+                                      ref_id=doc["id"], ref_no=doc["invoice_no"], party_name=party["name"],
+                                      date=doc["invoice_date"])
+
+    receipt = None
+    grand = doc["totals"]["grand_total"]
+    if (o.paymentStatus or "").lower() == "paid" and grand > 0:
+        receipt = {
+            "id": str(uuid.uuid4()), "org_id": org_id, "party_id": party["id"], "direction": "received",
+            "amount": grand, "mode": "Online", "date": doc["invoice_date"],
+            "reference": o.orderNumber or o.id, "bank_account_id": "", "invoice_id": doc["id"],
+            "linked_ref": doc["invoice_no"], "linked_type": "invoice", "expense_id": "",
+            "notes": f"Prepaid on Mom & Cub ({o.paymentMethod})", "source": MOMCUB, "created_at": now_iso(),
+        }
+        await db.payments.insert_one(receipt)
+        await db.invoices.update_one({"org_id": org_id, "id": doc["id"]},
+                                     {"$set": {"status": "paid", "status_changed_at": now_iso()}})
+
+    await audit_log(db, org_id=org_id, user=ictx["user"], action="invoice.created",
+                    entity_type="invoice", entity_id=doc["id"],
+                    metadata={"invoice_no": doc["invoice_no"], "total": grand, "source": MOMCUB,
+                              "order": o.orderNumber}, request=request)
+    return {"ok": True, "duplicate": False, "invoice_id": doc["id"], "invoice_no": doc["invoice_no"],
+            "total": grand, "receipt_recorded": bool(receipt), "unmatched_items": unmatched}
+
+
 
 app.include_router(api)
 app.add_middleware(
