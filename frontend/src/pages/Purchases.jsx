@@ -343,7 +343,19 @@ export default function Purchases() {
                     <td><Badge variant="secondary">{p.type}</Badge></td>
                     <td className="num">{inr(p.totals.taxable_amount)}</td>
                     <td className="num">{inr(p.totals.cgst + p.totals.sgst + p.totals.igst)}</td>
-                    <td className="num font-semibold">{inr(p.totals.grand_total)}</td>
+                    <td className="num">
+                      <div className="font-semibold">{inr(p.totals.grand_total)}</div>
+                      {p.tds_amount > 0 && (
+                        <div className="text-[11px] text-muted-foreground whitespace-nowrap" title={`TDS u/s 194Q @ ${p.tds_rate}% deducted`}>
+                          − TDS {inr(p.tds_amount)}
+                        </div>
+                      )}
+                      {p.status !== "cancelled" && p.payment_status !== "paid" && (p.tds_amount > 0 || p.paid > 0) && (
+                        <div className="text-[11px] font-semibold text-rose-600 whitespace-nowrap">
+                          Payable {inr(p.due ?? p.payable)}
+                        </div>
+                      )}
+                    </td>
                     <td>
                       {(p.payment_status || p.status) === "cancelled" ? (
                         <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">cancelled</span>
