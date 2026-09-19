@@ -202,6 +202,12 @@ async def check_limit(db, org, kind: str):
     """Raise HTTPException(402) when kind ('users'|'invoice'|'product') would exceed plan."""
     from fastapi import HTTPException
     plan_code = org.get("plan_code")
+    # Add-on businesses use the plan of the org that pays for them
+    bid = org.get("billing_org_id")
+    if bid and bid != org.get("id"):
+        parent = await db.organizations.find_one({"id": bid}, {"_id": 0, "plan_code": 1})
+        if parent:
+            plan_code = parent.get("plan_code")
     limits = get_plan_limits(plan_code)
     usage = await org_usage(db, org["id"])
     cap_map = {"users": ("users", "users"),

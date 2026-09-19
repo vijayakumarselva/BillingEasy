@@ -15,42 +15,37 @@ import {
   Receipt, BookOpen, Landmark, Settings, LogOut, Moon, Sun, Building2,
   FileBarChart, ChevronDown, Plus, Bot, Wrench, FileSpreadsheet, Coins, Zap,
   UtensilsCrossed, Scan, SlidersHorizontal, Sparkles, Menu, X, ChevronRight,
-  Home, Lock, ArrowLeftRight, Store, PackageCheck, Truck,
+  Home, Lock, ArrowLeftRight, Store, PackageCheck, Truck, BedDouble,
 } from "lucide-react";
 import { STATES } from "@/pages/Parties";
 import SupportChat from "@/components/SupportChat";
+import BusinessSwitcher, { BUSINESS_MODES } from "@/components/BusinessSwitcher";
 
 const ALL_NAV = [
-  { to: "/parties",  label: "Parties",           icon: Users,           tid: "nav-parties",   shortcut: "Alt+P", group: "Masters",      modes: ["b2b","b2c","restaurant","pos"] },
+  { to: "/parties",  label: "Parties",           icon: Users,           tid: "nav-parties",   shortcut: "Alt+P", group: "Masters",      modes: ["b2b","b2c","restaurant","pos","stay"] },
   { to: "/products", label: "Products & Stock",   icon: Package,         tid: "nav-products",  shortcut: "Alt+I", group: "Masters",      modes: ["b2b","b2c","restaurant","pos"] },
-  { to: "/sales",      label: "Sales / Invoices", icon: FileText,        tid: "nav-sales",     shortcut: "Alt+S", group: "Transactions", modes: ["b2b","b2c"] },
-  { to: "/purchases",       label: "Purchases",        icon: ShoppingCart,  tid: "nav-purchases",    shortcut: "Alt+B", group: "Transactions", modes: ["b2b","b2c","restaurant","pos"] },
+  { to: "/sales",      label: "Sales / Invoices", icon: FileText,        tid: "nav-sales",     shortcut: "Alt+S", group: "Transactions", modes: ["b2b","b2c","stay"] },
+  { to: "/purchases",       label: "Purchases",        icon: ShoppingCart,  tid: "nav-purchases",    shortcut: "Alt+B", group: "Transactions", modes: ["b2b","b2c","restaurant","pos","stay"] },
   { to: "/grn",             label: "GRN",              icon: PackageCheck,  tid: "nav-grn",                         group: "Transactions", modes: ["b2b","b2c"] },
   { to: "/inventory",       label: "Inventory",        icon: ArrowLeftRight,tid: "nav-inventory",                   group: "Transactions", modes: ["b2b","b2c"] },
   { to: "/delivery-orders", label: "Delivery Orders",  icon: Truck,         tid: "nav-delivery",                    group: "Transactions", modes: ["b2b","b2c"] },
-  { to: "/payments",        label: "Payments",         icon: Wallet,        tid: "nav-payments",  shortcut: "Alt+M", group: "Transactions", modes: ["b2b","b2c"] },
-  { to: "/expenses",   label: "Expenses",          icon: Receipt,        tid: "nav-expenses",  shortcut: "Alt+E", group: "Transactions", modes: ["b2b","b2c","restaurant"] },
+  { to: "/payments",        label: "Payments",         icon: Wallet,        tid: "nav-payments",  shortcut: "Alt+M", group: "Transactions", modes: ["b2b","b2c","stay"] },
+  { to: "/expenses",   label: "Expenses",          icon: Receipt,        tid: "nav-expenses",  shortcut: "Alt+E", group: "Transactions", modes: ["b2b","b2c","restaurant","stay"] },
   { to: "/pos",              label: "Retail POS",          icon: Scan,             tid: "nav-pos",           badge: "New", group: "Modules", modes: ["pos","b2c"] },
   { to: "/pos/admin",        label: "POS Settings",        icon: SlidersHorizontal,tid: "nav-pos-admin",                   group: "Modules", modes: ["pos"] },
+  { to: "/stay",             label: "Stay & Bookings",     icon: BedDouble,        tid: "nav-stay",          badge: "New", group: "Modules", modes: ["stay"] },
   { to: "/restaurant",       label: "Restaurant",          icon: UtensilsCrossed,  tid: "nav-restaurant",    badge: "New", group: "Modules", modes: ["restaurant"] },
   { to: "/restaurant/admin", label: "Restaurant Settings", icon: SlidersHorizontal,tid: "nav-restaurant-admin",            group: "Modules", modes: ["restaurant"] },
-  { to: "/bank-statement", label: "Bank Statement",  icon: FileSpreadsheet, tid: "nav-bank-statement", group: "Accounting", modes: ["b2b","b2c"] },
-  { to: "/gst",            label: "GST Returns",     icon: FileBarChart,    tid: "nav-gst",  shortcut: "Alt+G", group: "Accounting", modes: ["b2b","b2c"] },
+  { to: "/bank-statement", label: "Bank Statement",  icon: FileSpreadsheet, tid: "nav-bank-statement", group: "Accounting", modes: ["b2b","b2c","stay"] },
+  { to: "/gst",            label: "GST Returns",     icon: FileBarChart,    tid: "nav-gst",  shortcut: "Alt+G", group: "Accounting", modes: ["b2b","b2c","stay"] },
   { to: "/tds",            label: "TDS",             icon: Landmark,        tid: "nav-tds",               group: "Accounting", modes: ["b2b"] },
-  { to: "/reports",        label: "Reports & Books", icon: BookOpen,        tid: "nav-accounting", shortcut: "Alt+R", group: "Accounting", modes: ["b2b","b2c","restaurant"] },
-  { to: "/ask-ai", label: "Ask AI",    icon: Bot,    tid: "nav-ai",    badge: "AI",   group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos"] },
-  { to: "/tools",  label: "Tax Toolkit", icon: Wrench, tid: "nav-tools", badge: "Free", group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos"] },
-  { to: "/wallet",   label: "Wallet & Credits", icon: Coins,    tid: "nav-wallet",  group: "Account", modes: ["b2b","b2c","restaurant","pos"] },
-  { to: "/credits",  label: "Buy Credits",      icon: Zap,      tid: "nav-credits", badge: "New", group: "Account", modes: ["b2b","b2c","restaurant","pos"] },
-  { to: "/entities", label: "Entities",          icon: Store,    tid: "nav-entities",               group: "Account", modes: ["b2b","b2c","restaurant","pos"] },
-  { to: "/settings", label: "Settings",         icon: Settings, tid: "nav-settings", shortcut: "Alt+,", group: "Account", modes: ["b2b","b2c","restaurant","pos"] },
-];
-
-const BUSINESS_MODES = [
-  { value: "b2b",        label: "B2B Billing",    emoji: "🏢", color: "bg-blue-600",   desc: "GST invoices, purchases, ledgers" },
-  { value: "b2c",        label: "B2C Retail",     emoji: "🛒", color: "bg-orange-500", desc: "Sales, POS, retail billing" },
-  { value: "restaurant", label: "Restaurant",     emoji: "🍽️", color: "bg-red-500",    desc: "Table orders, KOT, menus" },
-  { value: "pos",        label: "POS / Counter",  emoji: "🖥️", color: "bg-indigo-600", desc: "Retail counter & quick billing" },
+  { to: "/reports",        label: "Reports & Books", icon: BookOpen,        tid: "nav-accounting", shortcut: "Alt+R", group: "Accounting", modes: ["b2b","b2c","restaurant","stay"] },
+  { to: "/ask-ai", label: "Ask AI",    icon: Bot,    tid: "nav-ai",    badge: "AI",   group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos","stay"] },
+  { to: "/tools",  label: "Tax Toolkit", icon: Wrench, tid: "nav-tools", badge: "Free", group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos","stay"] },
+  { to: "/wallet",   label: "Wallet & Credits", icon: Coins,    tid: "nav-wallet",  group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
+  { to: "/credits",  label: "Buy Credits",      icon: Zap,      tid: "nav-credits", badge: "New", group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
+  { to: "/entities", label: "Entities",          icon: Store,    tid: "nav-entities",               group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
+  { to: "/settings", label: "Settings",         icon: Settings, tid: "nav-settings", shortcut: "Alt+,", group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
 ];
 
 const FKEYS = [
@@ -119,6 +114,11 @@ export default function AppLayout() {
 
   useEffect(() => {
     if (!orgId) return;
+    if (currentOrg?.business_type) {
+      setBusinessMode(currentOrg.business_type);
+      localStorage.setItem(`biz_mode_${orgId}`, currentOrg.business_type);
+      return;
+    }
     if (allowedModes.length > 0) {
       const stored = localStorage.getItem(`biz_mode_${orgId}`);
       const effective = allowedModes.includes(stored) ? stored : allowedModes[0];
@@ -133,7 +133,7 @@ export default function AppLayout() {
       if (mode) { setBusinessMode(mode); localStorage.setItem(`biz_mode_${orgId}`, mode); }
       else setShowModeSelect(true);
     }).catch(() => {});
-  }, [orgId, allowedModes]);
+  }, [orgId, allowedModes, currentOrg?.business_type]);
 
   const chooseMode = async (mode) => {
     setBusinessMode(mode);
@@ -186,7 +186,9 @@ export default function AppLayout() {
   // Mobile bottom nav — 4 items based on mode
   const mobileBottomNav = [
     { to: "/dashboard", label: "Home", icon: Home },
-    ...(effectiveMode === "restaurant"
+    ...(effectiveMode === "stay"
+      ? [{ to: "/stay", label: "Bookings", icon: BedDouble }]
+      : effectiveMode === "restaurant"
       ? [{ to: "/restaurant", label: "Orders", icon: UtensilsCrossed }]
       : effectiveMode === "pos"
       ? [{ to: "/pos", label: "POS", icon: Scan }]
@@ -272,7 +274,7 @@ export default function AppLayout() {
 
         {/* Business mode badge — prominent, tappable to switch */}
         <button
-          onClick={() => allowedModes.length === 0 && setShowModeSelect(true)}
+          onClick={() => setShowModeSelect(true)}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-white text-sm font-semibold ${currentMode?.color || "bg-gray-600"}`}
         >
           <span>{currentMode?.emoji}</span>
@@ -602,103 +604,16 @@ export default function AppLayout() {
 
       <SupportChat />
 
-      {/* Business mode selector */}
-      {showModeSelect && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md border border-gray-100 dark:border-gray-800">
-            <div className="p-6 pb-4">
-              <h2 className="text-xl font-bold text-gray-900 dark:text-white">Switch Business Type</h2>
-              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Each business type has its own data — parties, invoices, products, and accounts are kept separate.</p>
-            </div>
-            <div className="grid grid-cols-2 gap-3 px-6 pb-6">
-              {BUSINESS_MODES.map(m => (
-                <button key={m.value} onClick={() => chooseMode(m.value)}
-                  className={`rounded-2xl border-2 p-4 text-left transition-all hover:shadow-md ${
-                    businessMode === m.value
-                      ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30"
-                      : "border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800 hover:border-blue-300"
-                  }`}>
-                  <div className={`w-10 h-10 rounded-xl ${m.color} flex items-center justify-center text-xl mb-2`}>
-                    {m.emoji}
-                  </div>
-                  <div className="font-bold text-sm text-gray-900 dark:text-white">{m.label}</div>
-                  <div className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{m.desc}</div>
-                </button>
-              ))}
-            </div>
-            {businessMode && (
-              <div className="px-6 pb-6 pt-0">
-                <button onClick={() => setShowModeSelect(false)}
-                  className="w-full text-sm text-gray-400 hover:text-gray-600 py-2 border border-gray-200 dark:border-gray-700 rounded-xl">
-                  Keep current ({currentMode?.label})
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      <CreateOrgDialog open={showCreateOrg} onClose={() => setShowCreateOrg(false)}
-        onCreated={async (id) => {
-          await refreshOrgs(); switchOrg(id); setShowCreateOrg(false); nav("/dashboard");
+      <BusinessSwitcher
+        open={showModeSelect || showCreateOrg}
+        startInAdd={showCreateOrg}
+        onClose={() => { setShowModeSelect(false); setShowCreateOrg(false); }}
+        orgId={orgId} currentOrg={currentOrg} businessMode={businessMode}
+        onChooseMode={(m) => chooseMode(m)}
+        onSwitch={async (id) => {
+          await refreshOrgs(); switchOrg(id); setShowModeSelect(false); setShowCreateOrg(false);
+          nav("/dashboard"); window.location.reload();
         }} />
     </div>
-  );
-}
-
-function CreateOrgDialog({ open, onClose, onCreated }) {
-  const [name, setName] = useState("");
-  const [stateCode, setStateCode] = useState("33");
-  const [saving, setSaving] = useState(false);
-
-  const save = async () => {
-    if (!name) { toast.error("Org name required"); return; }
-    setSaving(true);
-    try {
-      const st = STATES.find(s => s.code === stateCode);
-      const { data } = await api.post("/orgs", { name, state: st.name, state_code: stateCode });
-      toast.success(`${data.name} created — 50 free credits added!`);
-      onCreated(data.id);
-      setName("");
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Failed");
-    } finally { setSaving(false); }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent data-testid="create-org-dialog">
-        <DialogHeader><DialogTitle>Create New Organization</DialogTitle></DialogHeader>
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label>Business name *</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Sharma Enterprises" data-testid="new-org-name" />
-          </div>
-          <div className="space-y-1.5">
-            <Label>State</Label>
-            <Select value={stateCode} onValueChange={setStateCode}>
-              <SelectTrigger data-testid="new-org-state"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {STATES.map(s => <SelectItem key={s.code} value={s.code}>{s.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="rounded border p-3 text-xs" style={{ background: "hsl(var(--tally-green-light))", borderColor: "hsl(var(--tally-green) / 0.3)" }}>
-            <div className="flex items-center gap-1.5 font-semibold mb-1" style={{ color: "hsl(var(--tally-green))" }}>
-              <Sparkles className="h-3.5 w-3.5" /> 50 free credits included
-            </div>
-            <div className="opacity-70">Credits power every feature. Top up anytime from the Wallet page.</div>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={save} disabled={saving} data-testid="new-org-save"
-            style={{ background: "hsl(var(--tally-green))", color: "white" }}>
-            {saving ? "Creating…" : "Create Organization"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }

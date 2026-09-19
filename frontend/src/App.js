@@ -40,6 +40,7 @@ import Wallet from "@/pages/Wallet";
 import Credits from "@/pages/Credits";
 import RetailPOS from "@/pages/RetailPOS";
 import Restaurant from "@/pages/Restaurant";
+import Stay from "@/pages/Stay";
 import RestaurantAdmin from "@/pages/RestaurantAdmin";
 import POSAdmin from "@/pages/POSAdmin";
 import QuickUpload from "@/pages/QuickUpload";
@@ -171,6 +172,7 @@ export default function App() {
               <Route path="/entities" element={<Entities />} />
               <Route path="/pos" element={<RetailPOS />} />
               <Route path="/pos/admin" element={<POSAdmin />} />
+              <Route path="/stay" element={<Stay />} />
               <Route path="/restaurant" element={<Restaurant />} />
               <Route path="/restaurant/admin" element={<RestaurantAdmin />} />
             </Route>

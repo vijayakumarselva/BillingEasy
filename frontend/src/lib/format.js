@@ -24,12 +24,18 @@ export function fmtDate(iso) {
   return `${dd}/${mm}/${yy}`;
 }
 
+// Local calendar date (YYYY-MM-DD). toISOString() is UTC, which in India returns
+// yesterday's date between midnight and 5:30 AM.
+function localYMD(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  return localYMD(new Date());
 }
 
 export function addDaysISO(days) {
   const d = new Date();
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return localYMD(d);
 }

@@ -196,6 +196,9 @@ async def get_org_ctx(request: Request, user=Depends(get_current_user)) -> dict:
     perms = await resolve_permissions(db, membership["role"], org_id)
     allowed_modes = await resolve_allowed_modes(db, membership["role"], org_id)
     biz_type = request.headers.get("X-Biz-Type") or None
+    org_type = (await db.organizations.find_one({"id": org_id}, {"_id": 0, "business_type": 1}) or {}).get("business_type")
+    if org_type:
+        biz_type = org_type
     # Server-side enforcement: if role is locked to specific modes, force biz_type
     if allowed_modes:
         if not biz_type or biz_type not in allowed_modes:
@@ -293,7 +296,7 @@ def subscription_status_summary(org: dict) -> dict:
 async def ensure_active_subscription(ctx: dict):
     """Block writes when subscription/trial has ended."""
     org = await get_org_doc(ctx["org_id"])
-    summary = subscription_status_summary(org)
+    summary = await effective_subscription(org)
     if not summary["is_active"]:
         raise HTTPException(402, f"Subscription required ({summary['status']}). Visit /settings → Billing.")
 
@@ -1301,22 +1304,25 @@ async def list_my_orgs(user=Depends(get_current_user)):
         org = await db.organizations.find_one({"id": m["org_id"]}, {"_id": 0})
         if org:
             allowed_modes = await resolve_allowed_modes(db, m["role"], m["org_id"])
+            if org.get("deleted"):
+                continue
             out.append({**org, "role": m["role"], "allowed_modes": allowed_modes,
-                        "subscription": subscription_status_summary(org)})
+                        "subscription": await effective_subscription(org)})
     return out
 
 
 @api.post("/orgs")
-async def create_org(body: OrgCreateIn, user=Depends(get_current_user)):
-    org = await _create_org_internal(body.name, user["id"], body.state, body.state_code)
-    return {**org, "role": "owner", "subscription": subscription_status_summary(org)}
+async def create_org(body: OrgCreateIn, request: Request, user=Depends(get_current_user)):
+    """Legacy endpoint (old 'New Organization' dialog) — now goes through business limits as B2B."""
+    return await create_business(BusinessCreateIn(name=body.name, business_type="b2b", state=body.state,
+                                                  state_code=body.state_code), request, user)
 
 
 @api.get("/orgs/current")
 async def get_current_org(ctx=Depends(get_org_ctx)):
     org = await get_org_doc(ctx["org_id"])
     return {**org, "role": ctx["role"], "allowed_modes": ctx.get("allowed_modes", []),
-            "subscription": subscription_status_summary(org)}
+            "subscription": await effective_subscription(org)}
 
 
 @api.put("/orgs/current")
@@ -2237,8 +2243,9 @@ async def invoice_eway_bill(iid: str, body: dict, ctx=Depends(get_org_ctx)):
 @api.get("/billing/status")
 async def billing_status(ctx=Depends(get_org_ctx)):
     org = await get_org_doc(ctx["org_id"])
-    summary = subscription_status_summary(org)
-    summary["limits"] = get_plan_limits(org.get("plan_code") or "FREE")
+    payer = await billing_org_for(org)
+    summary = await effective_subscription(org)
+    summary["limits"] = get_plan_limits(payer.get("plan_code") or "FREE")
     summary["usage"] = await org_usage(db, ctx["org_id"])
     return summary
 
@@ -2413,7 +2420,7 @@ async def create_role(body: RoleIn, request: Request, ctx=Depends(require_permis
         "id": str(uuid.uuid4()), "org_id": ctx["org_id"],
         "slug": slug, "name": body.name, "description": body.description,
         "permissions": [p for p in body.permissions if p in PERMISSIONS or p == "*" or p.endswith(".*")],
-        "allowed_modes": [m for m in body.allowed_modes if m in ("b2b", "b2c", "restaurant", "pos")],
+        "allowed_modes": [m for m in body.allowed_modes if m in ("b2b", "b2c", "restaurant", "pos", "stay")],
         "is_system": False, "created_at": now_iso(),
     }
     await db.roles.insert_one(doc)
@@ -2431,7 +2438,7 @@ async def update_role(slug: str, body: RoleIn, request: Request,
         raise HTTPException(404, "Role not found")
     # system roles can be customized per-org
     new_perms = [p for p in body.permissions if p in PERMISSIONS or p == "*" or p.endswith(".*")]
-    new_modes = [m for m in body.allowed_modes if m in ("b2b", "b2c", "restaurant", "pos")]
+    new_modes = [m for m in body.allowed_modes if m in ("b2b", "b2c", "restaurant", "pos", "stay")]
     await db.roles.update_one({"_id": role["_id"]},
                                {"$set": {"name": body.name, "description": body.description,
                                          "permissions": new_perms, "allowed_modes": new_modes}})
@@ -2693,7 +2700,7 @@ async def party_ledger(pid: str, ctx=Depends(get_org_ctx)):
 
 
 # ---------------- PRODUCTS ----------------
-VALID_MODES = ("b2b", "b2c", "restaurant", "pos")
+VALID_MODES = ("b2b", "b2c", "restaurant", "pos", "stay")
 
 
 def product_mode_query(ctx: dict, mode: Optional[str]) -> dict:
@@ -4912,6 +4919,190 @@ async def require_super_admin(user=Depends(get_current_user)):
     return user
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Businesses: each business is a standalone org (own parties, products, invoices,
+# accounts, team). One owner can run several; extra businesses bill as add-ons on the
+# owner's main ("billing") org. Limits and prices are set by the BillingsEasy super admin.
+# ─────────────────────────────────────────────────────────────────────────────
+BUSINESS_TYPES = {
+    "b2b": "B2B Billing", "b2c": "B2C Retail", "restaurant": "Restaurant",
+    "pos": "POS / Counter", "stay": "Stay / Hotel",
+}
+DEFAULT_BUSINESS_LIMITS = {
+    "included_businesses": 1,          # covered by the main subscription
+    "max_businesses": 1,               # hard cap (admin raises it per account)
+    "allowed_types": list(BUSINESS_TYPES),
+    "addon_price_monthly": 299,        # INR per extra business per month
+}
+
+
+async def platform_business_defaults() -> dict:
+    row = await db.platform_settings.find_one({"id": "business_limits"}, {"_id": 0}) or {}
+    return {**DEFAULT_BUSINESS_LIMITS, **{k: v for k, v in row.items() if k in DEFAULT_BUSINESS_LIMITS}}
+
+
+async def owner_business_limits(user_id: str) -> dict:
+    base = await platform_business_defaults()
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "business_limits": 1}) or {}
+    override = {k: v for k, v in (u.get("business_limits") or {}).items() if k in DEFAULT_BUSINESS_LIMITS and v is not None}
+    lim = {**base, **override}
+    lim["max_businesses"] = max(int(lim["max_businesses"]), int(lim["included_businesses"]))
+    lim["allowed_types"] = [t for t in lim["allowed_types"] if t in BUSINESS_TYPES]
+    return lim
+
+
+async def owned_businesses(user_id: str) -> list:
+    return await db.organizations.find(
+        {"owner_user_id": user_id, "deleted": {"$ne": True}}, {"_id": 0}).sort("created_at", 1).to_list(200)
+
+
+async def billing_org_for(org: dict) -> dict:
+    """The org whose subscription covers this business (itself unless it's an add-on)."""
+    bid = org.get("billing_org_id")
+    if bid and bid != org.get("id"):
+        parent = await db.organizations.find_one({"id": bid}, {"_id": 0})
+        if parent:
+            return parent
+    return org
+
+
+async def effective_subscription(org: dict) -> dict:
+    summary = subscription_status_summary(await billing_org_for(org))
+    if org.get("billing_org_id") and org.get("billing_org_id") != org.get("id"):
+        summary["billed_via"] = org["billing_org_id"]
+    return summary
+
+
+class BusinessCreateIn(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    business_type: str
+    state: str = "Tamil Nadu"
+    state_code: str = "33"
+    gstin: str = ""
+
+
+async def _business_account(user: dict) -> dict:
+    owned = await owned_businesses(user["id"])
+    lim = await owner_business_limits(user["id"])
+    extra = max(0, len(owned) - lim["included_businesses"])
+    return {
+        "limits": lim, "owned_count": len(owned),
+        "can_add": len(owned) < lim["max_businesses"],
+        "extra_businesses": extra,
+        "addon_monthly_total": extra * lim["addon_price_monthly"],
+        "types": [{"value": k, "label": v, "allowed": k in lim["allowed_types"]} for k, v in BUSINESS_TYPES.items()],
+    }
+
+
+@api.get("/businesses")
+async def list_businesses(user=Depends(get_current_user)):
+    memberships = await db.memberships.find({"user_id": user["id"]}, {"_id": 0}).to_list(200)
+    rows = []
+    for m in memberships:
+        org = await db.organizations.find_one({"id": m["org_id"], "deleted": {"$ne": True}}, {"_id": 0,
+            "id": 1, "name": 1, "business_type": 1, "gstin": 1, "owner_user_id": 1, "billing_org_id": 1, "created_at": 1})
+        if org:
+            rows.append({**org, "role": m["role"], "type_label": BUSINESS_TYPES.get(org.get("business_type") or "", "Multi-type (legacy)")})
+    rows.sort(key=lambda r: r.get("created_at") or "")
+    return {"businesses": rows, "account": await _business_account(user)}
+
+
+@api.post("/businesses")
+async def create_business(body: BusinessCreateIn, request: Request, user=Depends(get_current_user)):
+    btype = body.business_type.strip().lower()
+    if btype not in BUSINESS_TYPES:
+        raise HTTPException(400, "Unknown business type")
+    acct = await _business_account(user)
+    lim = acct["limits"]
+    if btype not in lim["allowed_types"]:
+        raise HTTPException(403, f"{BUSINESS_TYPES[btype]} isn't enabled for your account — contact BillingsEasy support")
+    if not acct["can_add"]:
+        raise HTTPException(402, f"Your account allows {lim['max_businesses']} business"
+                                 f"{'es' if lim['max_businesses'] != 1 else ''}. Contact BillingsEasy to add more "
+                                 f"(₹{lim['addon_price_monthly']}/month per extra business).")
+    owned = await owned_businesses(user["id"])
+    billing_root = (await billing_org_for(owned[0]))["id"] if owned else None
+    org = await _create_org_internal(body.name.strip(), user["id"], body.state, body.state_code)
+    patch = {"business_type": btype, "business_mode": btype, "gstin": body.gstin.strip().upper(),
+             "billing_org_id": billing_root or org["id"]}
+    if billing_root:
+        patch.update({"subscription_status": "addon", "trial_ends_at": None})
+    await db.organizations.update_one({"id": org["id"]}, {"$set": patch})
+    org.update(patch)
+    await audit_log(db, org_id=org["id"], user=user, action="business.created", entity_type="organization",
+                    entity_id=org["id"], metadata={"name": org["name"], "type": btype,
+                                                   "billing_org_id": patch["billing_org_id"]}, request=request)
+    return {**org, "role": "owner", "subscription": await effective_subscription(org)}
+
+
+# ── Super admin: per-account business limits & pricing ──
+class BusinessLimitsIn(BaseModel):
+    included_businesses: Optional[int] = None
+    max_businesses: Optional[int] = None
+    allowed_types: Optional[List[str]] = None
+    addon_price_monthly: Optional[float] = None
+    note: str = ""
+
+
+def _clean_limits(body: BusinessLimitsIn) -> dict:
+    out = {}
+    if body.included_businesses is not None: out["included_businesses"] = max(0, int(body.included_businesses))
+    if body.max_businesses is not None: out["max_businesses"] = max(1, int(body.max_businesses))
+    if body.allowed_types is not None: out["allowed_types"] = [t for t in body.allowed_types if t in BUSINESS_TYPES]
+    if body.addon_price_monthly is not None: out["addon_price_monthly"] = max(0.0, float(body.addon_price_monthly))
+    return out
+
+
+@api.get("/super/business-limits")
+async def super_get_business_defaults(user=Depends(require_super_admin)):
+    return {"defaults": await platform_business_defaults(), "types": BUSINESS_TYPES}
+
+
+@api.put("/super/business-limits")
+async def super_set_business_defaults(body: BusinessLimitsIn, user=Depends(require_super_admin)):
+    data = _clean_limits(body)
+    await db.platform_settings.update_one({"id": "business_limits"},
+                                          {"$set": {"id": "business_limits", **data, "updated_at": now_iso()}}, upsert=True)
+    return await platform_business_defaults()
+
+
+@api.get("/super/accounts")
+async def super_list_accounts(user=Depends(require_super_admin)):
+    """Owners with their businesses, effective limits and add-on charges."""
+    owner_ids = await db.organizations.distinct("owner_user_id", {"deleted": {"$ne": True}})
+    out = []
+    for uid in owner_ids:
+        if not uid:
+            continue
+        u = await db.users.find_one({"id": uid}, {"_id": 0, "id": 1, "name": 1, "email": 1, "business_limits": 1})
+        if not u:
+            continue
+        acct = await _business_account(u)
+        biz = await owned_businesses(uid)
+        out.append({"user": {k: u.get(k) for k in ("id", "name", "email")},
+                    "override": u.get("business_limits") or {}, **acct,
+                    "businesses": [{"id": b["id"], "name": b["name"],
+                                    "business_type": b.get("business_type") or "",
+                                    "type_label": BUSINESS_TYPES.get(b.get("business_type") or "", "Multi-type (legacy)"),
+                                    "billing_org_id": b.get("billing_org_id"),
+                                    "subscription": (await effective_subscription(b))["status"],
+                                    "created_at": b.get("created_at")} for b in biz]})
+    out.sort(key=lambda a: -a["owned_count"])
+    return out
+
+
+@api.put("/super/accounts/{user_id}/business-limits")
+async def super_set_account_limits(user_id: str, body: BusinessLimitsIn, request: Request,
+                                   admin=Depends(require_super_admin)):
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "id": 1})
+    if not u:
+        raise HTTPException(404, "User not found")
+    data = _clean_limits(body)
+    if body.note: data["note"] = body.note
+    await db.users.update_one({"id": user_id}, {"$set": {"business_limits": data}})
+    return await _business_account({"id": user_id})
+
+
 @api.get("/super/stats")
 async def super_stats(user=Depends(require_super_admin)):
     return {
@@ -4929,7 +5120,7 @@ async def super_stats(user=Depends(require_super_admin)):
 async def super_list_orgs(user=Depends(require_super_admin)):
     orgs = await db.organizations.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     for o in orgs:
-        o["subscription"] = subscription_status_summary(o)
+        o["subscription"] = await effective_subscription(o)
         o["usage"] = await org_usage(db, o["id"])
         owner = await db.users.find_one({"id": o.get("owner_user_id")}, {"_id": 0, "password_hash": 0})
         o["owner"] = owner
@@ -6376,6 +6567,312 @@ async def momcub_order_webhook(body: MomcubOrderEvent, request: Request, ictx=De
     return {"ok": True, "duplicate": False, "invoice_id": doc["id"], "invoice_no": doc["invoice_no"],
             "total": grand, "receipt_recorded": bool(receipt), "unmatched_items": unmatched}
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stay / Hotel: rooms, bookings, check-in/out, advances, folio -> GST invoice.
+# GST on accommodation (SAC 996311): 5% when the room tariff is <= Rs 7,500 per night,
+# 18% above (rates from 22 Sep 2025). A booking can override the rate.
+# ─────────────────────────────────────────────────────────────────────────────
+STAY_SAC = "996311"
+ACTIVE_BOOKING = ("booked", "checked_in")
+
+
+def stay_gst_rate(tariff: float) -> float:
+    return 5.0 if (tariff or 0) <= 7500 else 18.0
+
+
+def _nights(check_in: str, check_out: str) -> int:
+    try:
+        d = (datetime.fromisoformat(check_out[:10]) - datetime.fromisoformat(check_in[:10])).days
+    except ValueError:
+        raise HTTPException(400, "Dates must be YYYY-MM-DD")
+    if d < 1:
+        raise HTTPException(400, "Check-out must be at least one night after check-in")
+    return d
+
+
+class RoomIn(BaseModel):
+    number: str = Field(min_length=1, max_length=20)
+    room_type: str = "Standard"
+    capacity: int = 2
+    tariff: float = 0            # per night, before GST
+    status: str = "available"    # available | maintenance
+    notes: str = ""
+
+
+class StayChargeIn(BaseModel):
+    name: str
+    amount: float                # before GST
+    gst_rate: float = 18
+    date: str = ""
+
+
+class BookingIn(BaseModel):
+    party_id: str
+    room_id: str
+    check_in: str
+    check_out: str
+    adults: int = 1
+    children: int = 0
+    tariff: Optional[float] = None       # per night; defaults to the room's tariff
+    gst_rate: Optional[float] = None     # override the automatic 5% / 18%
+    source: str = "Walk-in"              # Walk-in | Phone | Website | OTA | Corporate
+    id_proof: str = ""
+    notes: str = ""
+
+
+class StayAdvanceIn(BaseModel):
+    amount: float = Field(gt=0)
+    mode: str = "UPI"
+    reference: str = ""
+    date: str = ""
+    bank_account_id: str = ""
+
+
+async def _stay_ctx(ctx: dict) -> dict:
+    await ensure_active_subscription(ctx)
+    return ctx
+
+
+async def _room_clash(ctx: dict, room_id: str, check_in: str, check_out: str, exclude_id: str = "") -> Optional[dict]:
+    q = {"org_id": ctx["org_id"], "room_id": room_id, "status": {"$in": list(ACTIVE_BOOKING)},
+         "check_in": {"$lt": check_out[:10]}, "check_out": {"$gt": check_in[:10]}}
+    if exclude_id:
+        q["id"] = {"$ne": exclude_id}
+    return await db.bookings.find_one(q, {"_id": 0, "booking_no": 1, "check_in": 1, "check_out": 1, "party_snapshot": 1})
+
+
+async def _booking(ctx: dict, bid: str) -> dict:
+    b = await db.bookings.find_one({"org_id": ctx["org_id"], "id": bid}, {"_id": 0})
+    if not b:
+        raise HTTPException(404, "Booking not found")
+    return b
+
+
+async def _booking_view(ctx: dict, b: dict) -> dict:
+    nights = _nights(b["check_in"], b["check_out"])
+    rate = b.get("gst_rate") if b.get("gst_rate") is not None else stay_gst_rate(b.get("tariff", 0))
+    room_amt = round(nights * (b.get("tariff") or 0), 2)
+    charges = b.get("charges") or []
+    taxable = room_amt + sum(c["amount"] for c in charges)
+    tax = room_amt * rate / 100 + sum(c["amount"] * c.get("gst_rate", 0) / 100 for c in charges)
+    advances = 0.0
+    async for p in db.payments.find({"org_id": ctx["org_id"], "booking_id": b["id"]}, {"_id": 0, "amount": 1}):
+        advances += p["amount"]
+    total = round(taxable + tax)
+    return {**b, "nights": nights, "gst_rate_applied": rate, "room_amount": room_amt,
+            "estimated_total": total, "advance_paid": round(advances, 2),
+            "balance": round(max(total - advances, 0), 2)}
+
+
+@api.get("/stay/rooms")
+async def stay_list_rooms(ctx=Depends(get_org_ctx)):
+    rooms = await db.rooms.find({"org_id": ctx["org_id"]}, {"_id": 0}).to_list(500)
+    rooms.sort(key=lambda r: (len(r["number"]), r["number"]))
+    return rooms
+
+
+@api.post("/stay/rooms")
+async def stay_create_room(body: RoomIn, ctx=Depends(get_org_ctx)):
+    await _stay_ctx(ctx)
+    if await db.rooms.find_one({"org_id": ctx["org_id"], "number": body.number.strip()}):
+        raise HTTPException(400, f"Room {body.number} already exists")
+    doc = {"id": str(uuid.uuid4()), "org_id": ctx["org_id"], **body.model_dump(), "number": body.number.strip(),
+           "created_at": now_iso()}
+    await db.rooms.insert_one(doc)
+    return strip_id(doc)
+
+
+@api.put("/stay/rooms/{rid}")
+async def stay_update_room(rid: str, body: RoomIn, ctx=Depends(get_org_ctx)):
+    await _stay_ctx(ctx)
+    dup = await db.rooms.find_one({"org_id": ctx["org_id"], "number": body.number.strip(), "id": {"$ne": rid}})
+    if dup:
+        raise HTTPException(400, f"Room {body.number} already exists")
+    res = await db.rooms.update_one({"org_id": ctx["org_id"], "id": rid},
+                                    {"$set": {**body.model_dump(), "number": body.number.strip(), "updated_at": now_iso()}})
+    if not res.matched_count:
+        raise HTTPException(404, "Room not found")
+    return await db.rooms.find_one({"org_id": ctx["org_id"], "id": rid}, {"_id": 0})
+
+
+@api.delete("/stay/rooms/{rid}")
+async def stay_delete_room(rid: str, ctx=Depends(get_org_ctx)):
+    if await db.bookings.find_one({"org_id": ctx["org_id"], "room_id": rid}):
+        raise HTTPException(400, "Room has bookings — set it to maintenance instead of deleting")
+    await db.rooms.delete_one({"org_id": ctx["org_id"], "id": rid})
+    return {"ok": True}
+
+
+@api.get("/stay/bookings")
+async def stay_list_bookings(date_from: str = "", date_to: str = "", status: str = "", ctx=Depends(get_org_ctx)):
+    q = {"org_id": ctx["org_id"]}
+    if status:
+        q["status"] = {"$in": status.split(",")}
+    if date_from:
+        q["check_out"] = {"$gt": date_from[:10]}
+    if date_to:
+        q["check_in"] = {"$lt": date_to[:10]}
+    rows = await db.bookings.find(q, {"_id": 0}).sort("check_in", 1).to_list(1000)
+    return [await _booking_view(ctx, b) for b in rows]
+
+
+@api.get("/stay/bookings/{bid}")
+async def stay_get_booking(bid: str, ctx=Depends(get_org_ctx)):
+    return await _booking_view(ctx, await _booking(ctx, bid))
+
+
+@api.post("/stay/bookings")
+async def stay_create_booking(body: BookingIn, request: Request, ctx=Depends(get_org_ctx)):
+    await _stay_ctx(ctx)
+    _nights(body.check_in, body.check_out)
+    room = await db.rooms.find_one({"org_id": ctx["org_id"], "id": body.room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(400, "Room not found")
+    if room.get("status") == "maintenance":
+        raise HTTPException(400, f"Room {room['number']} is under maintenance")
+    party = await db.parties.find_one({"org_id": ctx["org_id"], "id": body.party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(400, "Guest not found")
+    clash = await _room_clash(ctx, body.room_id, body.check_in, body.check_out)
+    if clash:
+        raise HTTPException(409, f"Room {room['number']} is already booked {clash['check_in']} → {clash['check_out']} "
+                                 f"({clash['booking_no']}, {(clash.get('party_snapshot') or {}).get('name', '')})")
+    doc = {"id": str(uuid.uuid4()), "org_id": ctx["org_id"], "booking_no": await next_invoice_number(ctx["org_id"], "BK"),
+           **body.model_dump(), "check_in": body.check_in[:10], "check_out": body.check_out[:10],
+           "tariff": body.tariff if body.tariff is not None else room.get("tariff", 0),
+           "room_number": room["number"], "room_type": room.get("room_type", ""),
+           "party_snapshot": {k: party.get(k) for k in ("id", "name", "phone", "email", "gstin", "state", "state_code")},
+           "status": "booked", "charges": [], "created_at": now_iso(), "created_by": ctx["user"].get("id")}
+    await db.bookings.insert_one(doc)
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="booking.created", entity_type="booking",
+                    entity_id=doc["id"], metadata={"booking_no": doc["booking_no"], "room": room["number"]}, request=request)
+    return await _booking_view(ctx, strip_id(doc))
+
+
+@api.put("/stay/bookings/{bid}")
+async def stay_update_booking(bid: str, body: BookingIn, ctx=Depends(get_org_ctx)):
+    await _stay_ctx(ctx)
+    b = await _booking(ctx, bid)
+    if b["status"] not in ACTIVE_BOOKING:
+        raise HTTPException(400, f"Booking is {b['status'].replace('_', ' ')} and can't be edited")
+    _nights(body.check_in, body.check_out)
+    room = await db.rooms.find_one({"org_id": ctx["org_id"], "id": body.room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(400, "Room not found")
+    clash = await _room_clash(ctx, body.room_id, body.check_in, body.check_out, exclude_id=bid)
+    if clash:
+        raise HTTPException(409, f"Room {room['number']} is already booked {clash['check_in']} → {clash['check_out']} ({clash['booking_no']})")
+    party = await db.parties.find_one({"org_id": ctx["org_id"], "id": body.party_id}, {"_id": 0}) or {}
+    patch = {**body.model_dump(), "check_in": body.check_in[:10], "check_out": body.check_out[:10],
+             "tariff": body.tariff if body.tariff is not None else room.get("tariff", 0),
+             "room_number": room["number"], "room_type": room.get("room_type", ""), "updated_at": now_iso()}
+    if party:
+        patch["party_snapshot"] = {k: party.get(k) for k in ("id", "name", "phone", "email", "gstin", "state", "state_code")}
+    await db.bookings.update_one({"org_id": ctx["org_id"], "id": bid}, {"$set": patch})
+    return await _booking_view(ctx, await _booking(ctx, bid))
+
+
+@api.post("/stay/bookings/{bid}/check-in")
+async def stay_check_in(bid: str, ctx=Depends(get_org_ctx)):
+    await _stay_ctx(ctx)
+    b = await _booking(ctx, bid)
+    if b["status"] != "booked":
+        raise HTTPException(400, f"Can't check in a booking that is {b['status'].replace('_', ' ')}")
+    await db.bookings.update_one({"org_id": ctx["org_id"], "id": bid},
+                                 {"$set": {"status": "checked_in", "checked_in_at": now_iso()}})
+    return await _booking_view(ctx, await _booking(ctx, bid))
+
+
+@api.post("/stay/bookings/{bid}/cancel")
+async def stay_cancel(bid: str, ctx=Depends(get_org_ctx)):
+    b = await _booking(ctx, bid)
+    if b["status"] not in ACTIVE_BOOKING:
+        raise HTTPException(400, f"Booking is already {b['status'].replace('_', ' ')}")
+    await db.bookings.update_one({"org_id": ctx["org_id"], "id": bid},
+                                 {"$set": {"status": "cancelled", "cancelled_at": now_iso()}})
+    return await _booking_view(ctx, await _booking(ctx, bid))
+
+
+@api.post("/stay/bookings/{bid}/charges")
+async def stay_add_charge(bid: str, body: StayChargeIn, ctx=Depends(get_org_ctx)):
+    await _stay_ctx(ctx)
+    b = await _booking(ctx, bid)
+    if b["status"] not in ACTIVE_BOOKING:
+        raise HTTPException(400, "Charges can only be added before check-out")
+    if body.amount <= 0:
+        raise HTTPException(400, "Amount must be positive")
+    charge = {"id": str(uuid.uuid4()), **body.model_dump(), "date": body.date or now_iso()[:10]}
+    await db.bookings.update_one({"org_id": ctx["org_id"], "id": bid}, {"$push": {"charges": charge}})
+    return await _booking_view(ctx, await _booking(ctx, bid))
+
+
+@api.delete("/stay/bookings/{bid}/charges/{cid}")
+async def stay_remove_charge(bid: str, cid: str, ctx=Depends(get_org_ctx)):
+    b = await _booking(ctx, bid)
+    if b["status"] not in ACTIVE_BOOKING:
+        raise HTTPException(400, "Booking is closed")
+    await db.bookings.update_one({"org_id": ctx["org_id"], "id": bid}, {"$pull": {"charges": {"id": cid}}})
+    return await _booking_view(ctx, await _booking(ctx, bid))
+
+
+@api.post("/stay/bookings/{bid}/advance")
+async def stay_advance(bid: str, body: StayAdvanceIn, ctx=Depends(get_org_ctx)):
+    await _stay_ctx(ctx)
+    b = await _booking(ctx, bid)
+    if b["status"] not in ACTIVE_BOOKING:
+        raise HTTPException(400, "Booking is closed — record the payment against its invoice instead")
+    pay = {"id": str(uuid.uuid4()), "org_id": ctx["org_id"], "party_id": b["party_id"], "direction": "received",
+           "amount": round(body.amount, 2), "mode": body.mode, "date": (body.date or now_iso())[:10],
+           "reference": body.reference or b["booking_no"], "bank_account_id": body.bank_account_id,
+           "invoice_id": "", "expense_id": "", "booking_id": bid, "linked_ref": b["booking_no"],
+           "linked_type": "booking", "biz_type": ctx.get("biz_type"), "created_at": now_iso()}
+    if body.bank_account_id:
+        bank = await db.bank_accounts.find_one({"org_id": ctx["org_id"], "id": body.bank_account_id}, {"_id": 0})
+        if bank:
+            pay["bank_account_name"] = f"{bank['bank_name']} – {bank['account_no'][-4:]}"
+    await db.payments.insert_one(pay)
+    return await _booking_view(ctx, await _booking(ctx, bid))
+
+
+@api.post("/stay/bookings/{bid}/check-out")
+async def stay_check_out(bid: str, request: Request, ctx=Depends(get_org_ctx)):
+    """Close the folio: raise the GST invoice for room nights + extras and attach advances to it."""
+    await _stay_ctx(ctx)
+    b = await _booking(ctx, bid)
+    if b["status"] != "checked_in":
+        raise HTTPException(400, "Check the guest in before checking out")
+    view = await _booking_view(ctx, b)
+    rate = view["gst_rate_applied"]
+    items = [LineItem(name=f"Room {b['room_number']} ({b.get('room_type') or 'Room'}) · "
+                           f"{b['check_in']} to {b['check_out']}", hsn=STAY_SAC, qty=view["nights"],
+                      unit="NIGHT", rate=b.get("tariff") or 0, gst_rate=rate)]
+    for c in b.get("charges") or []:
+        items.append(LineItem(name=c["name"], hsn="", qty=1, unit="NOS", rate=c["amount"], gst_rate=c.get("gst_rate", 0)))
+    org = await get_org_doc(ctx["org_id"])
+    await check_limit(db, org, "invoice")
+    inv_in = InvoiceIn(party_id=b["party_id"], invoice_date=now_iso()[:10], items=items, status="finalized",
+                       type="sale", invoice_category="service",
+                       notes=f"Stay {b['booking_no']} · {view['nights']} night(s) · {b.get('adults', 1)} adult(s)"
+                             f"{(', ' + str(b['children']) + ' child(ren)') if b.get('children') else ''}")
+    doc = await _build_invoice_doc(inv_in, ctx, "INV")
+    doc.update({"booking_id": bid, "booking_no": b["booking_no"]})
+    await db.invoices.insert_one(doc)
+    await db.payments.update_many({"org_id": ctx["org_id"], "booking_id": bid},
+                                  {"$set": {"invoice_id": doc["id"], "linked_ref": doc["invoice_no"], "linked_type": "invoice"}})
+    grand = doc["totals"]["grand_total"]
+    if view["advance_paid"] >= grand * 0.99 and grand > 0:
+        await db.invoices.update_one({"org_id": ctx["org_id"], "id": doc["id"]},
+                                     {"$set": {"status": "paid", "status_changed_at": now_iso()}})
+    await db.bookings.update_one({"org_id": ctx["org_id"], "id": bid},
+                                 {"$set": {"status": "checked_out", "checked_out_at": now_iso(),
+                                           "invoice_id": doc["id"], "invoice_no": doc["invoice_no"]}})
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="booking.checked_out", entity_type="booking",
+                    entity_id=bid, metadata={"invoice_no": doc["invoice_no"], "total": grand}, request=request)
+    return {"booking": await _booking_view(ctx, await _booking(ctx, bid)), "invoice_id": doc["id"],
+            "invoice_no": doc["invoice_no"], "total": grand, "advance_paid": view["advance_paid"],
+            "balance": round(max(grand - view["advance_paid"], 0), 2)}
 
 
 app.include_router(api)

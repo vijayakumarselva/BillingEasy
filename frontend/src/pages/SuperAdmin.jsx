@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { ShieldAlert, Building2, Users as UsersIcon, Activity, Ban, CheckCircle2, Trash2, UserCog, LogOut, CreditCard, Eye, EyeOff, AlertTriangle, Save, Plug, Sparkles, MessageCircle, Send, Loader2 } from "lucide-react";
 import { inr, inrShort, fmtDate } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
+import SuperBusinessLimits from "@/components/SuperBusinessLimits";
 
 export default function SuperAdmin() {
   const { user, logout } = useAuth();
@@ -97,6 +98,7 @@ export default function SuperAdmin() {
         <Tabs defaultValue="orgs">
           <TabsList>
             <TabsTrigger value="orgs" data-testid="super-tab-orgs">Organizations ({orgs.length})</TabsTrigger>
+            <TabsTrigger value="accounts" data-testid="super-tab-accounts">Businesses & limits</TabsTrigger>
             <TabsTrigger value="users" data-testid="super-tab-users">All users ({users.length})</TabsTrigger>
             <TabsTrigger value="payment" data-testid="super-tab-payment">
               <CreditCard className="h-3.5 w-3.5 mr-1.5" /> Payment Gateway
@@ -148,6 +150,8 @@ export default function SuperAdmin() {
               </tbody>
             </table></div></Card>
           </TabsContent>
+
+          <TabsContent value="accounts"><SuperBusinessLimits /></TabsContent>
 
           <TabsContent value="users">
             <Card className="mt-3"><div className="overflow-x-auto"><table className="app-table">

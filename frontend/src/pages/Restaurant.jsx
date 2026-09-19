@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from "react";
+import { todayISO } from "@/lib/format";
 import api from "@/lib/api";
 import { openPrintWindow } from "@/lib/mobile";
 import { toast } from "sonner";
@@ -134,7 +135,7 @@ export default function Restaurant() {
     }
     setGenerating(true);
     try {
-      const today = new Date().toISOString().split("T")[0];
+      const today = todayISO(); // local date, not UTC
       const payload = {
         party_id: null,
         date: today,
