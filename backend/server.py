@@ -13,6 +13,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import os
+import re
 import ssl
 import certifi
 import uuid
@@ -4926,7 +4927,7 @@ async def require_super_admin(user=Depends(get_current_user)):
 # ─────────────────────────────────────────────────────────────────────────────
 BUSINESS_TYPES = {
     "b2b": "B2B Billing", "b2c": "B2C Retail", "restaurant": "Restaurant",
-    "pos": "POS / Counter", "stay": "Stay / Hotel",
+    "pos": "POS / Counter", "stay": "Stay / Resort / Homestay",
 }
 DEFAULT_BUSINESS_LIMITS = {
     "included_businesses": 1,          # covered by the main subscription
@@ -6574,22 +6575,27 @@ async def momcub_order_webhook(body: MomcubOrderEvent, request: Request, ictx=De
 # GST on accommodation (SAC 996311): 5% when the room tariff is <= Rs 7,500 per night,
 # 18% above (rates from 22 Sep 2025). A booking can override the rate.
 # ─────────────────────────────────────────────────────────────────────────────
-STAY_SAC = "996311"
+STAY_SAC = "996311"          # accommodation
+TRIP_SAC = "998555"          # tour operator / trip packages
 ACTIVE_BOOKING = ("booked", "checked_in")
+BOOKING_CHANNELS = ["Direct", "Walk-in", "Phone", "Website", "Airbnb", "Booking.com", "MakeMyTrip",
+                    "Goibibo", "Agoda", "Expedia", "TripAdvisor", "Other"]
+COMMISSION_CATEGORY = "Channel commission"
 
 
 def stay_gst_rate(tariff: float) -> float:
+    """Accommodation: 5% up to Rs 7,500 per night, 18% above (rates from 22 Sep 2025)."""
     return 5.0 if (tariff or 0) <= 7500 else 18.0
 
 
-def _nights(check_in: str, check_out: str) -> int:
+def _nights(check_in: str, check_out: str, allow_same_day: bool = False) -> int:
     try:
         d = (datetime.fromisoformat(check_out[:10]) - datetime.fromisoformat(check_in[:10])).days
     except ValueError:
         raise HTTPException(400, "Dates must be YYYY-MM-DD")
-    if d < 1:
+    if d < 0 or (d == 0 and not allow_same_day):
         raise HTTPException(400, "Check-out must be at least one night after check-in")
-    return d
+    return max(d, 1) if allow_same_day else d
 
 
 class RoomIn(BaseModel):
@@ -6610,14 +6616,21 @@ class StayChargeIn(BaseModel):
 
 class BookingIn(BaseModel):
     party_id: str
-    room_id: str
+    room_id: str = ""                    # required for a room stay; empty for a trip/package
     check_in: str
     check_out: str
     adults: int = 1
     children: int = 0
     tariff: Optional[float] = None       # per night; defaults to the room's tariff
-    gst_rate: Optional[float] = None     # override the automatic 5% / 18%
-    source: str = "Walk-in"              # Walk-in | Phone | Website | OTA | Corporate
+    gst_rate: Optional[float] = None     # override the automatic rate
+    source: str = "Walk-in"              # legacy label, kept for older bookings
+    channel: str = "Direct"              # Direct | Website | Airbnb | Booking.com | ...
+    channel_ref: str = ""                # the platform's own booking reference
+    commission_amount: float = 0         # what the channel keeps (recorded as an expense)
+    commission_gst_rate: float = 18
+    booking_type: str = "room"           # room | package
+    package_name: str = ""               # e.g. "Coorg 2N/3D homestay + trek"
+    package_amount: float = 0            # total before GST, for a package booking
     id_proof: str = ""
     notes: str = ""
 
@@ -6633,6 +6646,39 @@ class StayAdvanceIn(BaseModel):
 async def _stay_ctx(ctx: dict) -> dict:
     await ensure_active_subscription(ctx)
     return ctx
+
+
+async def _booking_parts(ctx: dict, body: "BookingIn", exclude_id: str = "") -> dict:
+    """Validate a booking and return the room/party fields to store (room or package)."""
+    is_pkg = body.booking_type == "package"
+    _nights(body.check_in, body.check_out, allow_same_day=is_pkg)
+    party = await db.parties.find_one({"org_id": ctx["org_id"], "id": body.party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(400, "Guest not found")
+    out = {"party_snapshot": {k: party.get(k) for k in ("id", "name", "phone", "email", "gstin", "state", "state_code")}}
+    if is_pkg:
+        if not body.package_name.strip():
+            raise HTTPException(400, "Give the trip / package a name")
+        if (body.package_amount or 0) <= 0:
+            raise HTTPException(400, "Enter the package amount")
+        out.update({"room_id": body.room_id or "", "room_number": "", "room_type": "Package", "tariff": 0})
+        if body.room_id:  # a package may still occupy a room
+            room = await db.rooms.find_one({"org_id": ctx["org_id"], "id": body.room_id}, {"_id": 0})
+            if room:
+                out.update({"room_number": room["number"], "room_type": room.get("room_type", "")})
+        return out
+    room = await db.rooms.find_one({"org_id": ctx["org_id"], "id": body.room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(400, "Room not found")
+    if room.get("status") == "maintenance":
+        raise HTTPException(400, f"Room {room['number']} is under maintenance")
+    clash = await _room_clash(ctx, body.room_id, body.check_in, body.check_out, exclude_id=exclude_id)
+    if clash:
+        raise HTTPException(409, f"Room {room['number']} is already booked {clash['check_in']} → {clash['check_out']} "
+                                 f"({clash['booking_no']}, {(clash.get('party_snapshot') or {}).get('name', '')})")
+    out.update({"room_number": room["number"], "room_type": room.get("room_type", ""),
+                "tariff": body.tariff if body.tariff is not None else room.get("tariff", 0)})
+    return out
 
 
 async def _room_clash(ctx: dict, room_id: str, check_in: str, check_out: str, exclude_id: str = "") -> Optional[dict]:
@@ -6651,9 +6697,14 @@ async def _booking(ctx: dict, bid: str) -> dict:
 
 
 async def _booking_view(ctx: dict, b: dict) -> dict:
-    nights = _nights(b["check_in"], b["check_out"])
-    rate = b.get("gst_rate") if b.get("gst_rate") is not None else stay_gst_rate(b.get("tariff", 0))
-    room_amt = round(nights * (b.get("tariff") or 0), 2)
+    is_pkg = b.get("booking_type") == "package"
+    nights = _nights(b["check_in"], b["check_out"], allow_same_day=is_pkg)
+    if is_pkg:
+        rate = b.get("gst_rate") if b.get("gst_rate") is not None else 5.0
+        room_amt = round(b.get("package_amount") or 0, 2)
+    else:
+        rate = b.get("gst_rate") if b.get("gst_rate") is not None else stay_gst_rate(b.get("tariff", 0))
+        room_amt = round(nights * (b.get("tariff") or 0), 2)
     charges = b.get("charges") or []
     taxable = room_amt + sum(c["amount"] for c in charges)
     tax = room_amt * rate / 100 + sum(c["amount"] * c.get("gst_rate", 0) / 100 for c in charges)
@@ -6661,9 +6712,13 @@ async def _booking_view(ctx: dict, b: dict) -> dict:
     async for p in db.payments.find({"org_id": ctx["org_id"], "booking_id": b["id"]}, {"_id": 0, "amount": 1}):
         advances += p["amount"]
     total = round(taxable + tax)
+    commission = round(b.get("commission_amount") or 0, 2)
+    commission_gst = round(commission * (b.get("commission_gst_rate") or 0) / 100, 2)
     return {**b, "nights": nights, "gst_rate_applied": rate, "room_amount": room_amt,
             "estimated_total": total, "advance_paid": round(advances, 2),
-            "balance": round(max(total - advances, 0), 2)}
+            "balance": round(max(total - advances, 0), 2),
+            "commission_total": round(commission + commission_gst, 2),
+            "net_payout": round(total - commission - commission_gst, 2)}
 
 
 @api.get("/stay/rooms")
@@ -6726,28 +6781,14 @@ async def stay_get_booking(bid: str, ctx=Depends(get_org_ctx)):
 @api.post("/stay/bookings")
 async def stay_create_booking(body: BookingIn, request: Request, ctx=Depends(get_org_ctx)):
     await _stay_ctx(ctx)
-    _nights(body.check_in, body.check_out)
-    room = await db.rooms.find_one({"org_id": ctx["org_id"], "id": body.room_id}, {"_id": 0})
-    if not room:
-        raise HTTPException(400, "Room not found")
-    if room.get("status") == "maintenance":
-        raise HTTPException(400, f"Room {room['number']} is under maintenance")
-    party = await db.parties.find_one({"org_id": ctx["org_id"], "id": body.party_id}, {"_id": 0})
-    if not party:
-        raise HTTPException(400, "Guest not found")
-    clash = await _room_clash(ctx, body.room_id, body.check_in, body.check_out)
-    if clash:
-        raise HTTPException(409, f"Room {room['number']} is already booked {clash['check_in']} → {clash['check_out']} "
-                                 f"({clash['booking_no']}, {(clash.get('party_snapshot') or {}).get('name', '')})")
+    parts = await _booking_parts(ctx, body)
     doc = {"id": str(uuid.uuid4()), "org_id": ctx["org_id"], "booking_no": await next_invoice_number(ctx["org_id"], "BK"),
-           **body.model_dump(), "check_in": body.check_in[:10], "check_out": body.check_out[:10],
-           "tariff": body.tariff if body.tariff is not None else room.get("tariff", 0),
-           "room_number": room["number"], "room_type": room.get("room_type", ""),
-           "party_snapshot": {k: party.get(k) for k in ("id", "name", "phone", "email", "gstin", "state", "state_code")},
+           **body.model_dump(), "check_in": body.check_in[:10], "check_out": body.check_out[:10], **parts,
            "status": "booked", "charges": [], "created_at": now_iso(), "created_by": ctx["user"].get("id")}
     await db.bookings.insert_one(doc)
     await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="booking.created", entity_type="booking",
-                    entity_id=doc["id"], metadata={"booking_no": doc["booking_no"], "room": room["number"]}, request=request)
+                    entity_id=doc["id"], metadata={"booking_no": doc["booking_no"], "room": parts.get("room_number", ""),
+                                                   "channel": body.channel}, request=request)
     return await _booking_view(ctx, strip_id(doc))
 
 
@@ -6757,19 +6798,9 @@ async def stay_update_booking(bid: str, body: BookingIn, ctx=Depends(get_org_ctx
     b = await _booking(ctx, bid)
     if b["status"] not in ACTIVE_BOOKING:
         raise HTTPException(400, f"Booking is {b['status'].replace('_', ' ')} and can't be edited")
-    _nights(body.check_in, body.check_out)
-    room = await db.rooms.find_one({"org_id": ctx["org_id"], "id": body.room_id}, {"_id": 0})
-    if not room:
-        raise HTTPException(400, "Room not found")
-    clash = await _room_clash(ctx, body.room_id, body.check_in, body.check_out, exclude_id=bid)
-    if clash:
-        raise HTTPException(409, f"Room {room['number']} is already booked {clash['check_in']} → {clash['check_out']} ({clash['booking_no']})")
-    party = await db.parties.find_one({"org_id": ctx["org_id"], "id": body.party_id}, {"_id": 0}) or {}
+    parts = await _booking_parts(ctx, body, exclude_id=bid)
     patch = {**body.model_dump(), "check_in": body.check_in[:10], "check_out": body.check_out[:10],
-             "tariff": body.tariff if body.tariff is not None else room.get("tariff", 0),
-             "room_number": room["number"], "room_type": room.get("room_type", ""), "updated_at": now_iso()}
-    if party:
-        patch["party_snapshot"] = {k: party.get(k) for k in ("id", "name", "phone", "email", "gstin", "state", "state_code")}
+             **parts, "updated_at": now_iso()}
     await db.bookings.update_one({"org_id": ctx["org_id"], "id": bid}, {"$set": patch})
     return await _booking_view(ctx, await _booking(ctx, bid))
 
@@ -6845,9 +6876,13 @@ async def stay_check_out(bid: str, request: Request, ctx=Depends(get_org_ctx)):
         raise HTTPException(400, "Check the guest in before checking out")
     view = await _booking_view(ctx, b)
     rate = view["gst_rate_applied"]
-    items = [LineItem(name=f"Room {b['room_number']} ({b.get('room_type') or 'Room'}) · "
-                           f"{b['check_in']} to {b['check_out']}", hsn=STAY_SAC, qty=view["nights"],
-                      unit="NIGHT", rate=b.get("tariff") or 0, gst_rate=rate)]
+    if b.get("booking_type") == "package":
+        items = [LineItem(name=f"{b.get('package_name') or 'Package'} · {b['check_in']} to {b['check_out']}",
+                          hsn=TRIP_SAC, qty=1, unit="NOS", rate=b.get("package_amount") or 0, gst_rate=rate)]
+    else:
+        items = [LineItem(name=f"Room {b['room_number']} ({b.get('room_type') or 'Room'}) · "
+                               f"{b['check_in']} to {b['check_out']}", hsn=STAY_SAC, qty=view["nights"],
+                          unit="NIGHT", rate=b.get("tariff") or 0, gst_rate=rate)]
     for c in b.get("charges") or []:
         items.append(LineItem(name=c["name"], hsn="", qty=1, unit="NOS", rate=c["amount"], gst_rate=c.get("gst_rate", 0)))
     org = await get_org_doc(ctx["org_id"])
@@ -6865,6 +6900,17 @@ async def stay_check_out(bid: str, request: Request, ctx=Depends(get_org_ctx)):
     if view["advance_paid"] >= grand * 0.99 and grand > 0:
         await db.invoices.update_one({"org_id": ctx["org_id"], "id": doc["id"]},
                                      {"$set": {"status": "paid", "status_changed_at": now_iso()}})
+    # A channel's commission is our cost — book it as an expense against this booking
+    commission = round(b.get("commission_amount") or 0, 2)
+    if commission > 0 and not b.get("commission_expense_id"):
+        exp = {"id": str(uuid.uuid4()), "org_id": ctx["org_id"], "biz_type": ctx.get("biz_type"),
+               "category": COMMISSION_CATEGORY, "amount": commission,
+               "gst_rate": b.get("commission_gst_rate") or 0, "date": now_iso()[:10],
+               "description": f"{b.get('channel') or 'Channel'} commission · {b['booking_no']}"
+                              f"{' · ' + b['channel_ref'] if b.get('channel_ref') else ''}",
+               "booking_id": bid, "created_at": now_iso()}
+        await db.expenses.insert_one(exp)
+        await db.bookings.update_one({"org_id": ctx["org_id"], "id": bid}, {"$set": {"commission_expense_id": exp["id"]}})
     await db.bookings.update_one({"org_id": ctx["org_id"], "id": bid},
                                  {"$set": {"status": "checked_out", "checked_out_at": now_iso(),
                                            "invoice_id": doc["id"], "invoice_no": doc["invoice_no"]}})
@@ -6872,7 +6918,273 @@ async def stay_check_out(bid: str, request: Request, ctx=Depends(get_org_ctx)):
                     entity_id=bid, metadata={"invoice_no": doc["invoice_no"], "total": grand}, request=request)
     return {"booking": await _booking_view(ctx, await _booking(ctx, bid)), "invoice_id": doc["id"],
             "invoice_no": doc["invoice_no"], "total": grand, "advance_paid": view["advance_paid"],
-            "balance": round(max(grand - view["advance_paid"], 0), 2)}
+            "balance": round(max(grand - view["advance_paid"], 0), 2),
+            "commission_expense": commission if commission > 0 else 0}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Booking intake: your own site or an OTA (Airbnb, Booking.com, MMT…) posts a
+# booking here and it lands in the Stay business — guest, booking, advance and
+# channel commission. Anything that can't be matched to a free room is parked in
+# the inbox for a human, never dropped.
+# Auth: X-Integration-Key (provider "bookings"), generated in Settings → Integrations.
+# ─────────────────────────────────────────────────────────────────────────────
+BOOKINGS_PROVIDER = "bookings"
+
+
+async def bookings_ctx(request: Request) -> dict:
+    key = (request.headers.get("X-Integration-Key") or "").strip()
+    if not key:
+        raise HTTPException(401, "Missing X-Integration-Key")
+    row = await db.integration_keys.find_one(
+        {"key_hash": _key_hash(key), "provider": BOOKINGS_PROVIDER, "revoked": {"$ne": True}}, {"_id": 0})
+    if not row:
+        raise HTTPException(401, "Invalid integration key")
+    await db.integration_keys.update_one({"key_hash": row["key_hash"]}, {"$set": {"last_used_at": now_iso()}})
+    org = await db.organizations.find_one({"id": row["org_id"]}, {"_id": 0, "business_type": 1, "name": 1})
+    return {"org_id": row["org_id"], "role": "owner", "permissions": [], "allowed_modes": [],
+            "biz_type": (org or {}).get("business_type") or "stay", "entity_id": None, "entity": None,
+            "org_name": (org or {}).get("name", ""),
+            "user": {"id": f"integration:{BOOKINGS_PROVIDER}", "name": "Booking channel", "email": ""}}
+
+
+@api.get("/integrations/bookings")
+async def bookings_key_status(ctx=Depends(require_permission("settings.view"))):
+    row = await db.integration_keys.find_one(
+        {"org_id": ctx["org_id"], "provider": BOOKINGS_PROVIDER, "revoked": {"$ne": True}}, {"_id": 0, "key_hash": 0})
+    return {"connected": bool(row), "key_hint": (row or {}).get("key_hint", ""),
+            "last_used_at": (row or {}).get("last_used_at"),
+            "bookings_received": await db.bookings.count_documents({"org_id": ctx["org_id"], "intake": True}),
+            "inbox_pending": await db.booking_inbox.count_documents({"org_id": ctx["org_id"], "status": "pending"}),
+            "channels": BOOKING_CHANNELS}
+
+
+@api.post("/integrations/bookings/key")
+async def bookings_generate_key(request: Request, ctx=Depends(require_permission("settings.edit"))):
+    key = "be_bk_" + secrets.token_urlsafe(32)
+    await db.integration_keys.update_many({"org_id": ctx["org_id"], "provider": BOOKINGS_PROVIDER},
+                                          {"$set": {"revoked": True, "revoked_at": now_iso()}})
+    await db.integration_keys.insert_one({
+        "id": str(uuid.uuid4()), "org_id": ctx["org_id"], "provider": BOOKINGS_PROVIDER,
+        "key_hash": _key_hash(key), "key_hint": key[-4:], "created_at": now_iso(),
+        "created_by": ctx["user"].get("id")})
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="integration.key_created",
+                    entity_type="integration", entity_id=BOOKINGS_PROVIDER, metadata={}, request=request)
+    return {"key": key, "key_hint": key[-4:]}
+
+
+@api.get("/integrations/bookings/ping")
+async def bookings_ping(ictx=Depends(bookings_ctx)):
+    return {"ok": True, "org_name": ictx["org_name"], "business_type": ictx["biz_type"]}
+
+
+@api.get("/integrations/bookings/availability")
+async def bookings_availability(date_from: str, date_to: str, ictx=Depends(bookings_ctx)):
+    """Rooms that are free for the whole window, so a website can show what's bookable."""
+    _nights(date_from, date_to)
+    rooms = await db.rooms.find({"org_id": ictx["org_id"]}, {"_id": 0}).to_list(500)
+    out = []
+    for r in rooms:
+        busy = r.get("status") == "maintenance" or bool(await _room_clash(ictx, r["id"], date_from, date_to))
+        out.append({"room_id": r["id"], "number": r["number"], "room_type": r.get("room_type", ""),
+                    "capacity": r.get("capacity"), "tariff": r.get("tariff", 0),
+                    "gst_rate": stay_gst_rate(r.get("tariff", 0)), "available": not busy})
+    return {"date_from": date_from[:10], "date_to": date_to[:10], "rooms": out}
+
+
+class IntakeGuest(BaseModel):
+    name: str = ""
+    phone: str = ""
+    email: str = ""
+    gstin: str = ""
+    state: str = ""
+    address: str = ""
+
+
+class BookingIntakeIn(BaseModel):
+    external_id: str = Field(min_length=1)      # the channel's booking id — used for idempotency
+    channel: str = "Website"
+    channel_ref: str = ""                       # human-readable reference shown to the guest
+    status: str = "confirmed"                   # confirmed | cancelled
+    guest: IntakeGuest = IntakeGuest()
+    check_in: str
+    check_out: str
+    adults: int = 1
+    children: int = 0
+    booking_type: str = "room"                  # room | package
+    room_id: str = ""
+    room_number: str = ""
+    room_type: str = ""                         # matched loosely when no id/number is given
+    tariff: Optional[float] = None              # per night, before GST
+    total_amount: Optional[float] = None        # gross the guest pays, incl. GST (used to derive the tariff)
+    package_name: str = ""
+    package_amount: Optional[float] = None      # before GST
+    gst_rate: Optional[float] = None
+    commission_amount: float = 0
+    commission_gst_rate: float = 18
+    advance_paid: float = 0                     # already collected by the channel / your site
+    advance_mode: str = "Online"
+    notes: str = ""
+
+
+async def _intake_guest(org_id: str, g: IntakeGuest, fallback_state_code: str) -> dict:
+    phone = "".join(ch for ch in (g.phone or "") if ch.isdigit())[-10:]
+    email = (g.email or "").strip().lower()
+    party = None
+    if phone:
+        party = await db.parties.find_one({"org_id": org_id, "phone": {"$regex": f"{phone}$"}}, {"_id": 0})
+    if not party and email:
+        party = await db.parties.find_one({"org_id": org_id, "email": email}, {"_id": 0})
+    if party:
+        return party
+    party = {"id": str(uuid.uuid4()), "org_id": org_id, "type": "customer", "biz_type": "stay",
+             "name": g.name.strip() or email or phone or "Guest", "phone": phone, "email": email,
+             "gstin": (g.gstin or "").upper(), "pan": "",
+             "state": (g.state or "").strip(),
+             "state_code": GST_STATE_CODES.get((g.state or "").strip().lower(), fallback_state_code),
+             "billing_address": g.address or "", "shipping_address": "", "shipping_addresses": [],
+             "opening_balance": 0, "credit_limit": 0, "tds_opening_balance": 0,
+             "source": "booking-intake", "created_at": now_iso()}
+    await db.parties.insert_one(party)
+    party.pop("_id", None)
+    return party
+
+
+async def _pick_room(org_id: str, ictx: dict, body: BookingIntakeIn) -> Optional[dict]:
+    """Find the room the channel means: by id, then number, then a free room of that type."""
+    if body.room_id:
+        r = await db.rooms.find_one({"org_id": org_id, "id": body.room_id}, {"_id": 0})
+        if r and not await _room_clash(ictx, r["id"], body.check_in, body.check_out):
+            return r
+        return None
+    if body.room_number:
+        r = await db.rooms.find_one({"org_id": org_id, "number": body.room_number.strip()}, {"_id": 0})
+        if r and r.get("status") != "maintenance" and not await _room_clash(ictx, r["id"], body.check_in, body.check_out):
+            return r
+        return None
+    q = {"org_id": org_id, "status": {"$ne": "maintenance"}}
+    if body.room_type:
+        q["room_type"] = {"$regex": f"^{re.escape(body.room_type.strip())}$", "$options": "i"}
+    async for r in db.rooms.find(q, {"_id": 0}).sort("number", 1):
+        if not await _room_clash(ictx, r["id"], body.check_in, body.check_out):
+            return r
+    return None
+
+
+@api.post("/integrations/bookings")
+async def booking_intake(body: BookingIntakeIn, request: Request, ictx=Depends(bookings_ctx)):
+    """Create (or cancel) a booking sent by a channel. Idempotent on channel + external_id."""
+    org_id = ictx["org_id"]
+    existing = await db.bookings.find_one({"org_id": org_id, "channel": body.channel, "external_id": body.external_id},
+                                          {"_id": 0})
+    if body.status == "cancelled":
+        if not existing:
+            return {"ok": True, "status": "unknown_booking"}
+        if existing["status"] in ACTIVE_BOOKING:
+            await db.bookings.update_one({"org_id": org_id, "id": existing["id"]},
+                                         {"$set": {"status": "cancelled", "cancelled_at": now_iso(),
+                                                   "cancelled_by_channel": True}})
+        return {"ok": True, "status": "cancelled", "booking_no": existing["booking_no"]}
+    if existing:
+        return {"ok": True, "duplicate": True, "booking_id": existing["id"], "booking_no": existing["booking_no"],
+                "status": existing["status"]}
+
+    org = await get_org_doc(org_id)
+    is_pkg = body.booking_type == "package"
+    _nights(body.check_in, body.check_out, allow_same_day=is_pkg)
+    room = None if is_pkg else await _pick_room(org_id, ictx, body)
+    if not is_pkg and not room:
+        parked = {"id": str(uuid.uuid4()), "org_id": org_id, "status": "pending",
+                  "reason": "No free room matched — assign one to accept this booking",
+                  "payload": body.model_dump(), "channel": body.channel, "external_id": body.external_id,
+                  "guest_name": body.guest.name, "check_in": body.check_in[:10], "check_out": body.check_out[:10],
+                  "created_at": now_iso()}
+        await db.booking_inbox.update_one({"org_id": org_id, "channel": body.channel, "external_id": body.external_id},
+                                          {"$setOnInsert": parked}, upsert=True)
+        return JSONResponse(status_code=202, content={"ok": True, "status": "needs_attention",
+                                                      "message": "No free room matched — parked in the BillingsEasy inbox"})
+
+    nights = _nights(body.check_in, body.check_out, allow_same_day=is_pkg)
+    party = await _intake_guest(org_id, body.guest, org.get("state_code", "33"))
+    gst = body.gst_rate
+    if is_pkg:
+        amount = body.package_amount
+        if amount is None and body.total_amount is not None:
+            amount = round(body.total_amount / (1 + (gst if gst is not None else 5.0) / 100), 2)
+        amount = amount or 0
+    else:
+        tariff = body.tariff
+        if tariff is None and body.total_amount is not None:
+            r = gst if gst is not None else stay_gst_rate(body.total_amount / max(nights, 1))
+            tariff = round(body.total_amount / (1 + r / 100) / max(nights, 1), 2)
+        tariff = tariff if tariff is not None else (room or {}).get("tariff", 0)
+        amount = 0
+    doc = {"id": str(uuid.uuid4()), "org_id": org_id, "booking_no": await next_invoice_number(org_id, "BK"),
+           "party_id": party["id"], "party_snapshot": {k: party.get(k) for k in ("id", "name", "phone", "email", "gstin", "state", "state_code")},
+           "room_id": (room or {}).get("id", ""), "room_number": (room or {}).get("number", ""),
+           "room_type": (room or {}).get("room_type", "Package" if is_pkg else ""),
+           "check_in": body.check_in[:10], "check_out": body.check_out[:10],
+           "adults": body.adults, "children": body.children,
+           "tariff": 0 if is_pkg else tariff, "gst_rate": gst,
+           "booking_type": body.booking_type, "package_name": body.package_name, "package_amount": amount,
+           "channel": body.channel, "channel_ref": body.channel_ref or body.external_id,
+           "external_id": body.external_id, "intake": True, "source": body.channel,
+           "commission_amount": body.commission_amount, "commission_gst_rate": body.commission_gst_rate,
+           "status": "booked", "charges": [], "notes": body.notes, "id_proof": "",
+           "created_at": now_iso(), "created_by": f"channel:{body.channel}"}
+    await db.bookings.insert_one(doc)
+    if body.advance_paid and body.advance_paid > 0:
+        await db.payments.insert_one({
+            "id": str(uuid.uuid4()), "org_id": org_id, "party_id": party["id"], "direction": "received",
+            "amount": round(body.advance_paid, 2), "mode": body.advance_mode, "date": now_iso()[:10],
+            "reference": body.channel_ref or body.external_id, "bank_account_id": "", "invoice_id": "",
+            "expense_id": "", "booking_id": doc["id"], "linked_ref": doc["booking_no"], "linked_type": "booking",
+            "biz_type": ictx["biz_type"], "notes": f"Collected by {body.channel}", "created_at": now_iso()})
+    view = await _booking_view(ictx, strip_id(doc))
+    return {"ok": True, "status": "booked", "booking_id": doc["id"], "booking_no": doc["booking_no"],
+            "room": doc["room_number"], "estimated_total": view["estimated_total"], "balance": view["balance"]}
+
+
+@api.get("/stay/inbox")
+async def stay_inbox(ctx=Depends(get_org_ctx)):
+    return await db.booking_inbox.find({"org_id": ctx["org_id"], "status": "pending"}, {"_id": 0}) \
+        .sort("created_at", -1).to_list(200)
+
+
+class InboxAssignIn(BaseModel):
+    room_id: str = ""
+    tariff: Optional[float] = None
+
+
+@api.post("/stay/inbox/{iid}/accept")
+async def stay_inbox_accept(iid: str, body: InboxAssignIn, ctx=Depends(get_org_ctx)):
+    """Accept a parked channel booking into a room chosen by the user."""
+    await _stay_ctx(ctx)
+    item = await db.booking_inbox.find_one({"org_id": ctx["org_id"], "id": iid, "status": "pending"}, {"_id": 0})
+    if not item:
+        raise HTTPException(404, "Inbox item not found")
+    p = BookingIntakeIn(**item["payload"])
+    if body.room_id:
+        p.room_id = body.room_id
+        p.room_number = ""
+        p.room_type = ""
+    if body.tariff is not None:
+        p.tariff = body.tariff
+    ictx = {**ctx, "org_name": ""}
+    res = await booking_intake(p, ctx["request"], ictx)
+    if isinstance(res, JSONResponse):
+        raise HTTPException(409, "That room isn't free for these dates — pick another")
+    await db.booking_inbox.update_one({"org_id": ctx["org_id"], "id": iid},
+                                      {"$set": {"status": "accepted", "booking_id": res.get("booking_id"),
+                                                "accepted_at": now_iso()}})
+    return res
+
+
+@api.delete("/stay/inbox/{iid}")
+async def stay_inbox_dismiss(iid: str, ctx=Depends(get_org_ctx)):
+    await db.booking_inbox.update_one({"org_id": ctx["org_id"], "id": iid},
+                                      {"$set": {"status": "dismissed", "dismissed_at": now_iso()}})
+    return {"ok": True}
 
 
 app.include_router(api)

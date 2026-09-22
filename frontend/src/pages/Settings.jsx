@@ -19,6 +19,7 @@ import RolesPanel from "@/components/RolesPanel";
 import AuditLogPanel from "@/components/AuditLogPanel";
 import DropZone from "@/components/DropZone";
 import MomCubIntegration from "@/components/MomCubIntegration";
+import BookingChannelIntegration from "@/components/BookingChannelIntegration";
 
 export default function Settings() {
   const { currentOrg, currentRole } = useAuth();
@@ -740,7 +741,10 @@ export default function Settings() {
         </TabsContent>
 
         <TabsContent value="integrations">
-          <MomCubIntegration canEdit={currentRole === "owner" || currentRole === "admin"} />
+          <div className="space-y-4">
+            {currentOrg?.business_type === "stay" && <BookingChannelIntegration canEdit={currentRole === "owner" || currentRole === "admin"} />}
+            <MomCubIntegration canEdit={currentRole === "owner" || currentRole === "admin"} />
+          </div>
         </TabsContent>
 
         <TabsContent value="prefs">

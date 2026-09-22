@@ -10,7 +10,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { BedDouble, Plus, ChevronLeft, ChevronRight, LogIn, LogOut, Ban, IndianRupee, Trash2, Pencil, FileText } from "lucide-react";
+import { BedDouble, Plus, ChevronLeft, ChevronRight, LogIn, LogOut, Ban, IndianRupee, Trash2, Pencil, FileText, Inbox, Globe, Check, X } from "lucide-react";
 import PartySelect from "@/components/PartySelect";
 import { inr, fmtDate, todayISO } from "@/lib/format";
 
@@ -24,7 +24,7 @@ const STATUS = {
   checked_out: { label: "Checked out", cls: "bg-slate-100 text-slate-600",     bar: "bg-slate-400" },
   cancelled:   { label: "Cancelled",   cls: "bg-rose-50 text-rose-500",        bar: "bg-rose-300" },
 };
-const SOURCES = ["Walk-in", "Phone", "Website", "OTA", "Corporate"];
+const CHANNELS = ["Direct", "Walk-in", "Phone", "Website", "Airbnb", "Booking.com", "MakeMyTrip", "Goibibo", "Agoda", "Expedia", "TripAdvisor", "Other"];
 const errMsg = (e, d) => e?.response?.data?.detail || d;
 
 export default function Stay() {
@@ -34,6 +34,7 @@ export default function Stay() {
   const [bookingForm, setBookingForm] = useState(null);   // new/edit booking
   const [openBooking, setOpenBooking] = useState(null);   // booking detail
   const [roomForm, setRoomForm] = useState(null);
+  const [inbox, setInbox] = useState([]);
 
   const end = addDays(start, DAYS);
   const load = async () => {
@@ -42,6 +43,7 @@ export default function Stay() {
       api.get("/stay/bookings", { params: { date_from: addDays(start, -60), date_to: addDays(end, 60) } }),
     ]);
     setRooms(r.data); setBookings(b.data);
+    api.get("/stay/inbox").then(x => setInbox(x.data)).catch(() => {});
     if (openBooking) setOpenBooking(b.data.find(x => x.id === openBooking.id) || null);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [start]);
@@ -72,7 +74,14 @@ export default function Stay() {
       </div>
 
       <Tabs defaultValue="board">
-        <TabsList><TabsTrigger value="board">Room board</TabsTrigger><TabsTrigger value="list">Bookings</TabsTrigger><TabsTrigger value="rooms">Rooms ({rooms.length})</TabsTrigger></TabsList>
+        <TabsList>
+          <TabsTrigger value="board">Room board</TabsTrigger>
+          <TabsTrigger value="list">Bookings</TabsTrigger>
+          <TabsTrigger value="inbox" className={inbox.length ? "text-amber-700 font-semibold" : ""}>
+            Inbox{inbox.length ? ` (${inbox.length})` : ""}
+          </TabsTrigger>
+          <TabsTrigger value="rooms">Rooms ({rooms.length})</TabsTrigger>
+        </TabsList>
 
         <TabsContent value="board">
           <Card className="p-4">
@@ -115,6 +124,21 @@ export default function Stay() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="inbox">
+          <Card className="p-4">
+            <div className="flex items-start gap-2 mb-3">
+              <Inbox className="h-5 w-5 text-amber-600 mt-0.5" />
+              <div>
+                <p className="font-medium">Bookings from your website or an OTA that need a room</p>
+                <p className="text-sm text-muted-foreground">They arrive here when no free room matched, so nothing is lost. Pick a room to accept.</p>
+              </div>
+            </div>
+            {inbox.length === 0
+              ? <p className="text-sm text-muted-foreground py-6 text-center">Nothing waiting. Channel bookings that match a free room are added automatically.</p>
+              : <div className="space-y-2">{inbox.map(i => <InboxRow key={i.id} item={i} rooms={rooms} onDone={load} />)}</div>}
+          </Card>
+        </TabsContent>
+
         <TabsContent value="rooms">
           <Card>
             <div className="flex justify-end p-3"><Button size="sm" onClick={() => setRoomForm({})}><Plus className="h-4 w-4 mr-1" /> Add room</Button></div>
@@ -148,6 +172,47 @@ export default function Stay() {
       <BookingDialog initial={bookingForm} rooms={rooms} onClose={() => setBookingForm(null)} onSaved={(b) => { load(); setOpenBooking(b); }} />
       <BookingDetail booking={openBooking} onClose={() => setOpenBooking(null)} onChanged={load}
         onEdit={(b) => { setOpenBooking(null); setBookingForm(b); }} />
+    </div>
+  );
+}
+
+function InboxRow({ item, rooms, onDone }) {
+  const [roomId, setRoomId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const p = item.payload || {};
+  const accept = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/stay/inbox/${item.id}/accept`, { room_id: roomId || undefined });
+      toast.success(`Accepted as ${data.booking_no} in room ${data.room}`);
+      onDone();
+    } catch (e) { toast.error(errMsg(e, "Could not accept")); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="rounded-xl border p-3 flex flex-wrap items-center gap-3">
+      <div className="flex-1 min-w-[220px]">
+        <div className="flex items-center gap-2">
+          <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100"><Globe className="h-3 w-3 mr-1" />{item.channel}</Badge>
+          <span className="font-medium">{item.guest_name || "Guest"}</span>
+          {p.channel_ref && <span className="text-xs text-muted-foreground">{p.channel_ref}</span>}
+        </div>
+        <div className="text-sm text-muted-foreground mt-0.5">
+          {fmtDate(item.check_in)} → {fmtDate(item.check_out)} · {p.adults || 1} adult(s)
+          {p.room_type ? ` · asked for ${p.room_type}` : ""}
+          {p.total_amount ? ` · ${inr(p.total_amount)}` : ""}
+        </div>
+        <p className="text-xs text-amber-700 mt-1">{item.reason}</p>
+      </div>
+      <Select value={roomId} onValueChange={setRoomId}>
+        <SelectTrigger className="w-48"><SelectValue placeholder="Choose a room" /></SelectTrigger>
+        <SelectContent>{rooms.filter(r => r.status !== "maintenance").map(r => (
+          <SelectItem key={r.id} value={r.id}>{r.number} · {r.room_type} · {inr(r.tariff)}</SelectItem>))}
+        </SelectContent>
+      </Select>
+      <Button size="sm" disabled={busy || !roomId} onClick={accept} className="bg-teal-600 hover:bg-teal-700"><Check className="h-4 w-4 mr-1" />Accept</Button>
+      <Button size="sm" variant="ghost" disabled={busy} title="Dismiss"
+        onClick={async () => { await api.delete(`/stay/inbox/${item.id}`); toast.success("Dismissed"); onDone(); }}><X className="h-4 w-4" /></Button>
     </div>
   );
 }
@@ -264,23 +329,30 @@ function BookingDialog({ initial, rooms, onClose, onSaved }) {
     api.get("/parties", { params: { type: "customer" } }).then(r => setParties(r.data));
     const t = todayISO();
     setF({ party_id: "", room_id: rooms[0]?.id || "", check_in: t, check_out: addDays(t, 1), adults: 1, children: 0,
-      source: "Walk-in", id_proof: "", notes: "", tariff: "", gst_rate: "", ...initial,
+      channel: "Direct", channel_ref: "", commission_amount: "", booking_type: "room", package_name: "",
+      package_amount: "", id_proof: "", notes: "", tariff: "", gst_rate: "", ...initial,
       ...(initial.id ? { tariff: initial.tariff ?? "", gst_rate: initial.gst_rate ?? "" } : {}) });
   }, [initial, rooms]);
   if (!initial) return null;
+  const isPkg = f.booking_type === "package";
   const room = rooms.find(r => r.id === f.room_id);
   const tariff = f.tariff === "" || f.tariff == null ? (room?.tariff || 0) : +f.tariff;
   const nights = Math.max(0, Math.round((new Date(f.check_out) - new Date(f.check_in)) / 86400000));
-  const rate = f.gst_rate === "" || f.gst_rate == null ? (tariff <= 7500 ? 5 : 18) : +f.gst_rate;
-  const est = Math.round(nights * tariff * (1 + rate / 100));
+  const rate = f.gst_rate === "" || f.gst_rate == null ? (isPkg ? 5 : tariff <= 7500 ? 5 : 18) : +f.gst_rate;
+  const base = isPkg ? (+f.package_amount || 0) : nights * tariff;
+  const est = Math.round(base * (1 + rate / 100));
 
   const save = async () => {
     if (!f.party_id) { toast.error("Choose or add the guest"); return; }
-    if (nights < 1) { toast.error("Check-out must be after check-in"); return; }
+    if (!isPkg && nights < 1) { toast.error("Check-out must be after check-in"); return; }
+    if (isPkg && (!f.package_name.trim() || !(+f.package_amount > 0))) { toast.error("Enter the package name and amount"); return; }
     setSaving(true);
     try {
-      const body = { party_id: f.party_id, room_id: f.room_id, check_in: f.check_in, check_out: f.check_out,
-        adults: +f.adults || 1, children: +f.children || 0, source: f.source, id_proof: f.id_proof, notes: f.notes,
+      const body = { party_id: f.party_id, room_id: isPkg ? (f.room_id || "") : f.room_id,
+        check_in: f.check_in, check_out: f.check_out,
+        adults: +f.adults || 1, children: +f.children || 0, id_proof: f.id_proof, notes: f.notes,
+        channel: f.channel, channel_ref: f.channel_ref, commission_amount: +f.commission_amount || 0,
+        booking_type: f.booking_type, package_name: f.package_name, package_amount: +f.package_amount || 0,
         tariff: f.tariff === "" ? null : +f.tariff, gst_rate: f.gst_rate === "" ? null : +f.gst_rate };
       const { data } = initial.id ? await api.put(`/stay/bookings/${initial.id}`, body) : await api.post("/stay/bookings", body);
       toast.success(initial.id ? "Booking updated" : `Booked ${data.booking_no}`);
@@ -294,32 +366,50 @@ function BookingDialog({ initial, rooms, onClose, onSaved }) {
       <DialogContent className="max-w-xl">
         <DialogHeader><DialogTitle>{initial.id ? `Edit ${initial.booking_no}` : "New booking"}</DialogTitle></DialogHeader>
         <div className="grid grid-cols-2 gap-3">
+          <div className="col-span-2 flex gap-2">
+            {[["room", "🛏 Room stay"], ["package", "🧳 Trip / package"]].map(([v, l]) => (
+              <button key={v} type="button" onClick={() => setF(x => ({ ...x, booking_type: v }))}
+                className={`flex-1 rounded-xl border-2 py-2 text-sm font-medium ${f.booking_type === v ? "border-teal-500 bg-teal-50 dark:bg-teal-950/30" : "border-gray-100 dark:border-gray-800"}`}>{l}</button>
+            ))}
+          </div>
           <div className="col-span-2 space-y-1.5"><Label>Guest *</Label>
             <PartySelect parties={parties} value={f.party_id} role="customer" placeholder="Select guest"
               onChange={v => setF(x => ({ ...x, party_id: v }))} onCreated={p => setParties(ps => [...ps, p])} />
           </div>
           <div className="space-y-1.5"><Label>Check-in</Label><Input type="date" value={f.check_in || ""} onChange={e => setF({ ...f, check_in: e.target.value, check_out: f.check_out <= e.target.value ? addDays(e.target.value, 1) : f.check_out })} /></div>
           <div className="space-y-1.5"><Label>Check-out</Label><Input type="date" value={f.check_out || ""} min={f.check_in} onChange={e => setF({ ...f, check_out: e.target.value })} /></div>
-          <div className="space-y-1.5"><Label>Room</Label>
+          {isPkg && <div className="col-span-2 space-y-1.5"><Label>Package / trip name *</Label>
+            <Input value={f.package_name} onChange={e => setF({ ...f, package_name: e.target.value })} placeholder="e.g. Coorg 2N/3D homestay + trek" /></div>}
+          {isPkg && <div className="space-y-1.5"><Label>Package amount (before GST) *</Label>
+            <Input type="number" value={f.package_amount} onChange={e => setF({ ...f, package_amount: e.target.value })} /></div>}
+          <div className="space-y-1.5"><Label>Room{isPkg ? " (optional)" : ""}</Label>
             <Select value={f.room_id} onValueChange={v => setF({ ...f, room_id: v })}>
               <SelectTrigger><SelectValue placeholder="Room" /></SelectTrigger>
               <SelectContent>{rooms.filter(r => r.status !== "maintenance" || r.id === f.room_id).map(r => <SelectItem key={r.id} value={r.id}>{r.number} · {r.room_type} · {inr(r.tariff)}</SelectItem>)}</SelectContent>
             </Select>
           </div>
-          <div className="space-y-1.5"><Label>Source</Label>
-            <Select value={f.source} onValueChange={v => setF({ ...f, source: v })}>
+          <div className="space-y-1.5"><Label>Channel</Label>
+            <Select value={f.channel} onValueChange={v => setF({ ...f, channel: v })}>
               <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>{SOURCES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+              <SelectContent>{CHANNELS.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
             </Select>
+          </div>
+          <div className="space-y-1.5"><Label>Channel reference</Label>
+            <Input value={f.channel_ref} onChange={e => setF({ ...f, channel_ref: e.target.value })} placeholder="OTA booking id" /></div>
+          <div className="space-y-1.5"><Label>Channel commission (₹)</Label>
+            <Input type="number" value={f.commission_amount} onChange={e => setF({ ...f, commission_amount: e.target.value })} placeholder="0" />
           </div>
           <div className="space-y-1.5"><Label>Adults</Label><Input type="number" min="1" value={f.adults} onChange={e => setF({ ...f, adults: e.target.value })} /></div>
           <div className="space-y-1.5"><Label>Children</Label><Input type="number" min="0" value={f.children} onChange={e => setF({ ...f, children: e.target.value })} /></div>
-          <div className="space-y-1.5"><Label>Tariff / night</Label><Input type="number" value={f.tariff} placeholder={`${room?.tariff ?? 0} (room rate)`} onChange={e => setF({ ...f, tariff: e.target.value })} /></div>
-          <div className="space-y-1.5"><Label>GST %</Label><Input type="number" value={f.gst_rate} placeholder={`${tariff <= 7500 ? 5 : 18} (auto)`} onChange={e => setF({ ...f, gst_rate: e.target.value })} /></div>
+          {!isPkg && <div className="space-y-1.5"><Label>Tariff / night</Label><Input type="number" value={f.tariff} placeholder={`${room?.tariff ?? 0} (room rate)`} onChange={e => setF({ ...f, tariff: e.target.value })} /></div>}
+          <div className="space-y-1.5"><Label>GST %</Label><Input type="number" value={f.gst_rate} placeholder={`${rate} (auto)`} onChange={e => setF({ ...f, gst_rate: e.target.value })} /></div>
           <div className="col-span-2 space-y-1.5"><Label>ID proof (optional)</Label><Input value={f.id_proof} onChange={e => setF({ ...f, id_proof: e.target.value })} placeholder="Aadhaar / Passport no." /></div>
         </div>
         <div className="rounded-lg bg-teal-50 dark:bg-teal-950/30 border border-teal-200 dark:border-teal-800 p-3 text-sm">
-          {nights} night{nights !== 1 ? "s" : ""} × {inr(tariff)} + {rate}% GST ≈ <strong>{inr(est)}</strong>
+          {isPkg
+            ? <>Package {inr(+f.package_amount || 0)} + {rate}% GST ≈ <strong>{inr(est)}</strong></>
+            : <>{nights} night{nights !== 1 ? "s" : ""} × {inr(tariff)} + {rate}% GST ≈ <strong>{inr(est)}</strong></>}
+          {+f.commission_amount > 0 && <div className="text-xs text-muted-foreground mt-1">Less {f.channel} commission {inr(+f.commission_amount)} (+GST) → booked as an expense at check-out</div>}
         </div>
         <DialogFooter><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={save} disabled={saving} className="bg-teal-600 hover:bg-teal-700">{saving ? "Saving…" : initial.id ? "Save" : "Book room"}</Button></DialogFooter>
       </DialogContent>
@@ -352,11 +442,15 @@ function BookingDetail({ booking: b, onClose, onChanged, onEdit }) {
           <div><span className="text-muted-foreground">Guest</span><div className="font-medium">{b.party_snapshot?.name}</div><div className="text-xs text-muted-foreground">{b.party_snapshot?.phone}</div></div>
           <div><span className="text-muted-foreground">Room</span><div className="font-medium">{b.room_number} · {b.room_type}</div></div>
           <div><span className="text-muted-foreground">Stay</span><div>{fmtDate(b.check_in)} → {fmtDate(b.check_out)} ({b.nights} night{b.nights !== 1 ? "s" : ""})</div></div>
-          <div><span className="text-muted-foreground">Guests</span><div>{b.adults} adult{b.adults !== 1 ? "s" : ""}{b.children ? `, ${b.children} child` : ""} · {b.source}</div></div>
+          <div><span className="text-muted-foreground">Guests</span><div>{b.adults} adult{b.adults !== 1 ? "s" : ""}{b.children ? `, ${b.children} child` : ""} · {b.channel || b.source}{b.channel_ref ? ` · ${b.channel_ref}` : ""}</div></div>
         </div>
 
         <div className="rounded-lg border divide-y text-sm">
-          <div className="flex justify-between px-3 py-2"><span>Room: {b.nights} × {inr(b.tariff)} <span className="text-xs text-muted-foreground">(GST {b.gst_rate_applied}%)</span></span><span>{inr(b.room_amount)}</span></div>
+          <div className="flex justify-between px-3 py-2">
+            <span>{b.booking_type === "package"
+              ? <>{b.package_name || "Package"} <span className="text-xs text-muted-foreground">(GST {b.gst_rate_applied}%)</span></>
+              : <>Room: {b.nights} × {inr(b.tariff)} <span className="text-xs text-muted-foreground">(GST {b.gst_rate_applied}%)</span></>}</span>
+            <span>{inr(b.room_amount)}</span></div>
           {(b.charges || []).map(c => (
             <div key={c.id} className="flex justify-between items-center px-3 py-2">
               <span>{c.name} <span className="text-xs text-muted-foreground">(GST {c.gst_rate}%)</span></span>
@@ -368,6 +462,10 @@ function BookingDetail({ booking: b, onClose, onChanged, onEdit }) {
           <div className="flex justify-between px-3 py-2 font-semibold"><span>Total incl. GST</span><span>{inr(b.estimated_total)}</span></div>
           <div className="flex justify-between px-3 py-2 text-emerald-700"><span>Advance received</span><span>− {inr(b.advance_paid)}</span></div>
           <div className="flex justify-between px-3 py-2 font-semibold text-rose-600"><span>Balance</span><span>{inr(b.balance)}</span></div>
+          {b.commission_total > 0 && (
+            <div className="flex justify-between px-3 py-2 text-xs text-muted-foreground">
+              <span>{b.channel} commission incl. GST (expense)</span><span>{inr(b.commission_total)} · net {inr(b.net_payout)}</span>
+            </div>)}
         </div>
 
         {open && (
