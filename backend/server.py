@@ -7208,8 +7208,17 @@ class SplitIn(BaseModel):
 
 
 async def _split_plan(org_id: str, targets: List[SplitTargetIn]) -> dict:
+    """Work out what goes where. A master (party/product) moves outright when it is
+    used by exactly one new business and by nothing that stays behind; otherwise it is
+    shared, i.e. copied with balance/stock zeroed."""
     wanted = {t.biz_type for t in targets}
-    plan, party_ids, product_ids = {}, {}, {}
+    untagged_q = {"$or": [{"biz_type": None}, {"biz_type": {"$exists": False}}, {"biz_type": {"$nin": list(wanted)}}]}
+    stay_inv = await db.invoices.find({"org_id": org_id, **untagged_q}, {"_id": 0, "party_id": 1, "items": 1}).to_list(5000)
+    stay_pur = await db.purchases.find({"org_id": org_id, **untagged_q}, {"_id": 0, "party_id": 1, "items": 1}).to_list(5000)
+    staying_parties = {d.get("party_id") for d in stay_inv + stay_pur if d.get("party_id")}
+    staying_products = {i.get("product_id") for d in stay_inv + stay_pur for i in (d.get("items") or []) if i.get("product_id")}
+
+    plan, party_use, product_use, docs_by_type = {}, {}, {}, {}
     for t in targets:
         bt = t.biz_type
         inv = await db.invoices.find({"org_id": org_id, "biz_type": bt}, {"_id": 0, "id": 1, "party_id": 1, "items": 1}).to_list(5000)
@@ -7221,22 +7230,40 @@ async def _split_plan(org_id: str, targets: List[SplitTargetIn]) -> dict:
                                                   "$or": [{"invoice_id": ""}, {"invoice_id": {"$exists": False}}]})
         pids = {d.get("party_id") for d in inv + pur if d.get("party_id")}
         prods = {i.get("product_id") for d in inv + pur for i in (d.get("items") or []) if i.get("product_id")}
-        party_ids[bt], product_ids[bt] = pids, prods
-        row = {"biz_type": bt, "name": t.name, "invoices": len(inv), "purchases": len(pur),
-               "expenses": exp, "payments": pay, "parties_copied": len(pids), "products_copied": len(prods)}
+        # products tagged for this business only also belong here, even if never traded yet
+        async for pr in db.products.find({"org_id": org_id, "modes": bt}, {"_id": 0, "id": 1, "modes": 1}):
+            if [m for m in (pr.get("modes") or []) if m in wanted] == [bt]:
+                prods.add(pr["id"])
+        for i in pids: party_use.setdefault(i, set()).add(bt)
+        for i in prods: product_use.setdefault(i, set()).add(bt)
+        docs_by_type[bt] = {"parties": pids, "products": prods, "doc_ids": doc_ids}
+        plan[bt] = {"biz_type": bt, "name": t.name, "invoices": len(inv), "purchases": len(pur),
+                    "expenses": exp, "payments": pay}
         if bt == "stay":
-            row["bookings"] = await db.bookings.count_documents({"org_id": org_id})
-            row["rooms"] = await db.rooms.count_documents({"org_id": org_id})
-        plan[bt] = row
+            plan[bt]["bookings"] = await db.bookings.count_documents({"org_id": org_id})
+            plan[bt]["rooms"] = await db.rooms.count_documents({"org_id": org_id})
+
+    party_ids, product_ids = {}, {}
+    for bt, d in docs_by_type.items():
+        move_p = {i for i in d["parties"] if party_use.get(i) == {bt} and i not in staying_parties}
+        move_pr = {i for i in d["products"] if product_use.get(i) == {bt} and i not in staying_products}
+        party_ids[bt] = {"move": move_p, "copy": d["parties"] - move_p}
+        product_ids[bt] = {"move": move_pr, "copy": d["products"] - move_pr}
+        plan[bt].update({"parties_moved": len(move_p), "parties_copied": len(party_ids[bt]["copy"]),
+                         "products_moved": len(move_pr), "products_copied": len(product_ids[bt]["copy"])})
+    moving_parties = set().union(*[v["move"] for v in party_ids.values()]) if party_ids else set()
+    moving_products = set().union(*[v["move"] for v in product_ids.values()]) if product_ids else set()
+    all_doc_ids = [i for d in docs_by_type.values() for i in d["doc_ids"]]
     untagged = {
-        "invoices": await db.invoices.count_documents({"org_id": org_id, "$or": [{"biz_type": None}, {"biz_type": {"$exists": False}}, {"biz_type": {"$nin": list(wanted)}}]}),
-        "purchases": await db.purchases.count_documents({"org_id": org_id, "$or": [{"biz_type": None}, {"biz_type": {"$exists": False}}, {"biz_type": {"$nin": list(wanted)}}]}),
-        "expenses": await db.expenses.count_documents({"org_id": org_id, "$or": [{"biz_type": None}, {"biz_type": {"$exists": False}}, {"biz_type": {"$nin": list(wanted)}}]}),
-        "parties": await db.parties.count_documents({"org_id": org_id}),
-        "products": await db.products.count_documents({"org_id": org_id}),
+        "invoices": len(stay_inv), "purchases": len(stay_pur),
+        "expenses": await db.expenses.count_documents({"org_id": org_id, **untagged_q}),
+        "payments": await db.payments.count_documents({"org_id": org_id, "invoice_id": {"$nin": all_doc_ids}}),
+        "parties": await db.parties.count_documents({"org_id": org_id}) - len(moving_parties),
+        "products": await db.products.count_documents({"org_id": org_id}) - len(moving_products),
         "bank_accounts": await db.bank_accounts.count_documents({"org_id": org_id}),
     }
-    return {"targets": list(plan.values()), "stays_in_source": untagged, "_party_ids": party_ids, "_product_ids": product_ids}
+    return {"targets": list(plan.values()), "stays_in_source": untagged,
+            "_party_ids": party_ids, "_product_ids": product_ids}
 
 
 @api.post("/businesses/split/preview")
@@ -7252,8 +7279,9 @@ async def split_preview(body: SplitIn, ctx=Depends(require_permission("settings.
             "targets": plan["targets"], "stays_in_source": plan["stays_in_source"],
             "can_create": room >= len(body.targets), "businesses_free": room,
             "notes": [
-                "Payments follow the invoice or bill they are linked to.",
-                "Parties and products are copied into each new business with opening balance and stock set to 0 — the originals stay here.",
+                "Payments follow the invoice or bill they are linked to; GRNs, delivery orders and stock history follow theirs.",
+                "A party or product used by only one new business moves there outright, with its stock / opening balance.",
+                "One used by more than one business (or still needed here) is copied instead, with stock and opening balance set to 0 so nothing is counted twice.",
                 "Bank accounts, GST settings and staff are not moved; add them per business.",
                 "Anything without a B2B/B2C tag stays in this company.",
             ]}
@@ -7309,10 +7337,42 @@ async def split_execute(body: SplitIn, request: Request, ctx=Depends(require_per
                                                 "split_from_org_id": org["id"]}})
             mig["moves"].append({"coll": coll, "id": did, "to": tid})
 
-        # 4. masters copied, balances/stock zeroed so nothing is counted twice
-        for coll, ids, zero in (("parties", plan["_party_ids"].get(bt, set()), {"opening_balance": 0, "tds_opening_balance": 0}),
-                                ("products", plan["_product_ids"].get(bt, set()), {"stock": 0})):
-            for mid in ids:
+        # 4. records that hang off those documents: GRNs, delivery orders, stock history
+        inv_ids = [i for c, i in moved_docs if c == "invoices"]
+        pur_ids = [i for c, i in moved_docs if c == "purchases"]
+        extra = []
+        if pur_ids:
+            async for d in db.grns.find({"org_id": org["id"], "purchase_id": {"$in": pur_ids}}, {"_id": 0, "id": 1}):
+                extra.append(("grns", d["id"]))
+        if inv_ids:
+            async for d in db.delivery_orders.find({"org_id": org["id"], "invoice_id": {"$in": inv_ids}}, {"_id": 0, "id": 1}):
+                extra.append(("delivery_orders", d["id"]))
+        for coll, did in extra:
+            await db[coll].update_one({"org_id": org["id"], "id": did},
+                                      {"$set": {"org_id": tid, "split_migration_id": mig["id"], "split_from_org_id": org["id"]}})
+            mig["moves"].append({"coll": coll, "id": did, "to": tid})
+
+        # 5. masters: move the ones only this business uses (stock and balances come along),
+        #    copy the shared ones with stock/opening balance zeroed so nothing is double-counted
+        for coll, ids, zero in (("parties", plan["_party_ids"].get(bt, {}), {"opening_balance": 0, "tds_opening_balance": 0}),
+                                ("products", plan["_product_ids"].get(bt, {}), {"stock": 0})):
+            for mid in ids.get("move", set()):
+                res = await db[coll].update_one({"org_id": org["id"], "id": mid},
+                                                {"$set": {"org_id": tid, "split_migration_id": mig["id"],
+                                                          "split_from_org_id": org["id"]}})
+                if res.modified_count:
+                    mig["moves"].append({"coll": coll, "id": mid, "to": tid})
+                    if coll == "products":
+                        async for sm in db.stock_movements.find({"org_id": org["id"], "product_id": mid}, {"_id": 0, "id": 1}):
+                            await db.stock_movements.update_one({"org_id": org["id"], "id": sm["id"]},
+                                                                {"$set": {"org_id": tid, "split_migration_id": mig["id"]}})
+                            mig["moves"].append({"coll": "stock_movements", "id": sm["id"], "to": tid})
+                        async for ws in db.warehouse_stock.find({"org_id": org["id"], "product_id": mid}, {"_id": 0, "product_id": 1, "warehouse_id": 1}):
+                            await db.warehouse_stock.update_one(
+                                {"org_id": org["id"], "product_id": mid, "warehouse_id": ws["warehouse_id"]},
+                                {"$set": {"org_id": tid, "split_migration_id": mig["id"]}})
+                            mig["moves"].append({"coll": "warehouse_stock", "id": f"{mid}:{ws['warehouse_id']}", "to": tid})
+            for mid in ids.get("copy", set()):
                 src = await db[coll].find_one({"org_id": org["id"], "id": mid}, {"_id": 0})
                 if not src or await db[coll].find_one({"org_id": tid, "id": mid}, {"_id": 0, "id": 1}):
                     continue
@@ -7345,15 +7405,19 @@ async def split_undo(mid: str, request: Request, ctx=Depends(require_permission(
         raise HTTPException(400, f"This split is already {mig['status']}")
     moved_ids = {(m["coll"], m["id"]) for m in mig["moves"]}
     for t in mig["targets"]:
-        for coll in ("invoices", "purchases", "payments", "expenses", "bookings", "rooms"):
+        for coll in ("invoices", "purchases", "payments", "expenses", "bookings", "rooms", "grns", "delivery_orders"):
             async for d in db[coll].find({"org_id": t["org_id"]}, {"_id": 0, "id": 1, "split_migration_id": 1}):
                 if d.get("split_migration_id") != mid and (coll, d["id"]) not in moved_ids:
                     raise HTTPException(409, f"{t['name']} already has new records — undo would delete them. "
                                              f"Move them out first, or keep the split.")
     for m in mig["moves"]:
-        await db[m["coll"]].update_one({"org_id": m["to"], "id": m["id"]},
-                                       {"$set": {"org_id": mig["source_org_id"]},
-                                        "$unset": {"split_migration_id": "", "split_from_org_id": ""}})
+        if m["coll"] == "warehouse_stock":
+            pid, wid = m["id"].split(":", 1)
+            q = {"org_id": m["to"], "product_id": pid, "warehouse_id": wid}
+        else:
+            q = {"org_id": m["to"], "id": m["id"]}
+        await db[m["coll"]].update_one(q, {"$set": {"org_id": mig["source_org_id"]},
+                                           "$unset": {"split_migration_id": "", "split_from_org_id": ""}})
     for cpy in mig["copies"]:
         await db[cpy["coll"]].delete_one({"org_id": cpy["org_id"], "id": cpy["id"], "split_migration_id": mid})
     for t in mig["targets"]:

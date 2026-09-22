@@ -93,19 +93,21 @@ export default function SplitCompany({ onDone }) {
           <p className="text-sm font-semibold">What would move — nothing has changed yet</p>
           <div className="overflow-x-auto">
             <table className="app-table">
-              <thead><tr><th>New business</th><th className="text-right">Invoices</th><th className="text-right">Bills</th><th className="text-right">Payments</th><th className="text-right">Expenses</th><th className="text-right">Parties copied</th><th className="text-right">Products copied</th></tr></thead>
+              <thead><tr><th>New business</th><th className="text-right">Invoices</th><th className="text-right">Bills</th><th className="text-right">Money in/out</th><th className="text-right">Expenses</th><th className="text-right">Parties</th><th className="text-right">Items</th></tr></thead>
               <tbody>
                 {preview.targets.map(t => (
                   <tr key={t.biz_type}>
                     <td className="font-medium">{modeInfo(t.biz_type)?.emoji} {t.name}{t.bookings != null ? <span className="text-xs text-muted-foreground"> · {t.bookings} bookings, {t.rooms} rooms</span> : null}</td>
                     <td className="num">{t.invoices}</td><td className="num">{t.purchases}</td><td className="num">{t.payments}</td>
-                    <td className="num">{t.expenses}</td><td className="num">{t.parties_copied}</td><td className="num">{t.products_copied}</td>
+                    <td className="num">{t.expenses}</td>
+                    <td className="num">{t.parties_moved} moved{t.parties_copied ? <div className="text-[11px] text-muted-foreground">+{t.parties_copied} shared</div> : null}</td>
+                    <td className="num">{t.products_moved} moved{t.products_copied ? <div className="text-[11px] text-muted-foreground">+{t.products_copied} shared</div> : null}</td>
                   </tr>
                 ))}
                 <tr className="bg-muted/30">
                   <td className="font-medium">Stays in {preview.source.name}</td>
                   <td className="num">{preview.stays_in_source.invoices}</td><td className="num">{preview.stays_in_source.purchases}</td>
-                  <td className="num">—</td><td className="num">{preview.stays_in_source.expenses}</td>
+                  <td className="num">{preview.stays_in_source.payments}</td><td className="num">{preview.stays_in_source.expenses}</td>
                   <td className="num">{preview.stays_in_source.parties}</td><td className="num">{preview.stays_in_source.products}</td>
                 </tr>
               </tbody>
