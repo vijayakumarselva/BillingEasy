@@ -39,6 +39,22 @@ export default function BusinessSwitcher({ open, onClose, orgId, currentOrg, bus
   const acct = data?.account;
   const legacy = currentOrg && !currentOrg.business_type;
 
+  const setType = async (bt) => {
+    const label = modeInfo(bt)?.label || bt;
+    try {
+      await api.post("/businesses/current/business-type", { business_type: bt });
+      toast.success(`${currentOrg.name} is now a ${label} business`);
+      onSwitch(orgId);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || "Could not change the type";
+      if (e?.response?.status === 409 && window.confirm(`${msg}\n\nKeep them here anyway?`)) {
+        await api.post("/businesses/current/business-type", { business_type: bt, force: true });
+        toast.success(`${currentOrg.name} is now a ${label} business`);
+        onSwitch(orgId);
+      } else toast.error(msg, { duration: 9000 });
+    }
+  };
+
   const create = async () => {
     if (form.name.trim().length < 2) { toast.error("Enter the business name"); return; }
     if (!form.business_type) { toast.error("Choose the business type"); return; }
@@ -81,20 +97,39 @@ export default function BusinessSwitcher({ open, onClose, orgId, currentOrg, bus
               })}
             </div>
             {legacy && (
-              <div className="px-6 pt-5">
-                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">View for {currentOrg.name}</p>
-                <div className="grid grid-cols-2 gap-2">
-                  {BUSINESS_MODES.filter(m => m.value !== "stay").map(m => (
-                    <button key={m.value} onClick={() => onChooseMode(m.value)}
-                      className={`rounded-xl border-2 px-3 py-2 text-left text-sm ${businessMode === m.value ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30" : "border-gray-100 dark:border-gray-800 hover:border-blue-300"}`}>
-                      {m.emoji} <span className="font-semibold">{m.label}</span>
-                    </button>
-                  ))}
-                </div>
-                <p className="text-[11px] text-gray-400 mt-2">
-                  This company mixes several types. To give each its own books, use{" "}
-                  <button className="underline font-medium" onClick={() => { onClose(); nav("/settings?tab=integrations"); }}>Settings → Integrations → Split this company</button>.
-                </p>
+              <div className="px-6 pt-4">
+                <details className="rounded-xl border border-dashed p-3">
+                  <summary className="text-xs font-medium cursor-pointer text-muted-foreground">
+                    {currentOrg.name} still mixes business types — tidy this up
+                  </summary>
+                  <p className="text-[11px] text-gray-500 mt-2">
+                    Give each its own books with{" "}
+                    <button className="underline font-medium" onClick={() => { onClose(); nav("/settings?tab=integrations"); }}>Settings → Integrations → Split this company</button>,
+                    then make whatever is left a single business so this list shows only businesses.
+                  </p>
+                  <div className="mt-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 mb-1">Make this a single business</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {BUSINESS_MODES.map(m => (
+                        <button key={m.value} onClick={() => setType(m.value)}
+                          className="rounded-lg border px-3 py-2 text-left text-xs hover:border-blue-300">
+                          {m.emoji} <span className="font-semibold">{m.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 mb-1">Or just switch the view for now</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {BUSINESS_MODES.filter(m => m.value !== "stay").map(m => (
+                        <button key={m.value} onClick={() => onChooseMode(m.value)}
+                          className={`rounded-lg border px-3 py-2 text-left text-xs ${businessMode === m.value ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30" : "hover:border-blue-300"}`}>
+                          {m.emoji} <span className="font-semibold">{m.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </details>
               </div>
             )}
             <div className="p-6 flex flex-col gap-2">

@@ -7388,6 +7388,40 @@ async def split_execute(body: SplitIn, request: Request, ctx=Depends(require_per
             "moved": len(mig["moves"]), "copied": len(mig["copies"])}
 
 
+class SetBusinessTypeIn(BaseModel):
+    business_type: str
+    force: bool = False
+
+
+@api.post("/businesses/current/business-type")
+async def set_business_type(body: SetBusinessTypeIn, request: Request, ctx=Depends(require_permission("settings.edit"))):
+    """Turn a legacy multi-type company into a single-type business, so the type
+    switcher disappears and it behaves like every other business."""
+    bt = body.business_type.strip().lower()
+    if bt not in BUSINESS_TYPES:
+        raise HTTPException(400, "Unknown business type")
+    org = await get_org_doc(ctx["org_id"])
+    if org.get("business_type"):
+        raise HTTPException(400, "This is already a single-type business")
+    others = {}
+    for coll in ("invoices", "purchases", "expenses"):
+        async for d in db[coll].aggregate([
+            {"$match": {"org_id": ctx["org_id"], "biz_type": {"$nin": [bt, None]}}},
+            {"$group": {"_id": "$biz_type", "n": {"$sum": 1}}}]):
+            if d["_id"]:
+                others[d["_id"]] = others.get(d["_id"], 0) + d["n"]
+    if others and not body.force:
+        detail = ", ".join(f"{n} {BUSINESS_TYPES.get(t, t)} record(s)" for t, n in sorted(others.items()))
+        raise HTTPException(409, f"This company still holds {detail}. Split them into their own businesses first, "
+                                 f"or confirm to keep them here under {BUSINESS_TYPES[bt]}.")
+    await db.organizations.update_one({"id": ctx["org_id"]},
+                                      {"$set": {"business_type": bt, "business_mode": bt, "updated_at": now_iso()}})
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="business.type_set",
+                    entity_type="organization", entity_id=ctx["org_id"],
+                    metadata={"business_type": bt, "kept_other_types": others}, request=request)
+    return {"ok": True, "business_type": bt, "kept_other_types": others}
+
+
 @api.get("/businesses/split/history")
 async def split_history(ctx=Depends(require_permission("settings.view"))):
     rows = await db.split_migrations.find({"source_org_id": ctx["org_id"]}, {"_id": 0, "moves": 0, "copies": 0}) \
