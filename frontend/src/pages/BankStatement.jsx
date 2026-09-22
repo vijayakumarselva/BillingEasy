@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
+import BankFeedPanel from "@/components/BankFeedPanel";
 import { Upload, CheckCircle2, XCircle, Link2, Trash2, FileText, Sparkles, TrendingUp, TrendingDown, BarChart3, Users, Tag } from "lucide-react";
 import DropZone from "@/components/DropZone";
 import { inr, fmtDate } from "@/lib/format";
@@ -256,6 +257,8 @@ export default function BankStatement() {
           Upload your bank CSV — we auto-match credits to customer invoices and debits to vendor purchases.
         </p>
       </div>
+
+      <BankFeedPanel />
 
       {/* Controls */}
       <div className="flex flex-wrap gap-3 items-center">

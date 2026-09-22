@@ -4343,68 +4343,8 @@ async def upload_bank_statement(body: BankStatementUpload, ctx=Depends(get_org_c
             "match_ref": None,
             "created_at": now_iso(),
         }
-        # Auto-match: try to reconcile against recorded payments first (most accurate),
-        # then fall back to invoice/purchase totals.
-        amount = row.credit if row.credit > 0 else row.debit
-        is_credit = row.credit > 0
-
-        def date_range(d: str, days: int = 3):
-            """Return (from_date, to_date) strings ±days around d."""
-            try:
-                from datetime import date, timedelta
-                dt = date.fromisoformat(d)
-                return (dt - timedelta(days=days)).isoformat(), (dt + timedelta(days=days)).isoformat()
-            except Exception:
-                return d, d
-
-        if amount > 0:
-            d_from, d_to = date_range(row.date)
-
-            # 1. Match against recorded payments (amount ±1% AND date ±3 days)
-            pay_direction = "received" if is_credit else "paid"
-            pay_q = org_filter(ctx, {
-                "direction": pay_direction,
-                "amount": {"$gte": amount * 0.99, "$lte": amount * 1.01},
-                "date": {"$gte": d_from, "$lte": d_to},
-            })
-            # Also try matching by UTR/reference if present in description
-            payment = await db.payments.find_one(pay_q, {"_id": 0})
-            if not payment and row.description:
-                # Try reference match: look for any word in description that's alphanumeric 8+ chars
-                import re as _re
-                refs = _re.findall(r"[A-Z0-9]{8,}", row.description.upper())
-                for ref in refs[:3]:
-                    payment = await db.payments.find_one(
-                        org_filter(ctx, {"reference": {"$regex": ref, "$options": "i"}}), {"_id": 0}
-                    )
-                    if payment:
-                        break
-            if payment:
-                entry["matched"] = True
-                entry["match_type"] = "payment"
-                entry["match_id"] = payment["id"]
-                entry["match_ref"] = f"{payment.get('party_name', '')} · {payment.get('reference', '')}".strip(" ·")
-
-            # 2. Fall back: match against invoice/purchase total
-            if not entry["matched"]:
-                if is_credit:
-                    invoice = await db.invoices.find_one(
-                        org_filter(ctx, {"total": {"$gte": amount * 0.99, "$lte": amount * 1.01},
-                                         "type": "sale", "status": {"$ne": "draft"}}), {"_id": 0})
-                    if invoice:
-                        entry["matched"] = True
-                        entry["match_type"] = "invoice"
-                        entry["match_id"] = invoice["id"]
-                        entry["match_ref"] = invoice.get("invoice_no", invoice["id"])
-                else:
-                    purchase = await db.invoices.find_one(
-                        org_filter(ctx, {"total": {"$gte": amount * 0.99, "$lte": amount * 1.01},
-                                         "type": "purchase", "status": {"$ne": "draft"}}), {"_id": 0})
-                    if purchase:
-                        entry["matched"] = True
-                        entry["match_type"] = "purchase"
-                        entry["match_id"] = purchase["id"]
-                        entry["match_ref"] = purchase.get("invoice_no", purchase["id"])
+        entry.update(await match_bank_row(ctx, row.date, row.description, row.debit, row.credit))
+        entry["fingerprint"] = _bank_row_fingerprint(body.bank_account_id, row.date, row.debit, row.credit, row.description)
         await db.bank_statement_rows.insert_one(entry)
         results.append({k: v for k, v in entry.items() if k != "_id"})
     matched = sum(1 for r in results if r["matched"])
@@ -8039,6 +7979,187 @@ async def public_create_payment(body: PublicPaymentIn, ictx=Depends(api_key_ctx)
             await db.invoices.update_one({"org_id": org_id, "id": inv["id"]},
                                          {"$set": {"status": "paid", "status_changed_at": now_iso()}})
     return {"ok": True, "duplicate": False, "payment_id": doc["id"], "linked_invoice": (inv or {}).get("invoice_no", "")}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Live bank feed: anything that can POST (an account-aggregator webhook, your
+# bank's corporate API, Zapier/n8n on bank alert emails, a script) pushes
+# transactions here and they land on the Bank Statement page, auto-matched.
+# Duplicates are impossible: same external_id, or same account+date+amount+text.
+# ─────────────────────────────────────────────────────────────────────────────
+BANK_FEED_SETTINGS_ID = "bank_feed"
+
+
+def _bank_row_fingerprint(account_id: str, date: str, debit: float, credit: float, desc: str) -> str:
+    raw = f"{account_id}|{date[:10]}|{round(debit, 2)}|{round(credit, 2)}|{(desc or '').strip().lower()[:80]}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+async def match_bank_row(ctx: dict, date: str, description: str, debit: float, credit: float) -> dict:
+    """Find what a bank line corresponds to: a recorded payment first, then an
+    unpaid invoice (money in) or purchase bill (money out)."""
+    out = {"matched": False, "match_type": None, "match_id": None, "match_ref": None}
+    amount = credit if credit > 0 else debit
+    if amount <= 0:
+        return out
+    is_credit = credit > 0
+    try:
+        dt = datetime.fromisoformat(date[:10])
+        d_from, d_to = (dt - timedelta(days=3)).date().isoformat(), (dt + timedelta(days=3)).date().isoformat()
+    except Exception:
+        d_from = d_to = date[:10]
+    lo, hi = amount * 0.99, amount * 1.01
+
+    payment = await db.payments.find_one(org_filter(ctx, {
+        "direction": "received" if is_credit else "paid",
+        "amount": {"$gte": lo, "$lte": hi}, "date": {"$gte": d_from, "$lte": d_to}}), {"_id": 0})
+    if not payment and description:
+        for ref in re.findall(r"[A-Z0-9]{8,}", description.upper())[:3]:
+            payment = await db.payments.find_one(
+                org_filter(ctx, {"reference": {"$regex": re.escape(ref), "$options": "i"}}), {"_id": 0})
+            if payment:
+                break
+    if payment:
+        party = await db.parties.find_one(org_filter(ctx, {"id": payment.get("party_id")}), {"_id": 0, "name": 1})
+        return {"matched": True, "match_type": "payment", "match_id": payment["id"],
+                "match_ref": " · ".join(x for x in [(party or {}).get("name", ""), payment.get("reference", "")] if x)}
+
+    if is_credit:
+        inv = await db.invoices.find_one(org_filter(ctx, {
+            "type": "sale", "status": {"$nin": ["draft", "cancelled", "void"]},
+            "totals.grand_total": {"$gte": lo, "$lte": hi}}), {"_id": 0, "id": 1, "invoice_no": 1})
+        if inv:
+            return {"matched": True, "match_type": "invoice", "match_id": inv["id"],
+                    "match_ref": inv.get("invoice_no", inv["id"])}
+    else:
+        pur = await db.purchases.find_one(org_filter(ctx, {
+            "status": {"$ne": "cancelled"},
+            "totals.grand_total": {"$gte": lo, "$lte": hi}}), {"_id": 0, "id": 1, "bill_no": 1, "po_no": 1})
+        if pur:
+            return {"matched": True, "match_type": "purchase", "match_id": pur["id"],
+                    "match_ref": pur.get("po_no") or pur.get("bill_no") or pur["id"]}
+    return out
+
+
+class BankFeedTxn(BaseModel):
+    external_id: str = ""              # the bank's / provider's own id, when there is one
+    date: str
+    description: str = ""
+    amount: Optional[float] = None     # positive = money in, negative = money out
+    debit: float = 0
+    credit: float = 0
+    balance: float = 0
+    reference: str = ""
+    bank_account_id: str = ""
+    account_no: str = ""               # last 4 digits are enough
+
+
+class BankFeedIn(BaseModel):
+    transactions: List[BankFeedTxn]
+    bank_account_id: str = ""
+    account_no: str = ""
+    source: str = "feed"
+
+
+async def _resolve_bank_account(org_id: str, account_id: str, account_no: str) -> Optional[dict]:
+    if account_id:
+        acc = await db.bank_accounts.find_one({"org_id": org_id, "id": account_id}, {"_id": 0})
+        if acc:
+            return acc
+    digits = "".join(ch for ch in (account_no or "") if ch.isdigit())
+    if digits:
+        async for acc in db.bank_accounts.find({"org_id": org_id}, {"_id": 0}):
+            if str(acc.get("account_no", "")).endswith(digits[-4:]):
+                return acc
+    accounts = await db.bank_accounts.find({"org_id": org_id}, {"_id": 0}).to_list(5)
+    return accounts[0] if len(accounts) == 1 else None
+
+
+@api.post("/v1/bank-transactions")
+async def bank_feed_push(body: BankFeedIn, ictx=Depends(api_key_ctx)):
+    """Push bank transactions as they happen. Safe to resend — duplicates are ignored."""
+    org_id = ictx["org_id"]
+    cfg = await db.gst_settings.find_one({"org_id": org_id, "id": BANK_FEED_SETTINGS_ID}, {"_id": 0}) or {}
+    added, duplicates, matched, payments_created, unknown_account = 0, 0, 0, 0, 0
+    rows = []
+    for t in body.transactions:
+        acc = await _resolve_bank_account(org_id, t.bank_account_id or body.bank_account_id,
+                                          t.account_no or body.account_no)
+        if not acc:
+            unknown_account += 1
+            continue
+        debit, credit = t.debit, t.credit
+        if t.amount is not None and not debit and not credit:
+            credit, debit = (t.amount, 0) if t.amount >= 0 else (0, abs(t.amount))
+        if debit <= 0 and credit <= 0:
+            continue
+        fp = _bank_row_fingerprint(acc["id"], t.date, debit, credit, t.description)
+        q = {"org_id": org_id, "external_id": t.external_id} if t.external_id else {"org_id": org_id, "fingerprint": fp}
+        if await db.bank_statement_rows.find_one(q, {"_id": 0, "id": 1}):
+            duplicates += 1
+            continue
+        m = await match_bank_row(ictx, t.date, t.description or t.reference, debit, credit)
+        entry = {"id": str(uuid.uuid4()), "org_id": org_id, "bank_account_id": acc["id"],
+                 "batch_id": f"feed-{t.date[:10]}", "date": t.date[:10],
+                 "description": t.description or t.reference, "debit": debit, "credit": credit,
+                 "balance": t.balance, "reference": t.reference, "external_id": t.external_id or "",
+                 "fingerprint": fp, "source": body.source, "created_at": now_iso(), **m}
+        # optionally turn a confident invoice/bill match straight into a receipt/payment
+        if cfg.get("auto_create_payment") and m["matched"] and m["match_type"] in ("invoice", "purchase"):
+            party_id, linked_ref = "", m["match_ref"]
+            if m["match_type"] == "invoice":
+                doc = await db.invoices.find_one({"org_id": org_id, "id": m["match_id"]}, {"_id": 0, "party_id": 1})
+            else:
+                doc = await db.purchases.find_one({"org_id": org_id, "id": m["match_id"]}, {"_id": 0, "party_id": 1})
+            party_id = (doc or {}).get("party_id", "")
+            if party_id:
+                pay = {"id": str(uuid.uuid4()), "org_id": org_id, "party_id": party_id,
+                       "direction": "received" if credit > 0 else "paid",
+                       "amount": round(credit or debit, 2), "mode": "Bank Transfer", "date": entry["date"],
+                       "reference": t.reference or t.external_id or "", "bank_account_id": acc["id"],
+                       "bank_account_name": f"{acc['bank_name']} – {str(acc.get('account_no',''))[-4:]}",
+                       "invoice_id": m["match_id"], "expense_id": "", "linked_ref": linked_ref,
+                       "linked_type": "invoice", "biz_type": ictx.get("biz_type"), "source": "bank-feed",
+                       "created_at": now_iso()}
+                await db.payments.insert_one(pay)
+                entry.update({"match_type": "payment", "match_id": pay["id"], "auto_payment": True})
+                payments_created += 1
+        await db.bank_statement_rows.insert_one(entry)
+        added += 1
+        matched += 1 if entry["matched"] else 0
+        rows.append({"date": entry["date"], "amount": credit or -debit, "matched": entry["matched"],
+                     "match_ref": entry["match_ref"]})
+    await db.gst_settings.update_one({"org_id": org_id, "id": BANK_FEED_SETTINGS_ID},
+                                     {"$set": {"org_id": org_id, "id": BANK_FEED_SETTINGS_ID,
+                                               "last_received_at": now_iso(), "last_source": body.source}},
+                                     upsert=True)
+    return {"ok": True, "added": added, "duplicates": duplicates, "matched": matched,
+            "payments_created": payments_created, "unknown_account": unknown_account, "rows": rows}
+
+
+class BankFeedSettingsIn(BaseModel):
+    auto_create_payment: bool = False
+
+
+@api.get("/bank-feed/status")
+async def bank_feed_status(ctx=Depends(require_permission("settings.view"))):
+    cfg = await db.gst_settings.find_one({"org_id": ctx["org_id"], "id": BANK_FEED_SETTINGS_ID}, {"_id": 0}) or {}
+    key = await db.integration_keys.find_one(
+        {"org_id": ctx["org_id"], "provider": PUBLIC_API_PROVIDER, "revoked": {"$ne": True}}, {"_id": 0, "key_hint": 1})
+    return {"auto_create_payment": bool(cfg.get("auto_create_payment")),
+            "last_received_at": cfg.get("last_received_at"), "last_source": cfg.get("last_source", ""),
+            "api_key_present": bool(key), "key_hint": (key or {}).get("key_hint", ""),
+            "fed_rows": await db.bank_statement_rows.count_documents({"org_id": ctx["org_id"], "source": {"$exists": True, "$ne": ""}}),
+            "auto_payments": await db.payments.count_documents({"org_id": ctx["org_id"], "source": "bank-feed"})}
+
+
+@api.put("/bank-feed/status")
+async def bank_feed_settings(body: BankFeedSettingsIn, ctx=Depends(require_permission("settings.edit"))):
+    await db.gst_settings.update_one({"org_id": ctx["org_id"], "id": BANK_FEED_SETTINGS_ID},
+                                     {"$set": {"org_id": ctx["org_id"], "id": BANK_FEED_SETTINGS_ID,
+                                               "auto_create_payment": body.auto_create_payment,
+                                               "updated_at": now_iso()}}, upsert=True)
+    return await bank_feed_status(ctx)
 
 
 app.include_router(api)
