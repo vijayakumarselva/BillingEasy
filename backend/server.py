@@ -7187,6 +7187,184 @@ async def stay_inbox_dismiss(iid: str, ctx=Depends(get_org_ctx)):
     return {"ok": True}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Split a legacy multi-type company into standalone businesses.
+# Transactions move by their b2b/b2c tag (payments follow their invoice/bill);
+# masters (parties, products) are copied with balances/stock zeroed; anything
+# untagged stays put. Every change is recorded so the split can be undone.
+# ─────────────────────────────────────────────────────────────────────────────
+SPLIT_TXN_COLLECTIONS = ("invoices", "purchases", "expenses")
+
+
+class SplitTargetIn(BaseModel):
+    biz_type: str
+    name: str = Field(min_length=2, max_length=80)
+    state_code: str = ""
+    gstin: str = ""
+
+
+class SplitIn(BaseModel):
+    targets: List[SplitTargetIn]
+
+
+async def _split_plan(org_id: str, targets: List[SplitTargetIn]) -> dict:
+    wanted = {t.biz_type for t in targets}
+    plan, party_ids, product_ids = {}, {}, {}
+    for t in targets:
+        bt = t.biz_type
+        inv = await db.invoices.find({"org_id": org_id, "biz_type": bt}, {"_id": 0, "id": 1, "party_id": 1, "items": 1}).to_list(5000)
+        pur = await db.purchases.find({"org_id": org_id, "biz_type": bt}, {"_id": 0, "id": 1, "party_id": 1, "items": 1}).to_list(5000)
+        exp = await db.expenses.count_documents({"org_id": org_id, "biz_type": bt})
+        doc_ids = [d["id"] for d in inv + pur]
+        pay = await db.payments.count_documents({"org_id": org_id, "invoice_id": {"$in": doc_ids}}) if doc_ids else 0
+        pay += await db.payments.count_documents({"org_id": org_id, "biz_type": bt,
+                                                  "$or": [{"invoice_id": ""}, {"invoice_id": {"$exists": False}}]})
+        pids = {d.get("party_id") for d in inv + pur if d.get("party_id")}
+        prods = {i.get("product_id") for d in inv + pur for i in (d.get("items") or []) if i.get("product_id")}
+        party_ids[bt], product_ids[bt] = pids, prods
+        row = {"biz_type": bt, "name": t.name, "invoices": len(inv), "purchases": len(pur),
+               "expenses": exp, "payments": pay, "parties_copied": len(pids), "products_copied": len(prods)}
+        if bt == "stay":
+            row["bookings"] = await db.bookings.count_documents({"org_id": org_id})
+            row["rooms"] = await db.rooms.count_documents({"org_id": org_id})
+        plan[bt] = row
+    untagged = {
+        "invoices": await db.invoices.count_documents({"org_id": org_id, "$or": [{"biz_type": None}, {"biz_type": {"$exists": False}}, {"biz_type": {"$nin": list(wanted)}}]}),
+        "purchases": await db.purchases.count_documents({"org_id": org_id, "$or": [{"biz_type": None}, {"biz_type": {"$exists": False}}, {"biz_type": {"$nin": list(wanted)}}]}),
+        "expenses": await db.expenses.count_documents({"org_id": org_id, "$or": [{"biz_type": None}, {"biz_type": {"$exists": False}}, {"biz_type": {"$nin": list(wanted)}}]}),
+        "parties": await db.parties.count_documents({"org_id": org_id}),
+        "products": await db.products.count_documents({"org_id": org_id}),
+        "bank_accounts": await db.bank_accounts.count_documents({"org_id": org_id}),
+    }
+    return {"targets": list(plan.values()), "stays_in_source": untagged, "_party_ids": party_ids, "_product_ids": product_ids}
+
+
+@api.post("/businesses/split/preview")
+async def split_preview(body: SplitIn, ctx=Depends(require_permission("settings.edit"))):
+    """Dry run: what each new business would receive. Changes nothing."""
+    org = await get_org_doc(ctx["org_id"])
+    if org.get("business_type"):
+        raise HTTPException(400, "This company is already a single-type business — nothing to split")
+    plan = await _split_plan(ctx["org_id"], body.targets)
+    acct = await _business_account(await db.users.find_one({"id": org["owner_user_id"]}, {"_id": 0}) or {"id": ""})
+    room = acct["limits"]["max_businesses"] - acct["owned_count"]
+    return {"source": {"id": org["id"], "name": org["name"]},
+            "targets": plan["targets"], "stays_in_source": plan["stays_in_source"],
+            "can_create": room >= len(body.targets), "businesses_free": room,
+            "notes": [
+                "Payments follow the invoice or bill they are linked to.",
+                "Parties and products are copied into each new business with opening balance and stock set to 0 — the originals stay here.",
+                "Bank accounts, GST settings and staff are not moved; add them per business.",
+                "Anything without a B2B/B2C tag stays in this company.",
+            ]}
+
+
+@api.post("/businesses/split/execute")
+async def split_execute(body: SplitIn, request: Request, ctx=Depends(require_permission("settings.edit"))):
+    org = await get_org_doc(ctx["org_id"])
+    if org.get("business_type"):
+        raise HTTPException(400, "This company is already a single-type business")
+    user = await db.users.find_one({"id": org["owner_user_id"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(400, "Owner not found")
+    plan = await _split_plan(ctx["org_id"], body.targets)
+    mig = {"id": str(uuid.uuid4()), "source_org_id": org["id"], "created_at": now_iso(),
+           "created_by": ctx["user"].get("id"), "status": "done", "targets": [], "moves": [], "copies": []}
+    for t in body.targets:
+        acct = await _business_account(user)
+        if not acct["can_add"]:
+            raise HTTPException(402, f"Business limit reached after creating {len(mig['targets'])} of {len(body.targets)} — raise the limit and run the split again")
+        new_org = await _create_org_internal(t.name.strip(), user["id"], org.get("state", "Tamil Nadu"),
+                                             t.state_code or org.get("state_code", "33"))
+        billing_root = (await billing_org_for(org))["id"]
+        await db.organizations.update_one({"id": new_org["id"]}, {"$set": {
+            "business_type": t.biz_type, "business_mode": t.biz_type, "gstin": (t.gstin or "").upper(),
+            "billing_org_id": billing_root, "subscription_status": "addon", "trial_ends_at": None,
+            "split_from_org_id": org["id"], "address": org.get("address", ""), "phone": org.get("phone", ""),
+            "email": org.get("email", "")}})
+        tid, bt = new_org["id"], t.biz_type
+        mig["targets"].append({"org_id": tid, "name": t.name, "biz_type": bt})
+
+        # 1. transactions by tag
+        moved_docs = []
+        for coll in SPLIT_TXN_COLLECTIONS:
+            async for d in db[coll].find({"org_id": org["id"], "biz_type": bt}, {"_id": 0, "id": 1}):
+                moved_docs.append((coll, d["id"]))
+        # 2. payments that belong to those invoices/bills, plus tagged unlinked ones
+        doc_ids = [i for c, i in moved_docs if c in ("invoices", "purchases")]
+        if doc_ids:
+            async for p in db.payments.find({"org_id": org["id"], "invoice_id": {"$in": doc_ids}}, {"_id": 0, "id": 1}):
+                moved_docs.append(("payments", p["id"]))
+        async for p in db.payments.find({"org_id": org["id"], "biz_type": bt,
+                                         "$or": [{"invoice_id": ""}, {"invoice_id": {"$exists": False}}]}, {"_id": 0, "id": 1}):
+            moved_docs.append(("payments", p["id"]))
+        # 3. stay: bookings and rooms move whole
+        if bt == "stay":
+            for coll in ("bookings", "rooms"):
+                async for d in db[coll].find({"org_id": org["id"]}, {"_id": 0, "id": 1}):
+                    moved_docs.append((coll, d["id"]))
+        for coll, did in moved_docs:
+            await db[coll].update_one({"org_id": org["id"], "id": did},
+                                      {"$set": {"org_id": tid, "biz_type": bt, "split_migration_id": mig["id"],
+                                                "split_from_org_id": org["id"]}})
+            mig["moves"].append({"coll": coll, "id": did, "to": tid})
+
+        # 4. masters copied, balances/stock zeroed so nothing is counted twice
+        for coll, ids, zero in (("parties", plan["_party_ids"].get(bt, set()), {"opening_balance": 0, "tds_opening_balance": 0}),
+                                ("products", plan["_product_ids"].get(bt, set()), {"stock": 0})):
+            for mid in ids:
+                src = await db[coll].find_one({"org_id": org["id"], "id": mid}, {"_id": 0})
+                if not src or await db[coll].find_one({"org_id": tid, "id": mid}, {"_id": 0, "id": 1}):
+                    continue
+                await db[coll].insert_one({**src, **zero, "org_id": tid, "copied_from_org_id": org["id"],
+                                           "split_migration_id": mig["id"], "created_at": now_iso()})
+                mig["copies"].append({"coll": coll, "id": mid, "org_id": tid})
+    await db.split_migrations.insert_one(mig)
+    await audit_log(db, org_id=org["id"], user=ctx["user"], action="business.split", entity_type="organization",
+                    entity_id=org["id"], metadata={"migration_id": mig["id"],
+                                                   "targets": [t["name"] for t in mig["targets"]],
+                                                   "moved": len(mig["moves"])}, request=request)
+    return {"ok": True, "migration_id": mig["id"], "targets": mig["targets"],
+            "moved": len(mig["moves"]), "copied": len(mig["copies"])}
+
+
+@api.get("/businesses/split/history")
+async def split_history(ctx=Depends(require_permission("settings.view"))):
+    rows = await db.split_migrations.find({"source_org_id": ctx["org_id"]}, {"_id": 0, "moves": 0, "copies": 0}) \
+        .sort("created_at", -1).to_list(20)
+    return rows
+
+
+@api.post("/businesses/split/{mid}/undo")
+async def split_undo(mid: str, request: Request, ctx=Depends(require_permission("settings.edit"))):
+    """Put everything back and remove the businesses this split created (only if nothing new was added to them)."""
+    mig = await db.split_migrations.find_one({"id": mid, "source_org_id": ctx["org_id"]}, {"_id": 0})
+    if not mig:
+        raise HTTPException(404, "Split not found")
+    if mig["status"] != "done":
+        raise HTTPException(400, f"This split is already {mig['status']}")
+    moved_ids = {(m["coll"], m["id"]) for m in mig["moves"]}
+    for t in mig["targets"]:
+        for coll in ("invoices", "purchases", "payments", "expenses", "bookings", "rooms"):
+            async for d in db[coll].find({"org_id": t["org_id"]}, {"_id": 0, "id": 1, "split_migration_id": 1}):
+                if d.get("split_migration_id") != mid and (coll, d["id"]) not in moved_ids:
+                    raise HTTPException(409, f"{t['name']} already has new records — undo would delete them. "
+                                             f"Move them out first, or keep the split.")
+    for m in mig["moves"]:
+        await db[m["coll"]].update_one({"org_id": m["to"], "id": m["id"]},
+                                       {"$set": {"org_id": mig["source_org_id"]},
+                                        "$unset": {"split_migration_id": "", "split_from_org_id": ""}})
+    for cpy in mig["copies"]:
+        await db[cpy["coll"]].delete_one({"org_id": cpy["org_id"], "id": cpy["id"], "split_migration_id": mid})
+    for t in mig["targets"]:
+        await db.organizations.update_one({"id": t["org_id"]}, {"$set": {"deleted": True, "deleted_at": now_iso()}})
+        await db.memberships.delete_many({"org_id": t["org_id"]})
+    await db.split_migrations.update_one({"id": mid}, {"$set": {"status": "undone", "undone_at": now_iso()}})
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="business.split_undone",
+                    entity_type="organization", entity_id=ctx["org_id"], metadata={"migration_id": mid}, request=request)
+    return {"ok": True, "restored": len(mig["moves"]), "removed_copies": len(mig["copies"])}
+
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,

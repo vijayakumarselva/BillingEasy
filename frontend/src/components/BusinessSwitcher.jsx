@@ -91,7 +91,10 @@ export default function BusinessSwitcher({ open, onClose, orgId, currentOrg, bus
                     </button>
                   ))}
                 </div>
-                <p className="text-[11px] text-gray-400 mt-2">This company mixes several types. For fully separate books, add a new business instead.</p>
+                <p className="text-[11px] text-gray-400 mt-2">
+                  This company mixes several types. To give each its own books, use{" "}
+                  <button className="underline font-medium" onClick={() => { onClose(); nav("/settings?tab=integrations"); }}>Settings → Integrations → Split this company</button>.
+                </p>
               </div>
             )}
             <div className="p-6 flex flex-col gap-2">

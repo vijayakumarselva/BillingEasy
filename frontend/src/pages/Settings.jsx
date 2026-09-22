@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,9 +21,12 @@ import AuditLogPanel from "@/components/AuditLogPanel";
 import DropZone from "@/components/DropZone";
 import MomCubIntegration from "@/components/MomCubIntegration";
 import BookingChannelIntegration from "@/components/BookingChannelIntegration";
+import SplitCompany from "@/components/SplitCompany";
 
 export default function Settings() {
   const { currentOrg, currentRole } = useAuth();
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get("tab") || "biz";
   const [biz, setBiz] = useState({
     name: "", address: "", state: "Tamil Nadu", state_code: "33", gstin: "", pan: "",
     phone: "", email: "", logo_url: "", logo_b64: "", bank_name: "", bank_account: "", bank_ifsc: "",
@@ -155,7 +159,7 @@ export default function Settings() {
         <p className="text-sm text-muted-foreground mt-1">Manage <span className="font-medium text-foreground">{currentOrg?.name}</span> — profile, team & preferences.</p>
       </div>
 
-      <Tabs defaultValue="biz">
+      <Tabs defaultValue={initialTab}>
         <TabsList className="flex-wrap">
           <TabsTrigger value="biz" data-testid="settings-tab-biz">Business</TabsTrigger>
           <TabsTrigger value="invoice" data-testid="settings-tab-invoice">Invoice Theme</TabsTrigger>
@@ -742,6 +746,7 @@ export default function Settings() {
 
         <TabsContent value="integrations">
           <div className="space-y-4">
+            {!currentOrg?.business_type && (currentRole === "owner") && <SplitCompany onDone={() => window.location.reload()} />}
             {currentOrg?.business_type === "stay" && <BookingChannelIntegration canEdit={currentRole === "owner" || currentRole === "admin"} />}
             <MomCubIntegration canEdit={currentRole === "owner" || currentRole === "admin"} />
           </div>
