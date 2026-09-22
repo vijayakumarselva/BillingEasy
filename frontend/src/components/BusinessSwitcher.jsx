@@ -7,6 +7,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 import { Plus, Check, Lock, ArrowLeft } from "lucide-react";
 import { STATES } from "@/pages/Parties";
+import { useAuth } from "@/context/AuthContext";
+import { useNavigate } from "react-router-dom";
 
 export const BUSINESS_MODES = [
   { value: "b2b",        label: "B2B Billing",   emoji: "🏢", color: "bg-blue-600",   desc: "GST invoices, purchases, ledgers" },
@@ -20,6 +22,8 @@ export const modeInfo = (v) => BUSINESS_MODES.find(m => m.value === v);
 /** Business picker: switch between standalone businesses, add a new one, and (for a
  *  legacy multi-type company only) switch its type view. */
 export default function BusinessSwitcher({ open, onClose, orgId, currentOrg, businessMode, onChooseMode, onSwitch, startInAdd = false }) {
+  const { user } = useAuth();
+  const nav = useNavigate();
   const [data, setData] = useState(null);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name: "", business_type: "", state_code: "33", gstin: "" });
@@ -93,10 +97,23 @@ export default function BusinessSwitcher({ open, onClose, orgId, currentOrg, bus
             <div className="p-6 flex flex-col gap-2">
               {acct && (acct.can_add
                 ? <Button onClick={() => setAdding(true)} className="w-full bg-blue-600 hover:bg-blue-700"><Plus className="h-4 w-4 mr-1.5" /> Add business</Button>
-                : <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 text-xs text-amber-800 dark:text-amber-300 flex gap-2">
-                    <Lock className="h-4 w-4 shrink-0" />
-                    <span>Your plan includes {acct.limits.max_businesses} business{acct.limits.max_businesses !== 1 ? "es" : ""}. To add more, contact BillingsEasy support — ₹{acct.limits.addon_price_monthly}/month per extra business.</span>
-                  </div>)}
+                : (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 text-xs text-amber-800 dark:text-amber-300 space-y-2">
+                    <div className="flex gap-2">
+                      <Lock className="h-4 w-4 shrink-0" />
+                      <span>
+                        Your plan includes {acct.limits.max_businesses} business{acct.limits.max_businesses !== 1 ? "es" : ""}.
+                        {user?.is_super_admin
+                          ? " Raise the limit in the platform console to add another (B2B, B2C, Restaurant, POS or Stay / Resort / Homestay)."
+                          : ` To add more, contact BillingsEasy support — ₹${acct.limits.addon_price_monthly}/month per extra business.`}
+                      </span>
+                    </div>
+                    {user?.is_super_admin && (
+                      <Button size="sm" variant="outline" className="h-8"
+                        onClick={() => { onClose(); nav("/super"); }}>Open platform console</Button>
+                    )}
+                  </div>
+                ))}
               <button onClick={onClose} className="w-full text-sm text-gray-400 hover:text-gray-600 py-2">Close</button>
             </div>
           </>
