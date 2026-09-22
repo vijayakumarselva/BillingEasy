@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, FileDown, Share2, Wallet, ArrowRightLeft, FileJson, AlertTriangle, CheckCircle2, Pencil, Truck, ChevronDown } from "lucide-react";
+import { ArrowLeft, FileDown, Share2, Wallet, ArrowRightLeft, FileJson, AlertTriangle, CheckCircle2, Pencil, Truck, ChevronDown, FileCheck2 } from "lucide-react";
 import { inr, fmtDate, todayISO } from "@/lib/format";
 import { openExternalUrl, downloadFile } from "@/lib/mobile";
 
@@ -23,6 +23,19 @@ export default function InvoiceDetail() {
   const [eiOpen, setEiOpen] = useState(false);
   const [eiResult, setEiResult] = useState(null);
   const [eiLoading, setEiLoading] = useState(false);
+
+  const [filing, setFiling] = useState(false);
+  const fileIrn = async () => {
+    setFiling(true);
+    try {
+      const { data } = await api.post(`/invoices/${id}/einvoice/generate`);
+      toast.success(data.duplicate ? `Already filed — IRN ${data.irn.slice(0, 12)}…`
+        : `IRN generated · Ack ${data.ack_no}`, { duration: 8000 });
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not file the e-invoice", { duration: 12000 });
+    } finally { setFiling(false); }
+  };
 
   // E-Way Bill state
   const [ewbOpen, setEwbOpen] = useState(false);
@@ -192,6 +205,12 @@ export default function InvoiceDetail() {
           }} data-testid="copy-share-link"><ArrowRightLeft className="h-4 w-4 mr-1.5" /> Copy share link</Button>
           <Button variant="outline" onClick={shareWA} data-testid="share-whatsapp-button"><Share2 className="h-4 w-4 mr-1.5" /> WhatsApp</Button>
           <Button variant="outline" onClick={downloadPdf} data-testid="download-pdf-button"><FileDown className="h-4 w-4 mr-1.5" /> Download PDF</Button>
+          {inv.type === "sale" && !inv.irn && (
+            <Button onClick={fileIrn} disabled={filing} data-testid="file-irn-button"
+              className="bg-indigo-600 hover:bg-indigo-700">
+              <FileCheck2 className="h-4 w-4 mr-1.5" /> {filing ? "Filing…" : "Generate IRN"}
+            </Button>
+          )}
           {inv.type === "sale" && (
             <Button variant="outline" onClick={generateEinvoice} data-testid="einvoice-button" className="border-amber-500/60 text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/30">
               <FileJson className="h-4 w-4 mr-1.5" /> E-Invoice JSON
@@ -212,6 +231,13 @@ export default function InvoiceDetail() {
             <div className="text-sm text-muted-foreground mt-1">
               <Badge>{inv.type}</Badge> · <Badge variant="secondary">{inv.status}</Badge> · {fmtDate(inv.invoice_date)}
             </div>
+            {inv.irn && (
+              <div className={`mt-2 rounded-lg border p-2 text-xs ${inv.einvoice_status === "cancelled" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>
+                <div className="font-semibold">{inv.einvoice_status === "cancelled" ? "E-invoice cancelled" : "E-invoice filed"}{inv.ack_no ? ` · Ack ${inv.ack_no}` : ""}{inv.ack_date ? ` · ${inv.ack_date}` : ""}</div>
+                <div className="font-mono break-all opacity-80">IRN {inv.irn}</div>
+                {inv.ewb_no && <div className="mt-1">E-way bill <span className="font-mono">{inv.ewb_no}</span>{inv.ewb_valid_till ? ` · valid till ${inv.ewb_valid_till}` : ""}</div>}
+              </div>
+            )}
           </div>
           <div className="text-right">
             <div className="text-xs text-muted-foreground">Grand Total</div>

@@ -49,6 +49,16 @@ export default function GST() {
         <div className="flex gap-2">
           <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-44" data-testid="gst-month-input" />
           <Button variant="outline" onClick={exportJson} data-testid="gst-export-json"><Download className="h-4 w-4 mr-1.5" /> Export JSON</Button>
+          <Button onClick={async () => {
+            try {
+              const { data } = await api.get("/gst/gstr1/portal-json", { params: { month } });
+              const url = window.URL.createObjectURL(new Blob([JSON.stringify(data)], { type: "application/json" }));
+              downloadFile(url, `GSTR1_${data.gstin}_${data.fp}.json`);
+              toast.success("GSTR-1 ready — upload it on the GST portal / offline tool");
+            } catch (e) { toast.error(e?.response?.data?.detail || "Could not build GSTR-1"); }
+          }} className="bg-indigo-600 hover:bg-indigo-700" data-testid="gst-portal-json">
+            <Download className="h-4 w-4 mr-1.5" /> GSTR-1 for portal
+          </Button>
         </div>
       </div>
 

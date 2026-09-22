@@ -2167,7 +2167,9 @@ async def invoice_eway_bill(iid: str, body: dict, ctx=Depends(get_org_ctx)):
     party = inv.get("party_snapshot", {})
 
     if not org.get("gstin"):      errors.append("Your GSTIN is missing — add it in Settings")
-    if not party.get("gstin"):    errors.append("Customer GSTIN is missing — add it in Parties")
+    if not party.get("gstin"):
+        # NIC expects "URP" for an unregistered (B2C) recipient — an e-way bill is still required
+        warnings.append("Customer has no GSTIN — filing as URP (unregistered person)")
     if not party.get("state_code"): warnings.append("Customer state code missing — place of supply may be wrong")
     totals = inv.get("totals", {})
     grand = totals.get("grand_total", 0)
@@ -2215,7 +2217,7 @@ async def invoice_eway_bill(iid: str, body: dict, ctx=Depends(get_org_ctx)):
         "fromTrdName": org.get("name", ""),
         "fromAddr1": org.get("address", ""),
         "fromStateCode": org.get("state_code", "33"),
-        "toGstin": party.get("gstin", ""),
+        "toGstin": party.get("gstin") or "URP",
         "toTrdName": party.get("name", ""),
         "toAddr1": party.get("billing_address", ""),
         "toStateCode": party.get("state_code", "33"),
@@ -7461,6 +7463,582 @@ async def split_undo(mid: str, request: Request, ctx=Depends(require_permission(
     await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="business.split_undone",
                     entity_type="organization", entity_id=ctx["org_id"], metadata={"migration_id": mid}, request=request)
     return {"ok": True, "restored": len(mig["moves"]), "removed_copies": len(mig["copies"])}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GST filing: e-invoice (IRN) and e-way bill through a GSP/ASP, per business.
+# The government IRP is only reachable with credentials in the taxpayer's own
+# name, so each business stores its own. We speak the common GSP JSON style
+# (the GSP handles NIC's encryption); endpoint paths and response field names
+# are configurable, so any provider can be pointed at without a code change.
+# ─────────────────────────────────────────────────────────────────────────────
+GSP_PRESETS = {
+    "custom":        {"label": "Custom / other GSP", "base_url": "", "auth_style": "headers"},
+    "mastersindia":  {"label": "Masters India", "base_url": "https://api.mastersindia.co", "auth_style": "headers",
+                      "einvoice_path": "/api/v1/einvoice/", "ewaybill_path": "/api/v1/ewayBill/"},
+    "cleartax":      {"label": "ClearTax", "base_url": "https://api-einv.cleartax.in", "auth_style": "headers",
+                      "einvoice_path": "/v2/einvoice/generate", "ewaybill_path": "/v2/ewaybill/generate"},
+    "nic_sandbox":   {"label": "NIC sandbox (testing only)", "base_url": "https://einv-apisandbox.nic.in",
+                      "auth_style": "headers", "einvoice_path": "/eicore/v1.03/Invoice",
+                      "ewaybill_path": "/ewaybillapi/v1.03/ewayapi"},
+}
+GST_SETTINGS_ID = "gst_filing"
+
+
+class GstFilingSettingsIn(BaseModel):
+    provider: str = "custom"
+    base_url: str = ""
+    einvoice_path: str = ""
+    ewaybill_path: str = ""
+    client_id: str = ""
+    client_secret: str = ""
+    username: str = ""
+    password: str = ""
+    gstin: str = ""
+    extra_headers: Dict[str, str] = {}
+    auto_einvoice: bool = False          # raise the IRN as soon as an invoice is finalized
+    einvoice_threshold: float = 0        # only for invoices at/above this value (0 = all)
+    enabled: bool = False
+
+
+def fmt_ddmmyyyy(iso: str) -> str:
+    try:
+        return datetime.fromisoformat(iso[:10]).strftime("%d-%m-%Y")
+    except Exception:
+        return iso
+
+
+def _mask(v: str) -> str:
+    return ("•" * max(len(v) - 4, 0) + v[-4:]) if v else ""
+
+
+async def _gst_settings(org_id: str) -> dict:
+    row = await db.gst_settings.find_one({"org_id": org_id, "id": GST_SETTINGS_ID}, {"_id": 0}) or {}
+    preset = GSP_PRESETS.get(row.get("provider", "custom"), GSP_PRESETS["custom"])
+    return {**{k: "" for k in ("base_url", "einvoice_path", "ewaybill_path", "client_id", "client_secret",
+                               "username", "password", "gstin")},
+            "provider": "custom", "extra_headers": {}, "auto_einvoice": False, "einvoice_threshold": 0,
+            "enabled": False, **row,
+            "base_url": (row.get("base_url") or preset.get("base_url", "")).rstrip("/"),
+            "einvoice_path": row.get("einvoice_path") or preset.get("einvoice_path", ""),
+            "ewaybill_path": row.get("ewaybill_path") or preset.get("ewaybill_path", "")}
+
+
+def _gsp_headers(cfg: dict) -> dict:
+    h = {"Content-Type": "application/json"}
+    if cfg.get("client_id"): h["client_id"] = cfg["client_id"]
+    if cfg.get("client_secret"): h["client_secret"] = cfg["client_secret"]
+    if cfg.get("username"): h["username"] = cfg["username"]
+    if cfg.get("password"): h["password"] = cfg["password"]
+    if cfg.get("gstin"): h["gstin"] = cfg["gstin"]
+    h.update(cfg.get("extra_headers") or {})
+    return h
+
+
+def _dig(data: Any, *names: str) -> Optional[str]:
+    """Pull a field like Irn / irn / data.Irn out of whatever shape the GSP returns."""
+    found = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if isinstance(v, (dict, list)):
+                    walk(v)
+                elif k.lower() not in found:
+                    found[k.lower()] = v
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(data)
+    for n in names:
+        if found.get(n.lower()) not in (None, ""):
+            return str(found[n.lower()])
+    return None
+
+
+async def _gsp_post(cfg: dict, path: str, payload: dict) -> dict:
+    if not cfg.get("enabled"):
+        raise HTTPException(400, "GST filing is switched off for this business — turn it on in Settings → GST filing")
+    if not cfg.get("base_url") or not path:
+        raise HTTPException(400, "Your GSP's API URL is not set — add it in Settings → GST filing")
+    url = f"{cfg['base_url']}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(url, json=payload, headers=_gsp_headers(cfg))
+    except httpx.TimeoutException:
+        raise HTTPException(504, "The GSP did not respond in time — nothing was filed, try again")
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach the GSP: {str(e)[:150]}")
+    try:
+        data = r.json()
+    except Exception:
+        raise HTTPException(502, f"GSP returned a non-JSON reply ({r.status_code}): {r.text[:200]}")
+    if r.status_code >= 400 or str(_dig(data, "Status", "status") or "").lower() in ("0", "error", "failed"):
+        msg = _dig(data, "ErrorMessage", "error_message", "message", "Desc", "errorDesc") or f"GSP rejected it ({r.status_code})"
+        raise HTTPException(422, f"GSP: {msg}")
+    return data
+
+
+@api.get("/gst/gstr1/portal-json")
+async def gstr1_portal_json(month: Optional[str] = Query(None, description="YYYY-MM"), ctx=Depends(get_org_ctx)):
+    """GSTR-1 in the JSON shape the GST offline utility / portal accepts (schema v2.1).
+    Needs no credentials — download it and upload on gst.gov.in."""
+    month = month or now_dt().strftime("%Y-%m")
+    org = await get_org_doc(ctx["org_id"])
+    gstin = (org.get("gstin") or "").upper()
+    if not gstin:
+        raise HTTPException(400, "Add your GSTIN in Settings before exporting GSTR-1")
+    fp = f"{month[5:7]}{month[0:4]}"                      # MMYYYY
+    b2b: Dict[str, list] = {}
+    b2cs: Dict[tuple, dict] = {}
+    hsn: Dict[tuple, dict] = {}
+    gt = 0.0
+    async for inv in db.invoices.find({"org_id": ctx["org_id"], "type": "sale",
+                                       "invoice_date": {"$regex": f"^{month}"},
+                                       "status": {"$nin": ["cancelled", "void", "draft"]}}, {"_id": 0}):
+        t = inv.get("totals") or {}
+        party = inv.get("party_snapshot") or {}
+        pos = (party.get("state_code") or org.get("state_code") or "33").zfill(2)
+        intra = t.get("igst", 0) == 0
+        gt += t.get("grand_total", 0)
+        rows = {}
+        for idx, it in enumerate(inv.get("items") or [], start=1):
+            rt = float(it.get("gst_rate", 0) or 0)
+            r = rows.setdefault(rt, {"num": idx, "itm_det": {"rt": rt, "txval": 0, "iamt": 0, "camt": 0, "samt": 0, "csamt": 0}})
+            d = r["itm_det"]
+            d["txval"] = round(d["txval"] + it.get("taxable", 0), 2)
+            d["iamt"] = round(d["iamt"] + it.get("igst", 0), 2)
+            d["camt"] = round(d["camt"] + it.get("cgst", 0), 2)
+            d["samt"] = round(d["samt"] + it.get("sgst", 0), 2)
+            key = (str(it.get("hsn") or ""), (it.get("unit") or "NOS").upper(), rt)
+            h = hsn.setdefault(key, {"num": len(hsn) + 1, "hsn_sc": key[0], "desc": (it.get("name") or "")[:30],
+                                     "uqc": key[1], "qty": 0, "rt": rt, "txval": 0, "iamt": 0, "camt": 0, "samt": 0, "csamt": 0})
+            h["qty"] = round(h["qty"] + it.get("qty", 0), 3)
+            for src, dst in (("taxable", "txval"), ("igst", "iamt"), ("cgst", "camt"), ("sgst", "samt")):
+                h[dst] = round(h[dst] + it.get(src, 0), 2)
+        itms = list(rows.values())
+        if party.get("gstin"):
+            b2b.setdefault(party["gstin"].upper(), []).append({
+                "inum": inv.get("invoice_no", ""), "idt": fmt_ddmmyyyy(inv.get("invoice_date", "")),
+                "val": round(t.get("grand_total", 0), 2), "pos": pos, "rchrg": "N", "inv_typ": "R", "itms": itms})
+        else:
+            for r in itms:
+                d = r["itm_det"]
+                k = ("INTRA" if intra else "INTER", d["rt"], pos)
+                e = b2cs.setdefault(k, {"sply_ty": k[0], "rt": d["rt"], "typ": "OE", "pos": pos,
+                                        "txval": 0, "iamt": 0, "camt": 0, "samt": 0, "csamt": 0})
+                for f in ("txval", "iamt", "camt", "samt"):
+                    e[f] = round(e[f] + d[f], 2)
+    out = {"gstin": gstin, "fp": fp, "version": "GST3.2.1", "hash": "hash",
+           "gt": round(gt, 2), "cur_gt": round(gt, 2)}
+    if b2b:
+        out["b2b"] = [{"ctin": c, "inv": invs} for c, invs in b2b.items()]
+    if b2cs:
+        out["b2cs"] = list(b2cs.values())
+    if hsn:
+        out["hsn"] = {"data": list(hsn.values())}
+    return out
+
+
+@api.get("/gst/filing-settings")
+async def get_gst_filing_settings(ctx=Depends(require_permission("settings.view"))):
+    cfg = await _gst_settings(ctx["org_id"])
+    safe = {**cfg, "client_secret": _mask(cfg.get("client_secret", "")), "password": _mask(cfg.get("password", ""))}
+    filed = await db.invoices.count_documents({"org_id": ctx["org_id"], "irn": {"$exists": True, "$ne": ""}})
+    ewb = await db.invoices.count_documents({"org_id": ctx["org_id"], "ewb_no": {"$exists": True, "$ne": ""}})
+    return {"settings": safe, "presets": GSP_PRESETS, "irn_generated": filed, "eway_bills": ewb}
+
+
+@api.put("/gst/filing-settings")
+async def save_gst_filing_settings(body: GstFilingSettingsIn, request: Request,
+                                   ctx=Depends(require_permission("settings.edit"))):
+    cur = await _gst_settings(ctx["org_id"])
+    data = body.model_dump()
+    # keep stored secrets when the form sends the masked value back
+    for k in ("client_secret", "password"):
+        if not data.get(k) or set(data[k]) <= {"•"} or data[k] == _mask(cur.get(k, "")):
+            data[k] = cur.get(k, "")
+    await db.gst_settings.update_one({"org_id": ctx["org_id"], "id": GST_SETTINGS_ID},
+                                     {"$set": {**data, "org_id": ctx["org_id"], "id": GST_SETTINGS_ID,
+                                               "updated_at": now_iso()}}, upsert=True)
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="gst.filing_settings_updated",
+                    entity_type="organization", entity_id=ctx["org_id"],
+                    metadata={"provider": data["provider"], "enabled": data["enabled"]}, request=request)
+    return await get_gst_filing_settings(ctx)
+
+
+async def _generate_irn(ctx: dict, inv: dict, org: dict) -> dict:
+    if inv.get("irn"):
+        return {"ok": True, "duplicate": True, "irn": inv["irn"], "ack_no": inv.get("ack_no", ""),
+                "invoice_no": inv["invoice_no"]}
+    cfg = await _gst_settings(ctx["org_id"])
+    if not cfg.get("enabled"):
+        raise HTTPException(400, "GST filing is switched off for this business — turn it on in Settings → GST filing")
+    check = einvoice_precheck(inv, org)
+    if not check["ok"]:
+        raise HTTPException(400, "; ".join(check["errors"]))
+    data = await _gsp_post(cfg, cfg["einvoice_path"], build_einvoice_json(inv, org))
+    irn = _dig(data, "Irn", "irn")
+    if not irn:
+        raise HTTPException(502, "The GSP replied without an IRN — check the response format with your provider")
+    patch = {"irn": irn, "ack_no": _dig(data, "AckNo", "ack_no") or "",
+             "ack_date": _dig(data, "AckDt", "ack_date") or "",
+             "signed_qr_code": _dig(data, "SignedQRCode", "signed_qr", "qr_code") or "",
+             "signed_invoice": _dig(data, "SignedInvoice") or "",
+             "einvoice_status": "generated", "einvoice_at": now_iso()}
+    ewb = _dig(data, "EwbNo", "ewb_no")
+    if ewb:
+        patch.update({"ewb_no": ewb, "ewb_date": _dig(data, "EwbDt", "ewb_date") or ""})
+    await db.invoices.update_one({"org_id": ctx["org_id"], "id": inv["id"]}, {"$set": patch})
+    return {"ok": True, "duplicate": False, "invoice_no": inv["invoice_no"], **patch}
+
+
+@api.post("/invoices/{iid}/einvoice/generate")
+async def invoice_generate_irn(iid: str, request: Request, ctx=Depends(require_permission("invoice.create"))):
+    """Register the invoice on the IRP through your GSP and store the IRN + signed QR."""
+    inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    org = await get_org_doc(ctx["org_id"])
+    res = await _generate_irn(ctx, inv, org)
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="invoice.irn_generated",
+                    entity_type="invoice", entity_id=iid,
+                    metadata={"invoice_no": inv["invoice_no"], "irn": res.get("irn")}, request=request)
+    return res
+
+
+class IrnCancelIn(BaseModel):
+    reason_code: str = "1"      # 1 duplicate, 2 data entry mistake, 3 order cancelled, 4 other
+    remark: str = "Cancelled"
+
+
+@api.post("/invoices/{iid}/einvoice/cancel")
+async def invoice_cancel_irn(iid: str, body: IrnCancelIn, request: Request,
+                             ctx=Depends(require_permission("invoice.create"))):
+    """Cancel an IRN. The IRP only allows this within 24 hours of generation."""
+    inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
+    if not inv or not inv.get("irn"):
+        raise HTTPException(400, "This invoice has no IRN")
+    cfg = await _gst_settings(ctx["org_id"])
+    path = (cfg.get("einvoice_path") or "").rstrip("/") + "/Cancel"
+    await _gsp_post(cfg, path, {"Irn": inv["irn"], "CnlRsn": body.reason_code, "CnlRem": body.remark})
+    await db.invoices.update_one({"org_id": ctx["org_id"], "id": iid},
+                                 {"$set": {"einvoice_status": "cancelled", "einvoice_cancelled_at": now_iso(),
+                                           "einvoice_cancel_reason": body.remark}})
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="invoice.irn_cancelled",
+                    entity_type="invoice", entity_id=iid, metadata={"irn": inv["irn"]}, request=request)
+    return {"ok": True, "irn": inv["irn"], "status": "cancelled"}
+
+
+@api.post("/invoices/{iid}/eway-bill/generate")
+async def invoice_generate_ewb(iid: str, body: dict, request: Request,
+                               ctx=Depends(require_permission("invoice.create"))):
+    """File the e-way bill through your GSP and store the EWB number."""
+    inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    if inv.get("ewb_no"):
+        return {"ok": True, "duplicate": True, "ewb_no": inv["ewb_no"], "ewb_date": inv.get("ewb_date", "")}
+    built = await invoice_eway_bill(iid, body, ctx)          # reuse the existing validation + NIC payload
+    if not built.get("ok"):
+        raise HTTPException(400, "; ".join(built.get("errors") or ["E-way bill data is incomplete"]))
+    cfg = await _gst_settings(ctx["org_id"])
+    payload = dict(built["payload"])
+    if inv.get("irn"):
+        payload["Irn"] = inv["irn"]
+    data = await _gsp_post(cfg, cfg["ewaybill_path"], payload)
+    ewb = _dig(data, "EwbNo", "ewayBillNo", "ewb_no")
+    if not ewb:
+        raise HTTPException(502, "The GSP replied without an e-way bill number")
+    patch = {"ewb_no": ewb, "ewb_date": _dig(data, "EwbDt", "ewayBillDate", "ewb_date") or "",
+             "ewb_valid_till": _dig(data, "EwbValidTill", "validUpto") or "", "ewb_at": now_iso()}
+    await db.invoices.update_one({"org_id": ctx["org_id"], "id": iid}, {"$set": patch})
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="invoice.ewb_generated",
+                    entity_type="invoice", entity_id=iid,
+                    metadata={"invoice_no": inv["invoice_no"], "ewb_no": ewb}, request=request)
+    return {"ok": True, "duplicate": False, **patch}
+
+
+@api.post("/gst/filing-settings/test")
+async def test_gst_filing(ctx=Depends(require_permission("settings.edit"))):
+    """Check the GSP is reachable with the saved credentials (no invoice is filed)."""
+    cfg = await _gst_settings(ctx["org_id"])
+    if not cfg.get("base_url"):
+        raise HTTPException(400, "Add your GSP's API URL first")
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(cfg["base_url"], headers=_gsp_headers(cfg))
+        return {"ok": r.status_code < 500, "status_code": r.status_code,
+                "message": f"{cfg['base_url']} responded with {r.status_code}. "
+                           f"Credentials are only truly verified on the first real invoice."}
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach {cfg['base_url']}: {str(e)[:150]}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public API: let your own website / app post straight into a business.
+# One key per business (Settings → Integrations), sent as X-API-Key.
+# Everything is idempotent on your own reference, so retries are safe.
+# ─────────────────────────────────────────────────────────────────────────────
+PUBLIC_API_PROVIDER = "public_api"
+
+
+async def api_key_ctx(request: Request) -> dict:
+    key = (request.headers.get("X-API-Key") or request.headers.get("X-Integration-Key") or "").strip()
+    if not key:
+        raise HTTPException(401, "Missing X-API-Key")
+    row = await db.integration_keys.find_one(
+        {"key_hash": _key_hash(key), "provider": PUBLIC_API_PROVIDER, "revoked": {"$ne": True}}, {"_id": 0})
+    if not row:
+        raise HTTPException(401, "Invalid API key")
+    await db.integration_keys.update_one({"key_hash": row["key_hash"]}, {"$set": {"last_used_at": now_iso()}})
+    org = await db.organizations.find_one({"id": row["org_id"]}, {"_id": 0, "business_type": 1, "name": 1})
+    return {"org_id": row["org_id"], "role": "owner", "permissions": list(PERMISSIONS), "allowed_modes": [],
+            "biz_type": (org or {}).get("business_type"), "entity_id": None, "entity": None,
+            "org_name": (org or {}).get("name", ""), "request": request,
+            "user": {"id": "integration:api", "name": "Website API", "email": ""}}
+
+
+@api.get("/integrations/api-key")
+async def public_api_key_status(ctx=Depends(require_permission("settings.view"))):
+    row = await db.integration_keys.find_one(
+        {"org_id": ctx["org_id"], "provider": PUBLIC_API_PROVIDER, "revoked": {"$ne": True}}, {"_id": 0, "key_hash": 0})
+    return {"connected": bool(row), "key_hint": (row or {}).get("key_hint", ""),
+            "last_used_at": (row or {}).get("last_used_at"),
+            "invoices_via_api": await db.invoices.count_documents({"org_id": ctx["org_id"], "source": "api"})}
+
+
+@api.post("/integrations/api-key")
+async def public_api_key_create(request: Request, ctx=Depends(require_permission("settings.edit"))):
+    key = "be_api_" + secrets.token_urlsafe(32)
+    await db.integration_keys.update_many({"org_id": ctx["org_id"], "provider": PUBLIC_API_PROVIDER},
+                                          {"$set": {"revoked": True, "revoked_at": now_iso()}})
+    await db.integration_keys.insert_one({"id": str(uuid.uuid4()), "org_id": ctx["org_id"],
+                                          "provider": PUBLIC_API_PROVIDER, "key_hash": _key_hash(key),
+                                          "key_hint": key[-4:], "created_at": now_iso(),
+                                          "created_by": ctx["user"].get("id")})
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="integration.key_created",
+                    entity_type="integration", entity_id=PUBLIC_API_PROVIDER, metadata={}, request=request)
+    return {"key": key, "key_hint": key[-4:]}
+
+
+@api.get("/v1/ping")
+async def public_ping(ictx=Depends(api_key_ctx)):
+    return {"ok": True, "business": ictx["org_name"], "business_type": ictx["biz_type"]}
+
+
+@api.get("/v1/products")
+async def public_products(search: str = "", ictx=Depends(api_key_ctx)):
+    q = {"org_id": ictx["org_id"]}
+    if search:
+        q["$or"] = [{"name": {"$regex": re.escape(search), "$options": "i"}},
+                    {"sku": {"$regex": f"^{re.escape(search)}$", "$options": "i"}}]
+    rows = await db.products.find(q, {"_id": 0, "id": 1, "name": 1, "sku": 1, "upc": 1, "hsn": 1, "unit": 1,
+                                      "sale_price": 1, "gst_rate": 1, "stock": 1}).sort("name", 1).to_list(500)
+    return {"products": rows}
+
+
+@api.get("/v1/parties")
+async def public_parties(search: str = "", type: str = "", ictx=Depends(api_key_ctx)):
+    q = {"org_id": ictx["org_id"]}
+    if type: q["type"] = type
+    if search:
+        q["$or"] = [{"name": {"$regex": re.escape(search), "$options": "i"}},
+                    {"phone": {"$regex": f"{re.escape(search)}$"}}, {"email": search.lower()}]
+    rows = await db.parties.find(q, {"_id": 0, "id": 1, "name": 1, "phone": 1, "email": 1, "gstin": 1,
+                                     "state": 1, "state_code": 1, "type": 1}).sort("name", 1).to_list(500)
+    return {"parties": rows}
+
+
+class PublicPartyIn(BaseModel):
+    name: str
+    phone: str = ""
+    email: str = ""
+    gstin: str = ""
+    state: str = ""
+    address: str = ""
+    type: str = "customer"
+
+
+@api.post("/v1/parties")
+async def public_create_party(body: PublicPartyIn, ictx=Depends(api_key_ctx)):
+    """Find an existing customer/supplier by phone or email, or create one."""
+    org = await get_org_doc(ictx["org_id"])
+    g = IntakeGuest(name=body.name, phone=body.phone, email=body.email, gstin=body.gstin,
+                    state=body.state, address=body.address)
+    party = await _intake_guest(ictx["org_id"], g, org.get("state_code", "33"))
+    if body.type != "customer" and party.get("type") == "customer":
+        await db.parties.update_one({"org_id": ictx["org_id"], "id": party["id"]}, {"$set": {"type": body.type}})
+        party["type"] = body.type
+    return {"party": {k: party.get(k) for k in ("id", "name", "phone", "email", "gstin", "state", "state_code", "type")}}
+
+
+class PublicInvoiceItem(BaseModel):
+    name: str = ""
+    sku: str = ""
+    product_id: str = ""
+    qty: float = 1
+    rate: Optional[float] = None         # before GST; taken from the product when omitted
+    price_incl_gst: Optional[float] = None
+    gst_rate: Optional[float] = None
+    hsn: str = ""
+    unit: str = ""
+    discount_pct: float = 0
+
+
+class PublicInvoiceIn(BaseModel):
+    external_id: str = Field(min_length=1)     # your own order id — resending is safe
+    customer: PublicPartyIn
+    items: List[PublicInvoiceItem]
+    invoice_date: str = ""
+    notes: str = ""
+    shipping: float = 0
+    paid_amount: float = 0                     # already collected, recorded as Money In
+    payment_mode: str = "Online"
+    reference: str = ""
+
+
+@api.post("/v1/invoices")
+async def public_create_invoice(body: PublicInvoiceIn, request: Request, ictx=Depends(api_key_ctx)):
+    """Create a GST sales invoice from your website. Idempotent on external_id."""
+    org_id = ictx["org_id"]
+    dup = await db.invoices.find_one({"org_id": org_id, "external_source": "api", "external_id": body.external_id},
+                                     {"_id": 0, "id": 1, "invoice_no": 1, "totals": 1})
+    if dup:
+        return {"ok": True, "duplicate": True, "invoice_id": dup["id"], "invoice_no": dup["invoice_no"],
+                "total": (dup.get("totals") or {}).get("grand_total", 0)}
+    if not body.items:
+        raise HTTPException(400, "The invoice has no items")
+    org = await get_org_doc(org_id)
+    await ensure_active_subscription(ictx)
+    await check_limit(db, org, "invoice")
+    party = await _intake_guest(org_id, IntakeGuest(**{k: getattr(body.customer, k) for k in
+                                                       ("name", "phone", "email", "gstin", "state", "address")}),
+                                org.get("state_code", "33"))
+    items, unmatched = [], []
+    for it in body.items:
+        prod = None
+        if it.product_id:
+            prod = await db.products.find_one({"org_id": org_id, "id": it.product_id}, {"_id": 0})
+        if not prod and it.sku:
+            prod = await db.products.find_one({"org_id": org_id, "sku": it.sku}, {"_id": 0}) or \
+                   await db.products.find_one({"org_id": org_id, "upc": it.sku}, {"_id": 0})
+        if not prod and (it.product_id or it.sku):
+            unmatched.append(it.sku or it.product_id)
+        gst = it.gst_rate if it.gst_rate is not None else float((prod or {}).get("gst_rate", 0) or 0)
+        if it.rate is not None:
+            rate = it.rate
+        elif it.price_incl_gst is not None:
+            rate = round(it.price_incl_gst / (1 + gst / 100), 4)
+        else:
+            rate = float((prod or {}).get("sale_price", 0) or 0)
+        name = it.name or (prod or {}).get("name") or it.sku
+        if not name:
+            raise HTTPException(400, "Each item needs a name, sku or product_id")
+        items.append(LineItem(product_id=(prod or {}).get("id", ""), name=name,
+                              hsn=it.hsn or (prod or {}).get("hsn", ""), qty=it.qty,
+                              unit=it.unit or (prod or {}).get("unit", "NOS"), rate=rate,
+                              discount_pct=it.discount_pct, gst_rate=gst))
+    if body.shipping and body.shipping > 0:
+        items.append(LineItem(name="Shipping charges", hsn="996812", qty=1, unit="NOS", rate=body.shipping, gst_rate=0))
+    notes = body.notes or f"Website order {body.external_id}"
+    if unmatched:
+        notes += f" · not matched to a product (no stock deducted): {', '.join(unmatched)}"
+    inv_in = InvoiceIn(party_id=party["id"], invoice_date=(body.invoice_date or now_iso())[:10], items=items,
+                       status="finalized", type="sale", invoice_category="stock", notes=notes)
+    doc = await _build_invoice_doc(inv_in, ictx, "INV")
+    doc.update({"external_source": "api", "external_id": body.external_id, "source": "api"})
+    await db.invoices.insert_one(doc)
+    for it in items:
+        if it.product_id:
+            await db.products.update_one({"org_id": org_id, "id": it.product_id}, {"$inc": {"stock": -it.qty}})
+            await _log_stock_movement(org_id, it.product_id, -it.qty, movement_type="sale", ref_id=doc["id"],
+                                      ref_no=doc["invoice_no"], party_name=party["name"], date=doc["invoice_date"])
+    grand = doc["totals"]["grand_total"]
+    receipt = None
+    if body.paid_amount and body.paid_amount > 0:
+        receipt = {"id": str(uuid.uuid4()), "org_id": org_id, "party_id": party["id"], "direction": "received",
+                   "amount": round(body.paid_amount, 2), "mode": body.payment_mode, "date": doc["invoice_date"],
+                   "reference": body.reference or body.external_id, "bank_account_id": "", "invoice_id": doc["id"],
+                   "expense_id": "", "linked_ref": doc["invoice_no"], "linked_type": "invoice",
+                   "biz_type": ictx.get("biz_type"), "source": "api", "created_at": now_iso()}
+        await db.payments.insert_one(receipt)
+        if body.paid_amount >= grand * 0.99:
+            await db.invoices.update_one({"org_id": org_id, "id": doc["id"]},
+                                         {"$set": {"status": "paid", "status_changed_at": now_iso()}})
+    # optional: raise the IRN straight away when the business has that switched on
+    einvoice = None
+    cfg = await _gst_settings(org_id)
+    if cfg.get("enabled") and cfg.get("auto_einvoice") and grand >= (cfg.get("einvoice_threshold") or 0):
+        try:
+            fresh = await db.invoices.find_one({"org_id": org_id, "id": doc["id"]}, {"_id": 0})
+            einvoice = await _generate_irn(ictx, fresh, org)
+        except HTTPException as e:
+            einvoice = {"ok": False, "error": e.detail}
+    return {"ok": True, "duplicate": False, "invoice_id": doc["id"], "invoice_no": doc["invoice_no"],
+            "total": grand, "balance": round(max(grand - (body.paid_amount or 0), 0), 2),
+            "payment_recorded": bool(receipt), "unmatched_items": unmatched, "einvoice": einvoice}
+
+
+@api.get("/v1/invoices/{iid}")
+async def public_get_invoice(iid: str, ictx=Depends(api_key_ctx)):
+    inv = await db.invoices.find_one({"org_id": ictx["org_id"], "id": iid},
+                                     {"_id": 0, "signed_invoice": 0}) or \
+          await db.invoices.find_one({"org_id": ictx["org_id"], "external_id": iid, "external_source": "api"},
+                                     {"_id": 0, "signed_invoice": 0})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    paid = 0.0
+    async for p in db.payments.find({"org_id": ictx["org_id"], "invoice_id": inv["id"]}, {"_id": 0, "amount": 1}):
+        paid += p["amount"]
+    return {"invoice": inv, "paid": round(paid, 2),
+            "balance": round((inv.get("totals") or {}).get("grand_total", 0) - paid, 2)}
+
+
+class PublicPaymentIn(BaseModel):
+    external_id: str = Field(min_length=1)
+    invoice_id: str = ""
+    amount: float = Field(gt=0)
+    direction: str = "received"
+    mode: str = "Online"
+    date: str = ""
+    reference: str = ""
+    party_id: str = ""
+
+
+@api.post("/v1/payments")
+async def public_create_payment(body: PublicPaymentIn, ictx=Depends(api_key_ctx)):
+    """Record money in/out. Idempotent on external_id."""
+    org_id = ictx["org_id"]
+    dup = await db.payments.find_one({"org_id": org_id, "external_id": body.external_id}, {"_id": 0, "id": 1})
+    if dup:
+        return {"ok": True, "duplicate": True, "payment_id": dup["id"]}
+    inv = None
+    if body.invoice_id:
+        inv = await db.invoices.find_one({"org_id": org_id, "id": body.invoice_id}, {"_id": 0, "id": 1, "invoice_no": 1, "party_id": 1, "totals": 1}) or \
+              await db.invoices.find_one({"org_id": org_id, "external_id": body.invoice_id, "external_source": "api"},
+                                         {"_id": 0, "id": 1, "invoice_no": 1, "party_id": 1, "totals": 1})
+        if not inv:
+            raise HTTPException(404, "Invoice not found")
+    party_id = body.party_id or (inv or {}).get("party_id", "")
+    if not party_id:
+        raise HTTPException(400, "Give an invoice_id or a party_id")
+    doc = {"id": str(uuid.uuid4()), "org_id": org_id, "party_id": party_id, "direction": body.direction,
+           "amount": round(body.amount, 2), "mode": body.mode, "date": (body.date or now_iso())[:10],
+           "reference": body.reference or body.external_id, "bank_account_id": "",
+           "invoice_id": (inv or {}).get("id", ""), "expense_id": "",
+           "linked_ref": (inv or {}).get("invoice_no", ""), "linked_type": "invoice" if inv else "",
+           "external_id": body.external_id, "source": "api", "biz_type": ictx.get("biz_type"),
+           "created_at": now_iso()}
+    await db.payments.insert_one(doc)
+    if inv:
+        total_paid = 0.0
+        async for p in db.payments.find({"org_id": org_id, "invoice_id": inv["id"]}, {"_id": 0, "amount": 1}):
+            total_paid += p["amount"]
+        if total_paid >= (inv.get("totals") or {}).get("grand_total", 0) * 0.99:
+            await db.invoices.update_one({"org_id": org_id, "id": inv["id"]},
+                                         {"$set": {"status": "paid", "status_changed_at": now_iso()}})
+    return {"ok": True, "duplicate": False, "payment_id": doc["id"], "linked_invoice": (inv or {}).get("invoice_no", "")}
 
 
 app.include_router(api)

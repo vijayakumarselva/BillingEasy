@@ -22,6 +22,8 @@ import DropZone from "@/components/DropZone";
 import MomCubIntegration from "@/components/MomCubIntegration";
 import BookingChannelIntegration from "@/components/BookingChannelIntegration";
 import SplitCompany from "@/components/SplitCompany";
+import GstFilingSettings from "@/components/GstFilingSettings";
+import WebsiteApiKey from "@/components/WebsiteApiKey";
 
 export default function Settings() {
   const { currentOrg, currentRole } = useAuth();
@@ -747,6 +749,8 @@ export default function Settings() {
         <TabsContent value="integrations">
           <div className="space-y-4">
             {!currentOrg?.business_type && (currentRole === "owner") && <SplitCompany onDone={() => window.location.reload()} />}
+            <GstFilingSettings canEdit={currentRole === "owner" || currentRole === "accountant"} />
+            <WebsiteApiKey canEdit={currentRole === "owner"} />
             {currentOrg?.business_type === "stay" && <BookingChannelIntegration canEdit={currentRole === "owner" || currentRole === "admin"} />}
             <MomCubIntegration canEdit={currentRole === "owner" || currentRole === "admin"} />
           </div>
