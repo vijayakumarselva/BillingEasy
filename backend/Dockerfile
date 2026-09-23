@@ -7,11 +7,13 @@ WORKDIR /app
 #   libpq-dev        → psycopg2 (if ever needed)
 #   poppler-utils    → pdf2image (PDF scanning feature)
 #   libffi-dev       → cffi / cryptography
+#   fonts-dejavu-core→ invoice PDFs: Helvetica has no ₹ glyph (prints a black box)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libffi-dev \
         libssl-dev \
         poppler-utils \
+        fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

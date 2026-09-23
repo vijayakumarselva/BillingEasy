@@ -77,7 +77,8 @@ def _inr_amount(n) -> str:
     return ("-" if neg else "") + i + "." + dec
 
 def _inr(n) -> str:
-    return "₹" + _inr_amount(n)
+    # Only the embedded TTF has the rupee glyph; the Helvetica fallback draws a black box.
+    return ("₹" if _FONT_REGISTERED else "Rs. ") + _inr_amount(n)
 
 def _fmt_date(s: str) -> str:
     if not s: return "—"
@@ -109,10 +110,30 @@ def _logo_image(data_uri: str, max_w=30*mm, max_h=18*mm):
     except Exception:
         return None
 
+def _build_with_watermark(doc, story, watermark: str, bold_font: str):
+    """Build the document, printing the watermark diagonally on every page."""
+    if not watermark:
+        doc.build(story)
+        return
+    def draw(canvas, _doc):
+        canvas.saveState()
+        canvas.setFont(bold_font, 72)
+        canvas.setFillColor(colors.Color(0.85, 0.85, 0.85, alpha=0.35))
+        canvas.translate(A4[0] / 2, A4[1] / 2)
+        canvas.rotate(45)
+        canvas.drawCentredString(0, 0, watermark.upper())
+        canvas.restoreState()
+    doc.build(story, onFirstPage=draw, onLaterPages=draw)
+
+
 # ── Main generator ─────────────────────────────────────────────────────────────
 def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale", template: str = "classic") -> bytes:
     if template == "modern":
         return _generate_modern_pdf(inv, biz, kind)
+    if template in ("elegant", "professional", "minimal"):
+        from pdf_templates_extra import (generate_elegant_pdf, generate_professional_pdf, generate_minimal_pdf)
+        return {"elegant": generate_elegant_pdf, "professional": generate_professional_pdf,
+                "minimal": generate_minimal_pdf}[template](inv, biz, kind)
     if template == "compact":
         return _generate_compact_pdf(inv, biz, kind)
     # default: classic (existing template)
@@ -708,17 +729,17 @@ def _generate_modern_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
             Paragraph(it.get("name",""), PS("rn", fontSize=8)),
             Paragraph(it.get("hsn",""), PS("rh", fontSize=8, alignment=TA_CENTER)),
             Paragraph(f"{it.get('qty',0)} {it.get('unit','')}", PS("rq", fontSize=8, alignment=TA_CENTER)),
-            Paragraph(f"{it.get('rate',0):,.2f}", PS("rr", fontSize=8, alignment=TA_RIGHT)),
+            Paragraph(_inr_amount(it.get('rate',0)), PS("rr", fontSize=8, alignment=TA_RIGHT)),
             Paragraph(f"{it.get('discount_pct',0):.1f}%", PS("rd", fontSize=8, alignment=TA_CENTER)),
-            Paragraph(f"{it.get('taxable',0):,.2f}", PS("rt", fontSize=8, alignment=TA_RIGHT)),
+            Paragraph(_inr_amount(it.get('taxable',0)), PS("rt", fontSize=8, alignment=TA_RIGHT)),
             Paragraph(f"{it.get('gst_rate',0):.0f}%", PS("rg", fontSize=8, alignment=TA_CENTER)),
         ]
         if same_state:
-            row += [Paragraph(f"{it.get('cgst',0):,.2f}", PS("rc", fontSize=8, alignment=TA_RIGHT)),
-                    Paragraph(f"{it.get('sgst',0):,.2f}", PS("rs", fontSize=8, alignment=TA_RIGHT))]
+            row += [Paragraph(_inr_amount(it.get('cgst',0)), PS("rc", fontSize=8, alignment=TA_RIGHT)),
+                    Paragraph(_inr_amount(it.get('sgst',0)), PS("rs", fontSize=8, alignment=TA_RIGHT))]
         else:
-            row += [Paragraph(f"{it.get('igst',0):,.2f}", PS("ri", fontSize=8, alignment=TA_RIGHT))]
-        row.append(Paragraph(f"{it.get('total',0):,.2f}", PS("rtot", fontName=FB, fontSize=8, alignment=TA_RIGHT)))
+            row += [Paragraph(_inr_amount(it.get('igst',0)), PS("ri", fontSize=8, alignment=TA_RIGHT))]
+        row.append(Paragraph(_inr_amount(it.get('total',0)), PS("rtot", fontName=FB, fontSize=8, alignment=TA_RIGHT)))
         rows.append(row)
 
     itbl = Table(rows, colWidths=cws, repeatRows=1)
@@ -736,12 +757,12 @@ def _generate_modern_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
     tax_label = "CGST + SGST" if same_state else "IGST"
     tax_val = totals.get("cgst",0)+totals.get("sgst",0) if same_state else totals.get("igst",0)
     tot_rows = [
-        ["Subtotal", f"₹ {totals.get('subtotal',0):,.2f}"],
-        ["Discount", f"₹ {totals.get('discount',0):,.2f}"],
-        ["Taxable Amount", f"₹ {totals.get('taxable_amount',0):,.2f}"],
-        [tax_label, f"₹ {tax_val:,.2f}"],
-        ["Round Off", f"₹ {totals.get('round_off',0):,.2f}"],
-        ["Grand Total", f"₹ {totals.get('grand_total',0):,.2f}"],
+        ["Subtotal", ("₹ " + _inr_amount(totals.get('subtotal',0)))],
+        ["Discount", ("₹ " + _inr_amount(totals.get('discount',0)))],
+        ["Taxable Amount", ("₹ " + _inr_amount(totals.get('taxable_amount',0)))],
+        [tax_label, ("₹ " + _inr_amount(tax_val))],
+        ["Round Off", ("₹ " + _inr_amount(totals.get('round_off',0)))],
+        ["Grand Total", ("₹ " + _inr_amount(totals.get('grand_total',0)))],
     ]
     grand = totals.get("grand_total",0)
     try:
@@ -789,7 +810,7 @@ def _generate_modern_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
         story.append(Spacer(1,4*mm))
         story.append(sig_tbl)
 
-    doc.build(story)
+    _build_with_watermark(doc, story, theme.get("watermark", ""), FB)
     return buf.getvalue()
 
 
@@ -877,16 +898,16 @@ def _generate_compact_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
             Paragraph(it.get("name",""), PS("d", fontSize=8)),
             Paragraph(it.get("hsn",""), PS("h", fontSize=8, alignment=TA_CENTER)),
             Paragraph(f"{it.get('qty',0)} {it.get('unit','')}", PS("q", fontSize=8, alignment=TA_CENTER)),
-            Paragraph(f"{it.get('rate',0):,.2f}", PS("r", fontSize=8, alignment=TA_RIGHT)),
-            Paragraph(f"{it.get('taxable',0):,.2f}", PS("t", fontSize=8, alignment=TA_RIGHT)),
+            Paragraph(_inr_amount(it.get('rate',0)), PS("r", fontSize=8, alignment=TA_RIGHT)),
+            Paragraph(_inr_amount(it.get('taxable',0)), PS("t", fontSize=8, alignment=TA_RIGHT)),
             Paragraph(f"{it.get('gst_rate',0):.0f}%", PS("g", fontSize=8, alignment=TA_CENTER)),
         ]
         if same_state:
-            row += [Paragraph(f"{it.get('cgst',0):,.2f}", PS("c", fontSize=8, alignment=TA_RIGHT)),
-                    Paragraph(f"{it.get('sgst',0):,.2f}", PS("s", fontSize=8, alignment=TA_RIGHT))]
+            row += [Paragraph(_inr_amount(it.get('cgst',0)), PS("c", fontSize=8, alignment=TA_RIGHT)),
+                    Paragraph(_inr_amount(it.get('sgst',0)), PS("s", fontSize=8, alignment=TA_RIGHT))]
         else:
-            row += [Paragraph(f"{it.get('igst',0):,.2f}", PS("i", fontSize=8, alignment=TA_RIGHT))]
-        row.append(Paragraph(f"{it.get('total',0):,.2f}", PS("tot", fontName=FB, fontSize=8, alignment=TA_RIGHT)))
+            row += [Paragraph(_inr_amount(it.get('igst',0)), PS("i", fontSize=8, alignment=TA_RIGHT))]
+        row.append(Paragraph(_inr_amount(it.get('total',0)), PS("tot", fontName=FB, fontSize=8, alignment=TA_RIGHT)))
         rows.append(row)
 
     itbl = Table(rows, colWidths=cws, repeatRows=1)
@@ -914,10 +935,10 @@ def _generate_compact_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
         ("Round Off", totals.get("round_off",0)),
     ]
     trows = [[Paragraph(k, PS(f"tk{i}", fontSize=8.5, textColor=GREY)),
-              Paragraph(f"₹ {v:,.2f}", PS(f"tv{i}", fontSize=8.5, alignment=TA_RIGHT))]
+              Paragraph(("₹ " + _inr_amount(v)), PS(f"tv{i}", fontSize=8.5, alignment=TA_RIGHT))]
              for i,(k,v) in enumerate(tot_rows_data)]
     trows.append([Paragraph("Grand Total", PS("gtl", fontName=FB, fontSize=10, textColor=PRIMARY)),
-                  Paragraph(f"₹ {totals.get('grand_total',0):,.2f}", PS("gtv", fontName=FB, fontSize=10, alignment=TA_RIGHT, textColor=PRIMARY))])
+                  Paragraph(("₹ " + _inr_amount(totals.get('grand_total',0))), PS("gtv", fontName=FB, fontSize=10, alignment=TA_RIGHT, textColor=PRIMARY))])
 
     tot_tbl = Table(trows, colWidths=[45*mm, 35*mm])
     tot_tbl.setStyle(TableStyle([
@@ -930,12 +951,12 @@ def _generate_compact_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
         notes.append(Paragraph(words, PS("w", fontSize=7.5, fontName=FB, textColor=GREY)))
     if inv.get("notes"):
         notes.append(Paragraph(f"Notes: {inv['notes']}", PS("nt", fontSize=8, textColor=GREY)))
-    if biz.get("bank_account"):
+    if theme.get("show_bank", True) and biz.get("bank_account"):
         notes.append(Paragraph(f"Bank: {biz.get('bank_name','')} | A/C: {biz.get('bank_account','')} | IFSC: {biz.get('bank_ifsc','')}", PS("bk", fontSize=7.5, textColor=GREY)))
 
     ft = Table([[notes or [Spacer(1,1)], tot_tbl]], colWidths=[106*mm, 80*mm])
     ft.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP")]))
     story.append(ft)
 
-    doc.build(story)
+    _build_with_watermark(doc, story, theme.get("watermark", ""), FB)
     return buf.getvalue()

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import api from "@/lib/api";
+import api, { API_BASE } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -40,6 +40,7 @@ export default function Settings() {
     show_signature: true, watermark: "",
   });
   const [logoUploading, setLogoUploading] = useState(false);
+  const [previewKey, setPreviewKey] = useState(0);
   const logoRef = useRef(null);
   const [sigUploading, setSigUploading] = useState(false);
   const sigRef = useRef(null);
@@ -69,6 +70,34 @@ export default function Settings() {
     setMembers(m.data); setBanks(ba.data); setBranches(br.data || []);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [currentOrg?.id]);
+
+  // Live invoice preview — fetched with auth, shown as a blob so the iframe can render it
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        setPreviewErr("");
+        const { data } = await api.get("/business/invoice-preview.pdf", {
+          responseType: "blob",
+          params: {
+            template: theme.template || "classic",
+            primary_color: theme.primary_color || "#1D4ED8",
+            watermark: theme.watermark || "",
+            show_logo: !!theme.show_logo, show_bank: !!theme.show_bank, show_terms: !!theme.show_terms,
+            show_signature: !!theme.show_signature, show_ship_to: !!theme.show_ship_to,
+          },
+        });
+        if (cancelled) return;
+        const url = URL.createObjectURL(new Blob([data], { type: "application/pdf" }));
+        setPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return url; });
+      } catch {
+        if (!cancelled) setPreviewErr("Could not build the preview — check your business details are saved.");
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [previewKey, theme.template, theme.primary_color, theme.watermark, theme.show_logo, theme.show_bank,
+      theme.show_terms, theme.show_signature, theme.show_ship_to]);
 
   const saveBiz = async () => { await api.put("/business", biz); toast.success("Saved"); };
 
@@ -550,18 +579,26 @@ export default function Settings() {
                 </div>
               </Card>
 
-              {/* Template picker */}
+              {/* Template picker + live preview */}
               <Card className="p-5 space-y-3">
-                <h3 className="font-semibold">Invoice Template</h3>
-                <p className="text-xs text-muted-foreground">Choose the layout for your PDF invoices. Applies to both sales and purchase bills.</p>
-                <div className="grid grid-cols-3 gap-3">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div>
+                    <h3 className="font-semibold">Invoice Template</h3>
+                    <p className="text-xs text-muted-foreground">Pick a layout, then preview it with your own logo, colour and details. Applies to sales invoices and purchase bills.</p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => setPreviewKey(k => k + 1)}>Refresh preview</Button>
+                </div>
+                <div className="grid sm:grid-cols-3 gap-3">
                   {[
-                    { id: "classic", name: "Classic GST", desc: "India GST layout with company header, two-column Bill To / Ship To, itemised tax breakdown" },
-                    { id: "modern",  name: "Modern",      desc: "Full-width colour header bar, accent-shaded rows, prominent grand total" },
-                    { id: "compact", name: "Compact",     desc: "Minimal spreadsheet style, dense rows, great for multi-item invoices" },
+                    { id: "classic", name: "Classic GST", desc: "Full GST layout — Bill To / Ship To, CGST & SGST columns" },
+                    { id: "modern", name: "Modern", desc: "Colour header bar, shaded rows, bold grand total" },
+                    { id: "compact", name: "Compact", desc: "Dense spreadsheet style for long item lists" },
+                    { id: "elegant", name: "Elegant", desc: "Letterhead feel — centred title, hairline rules, airy" },
+                    { id: "professional", name: "Professional", desc: "Side colour band, meta card, zebra rows, filled total" },
+                    { id: "minimal", name: "Minimal", desc: "Monochrome and quiet — no boxes, just fine rules" },
                   ].map(t => (
                     <button key={t.id} type="button"
-                      onClick={() => setTheme(th => ({ ...th, template: t.id }))}
+                      onClick={() => { setTheme(th => ({ ...th, template: t.id })); setPreviewKey(k => k + 1); }}
                       className={`rounded-lg border-2 p-3 text-left transition-all ${(theme.template || "classic") === t.id ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30" : "border-muted hover:border-blue-300"}`}>
                       <div className="text-sm font-semibold mb-1 flex items-center gap-1.5">
                         {(theme.template || "classic") === t.id && <span className="text-blue-600">✓</span>}
@@ -571,6 +608,16 @@ export default function Settings() {
                     </button>
                   ))}
                 </div>
+                <div className="rounded-lg border overflow-hidden bg-muted/30">
+                  <iframe key={previewKey} title="Invoice preview" className="w-full h-[560px]"
+                    src={`${API_BASE}/business/invoice-preview.pdf?template=${theme.template || "classic"}`
+                      + `&primary_color=${encodeURIComponent(theme.primary_color || "#1D4ED8")}`
+                      + `&watermark=${encodeURIComponent(theme.watermark || "")}`
+                      + `&show_logo=${!!theme.show_logo}&show_bank=${!!theme.show_bank}&show_terms=${!!theme.show_terms}`
+                      + `&show_signature=${!!theme.show_signature}&show_ship_to=${!!theme.show_ship_to}`
+                      + `&_=${previewKey}`} />
+                </div>
+                <p className="text-[11px] text-muted-foreground">Sample data — your logo, colours, bank details and terms are real. Click Save to apply.</p>
               </Card>
 
               {/* Section toggles */}

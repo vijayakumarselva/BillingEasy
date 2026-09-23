@@ -7580,6 +7580,57 @@ async def gstr1_portal_json(month: Optional[str] = Query(None, description="YYYY
     return out
 
 
+INVOICE_TEMPLATES = [
+    {"id": "classic", "name": "Classic GST", "desc": "Full India GST layout — company header, Bill To / Ship To, itemised CGST/SGST columns"},
+    {"id": "modern", "name": "Modern", "desc": "Colour header bar, shaded rows, prominent grand total"},
+    {"id": "compact", "name": "Compact", "desc": "Dense spreadsheet style — best for long item lists"},
+    {"id": "elegant", "name": "Elegant", "desc": "Letterhead feel: centred title, hairline rules, lots of white space"},
+    {"id": "professional", "name": "Professional", "desc": "Coloured side band, meta card, zebra rows, filled total bar"},
+    {"id": "minimal", "name": "Minimal", "desc": "Monochrome and airy — no boxes, just fine rules"},
+]
+
+
+@api.get("/business/invoice-templates")
+async def list_invoice_templates(ctx=Depends(get_org_ctx)):
+    return {"templates": INVOICE_TEMPLATES,
+            "current": (((await get_org_doc(ctx["org_id"])).get("invoice_theme")) or {}).get("template", "classic")}
+
+
+@api.get("/business/invoice-preview.pdf")
+async def invoice_theme_preview(template: str = "classic", primary_color: str = "", watermark: str = "",
+                                show_logo: bool = True, show_bank: bool = True, show_terms: bool = True,
+                                show_signature: bool = True, show_ship_to: bool = True,
+                                ctx=Depends(get_org_ctx)):
+    """Render a sample invoice with the chosen look — nothing is saved."""
+    biz = await get_org_doc(ctx["org_id"])
+    theme = {**(biz.get("invoice_theme") or {}), "template": template,
+             "show_logo": show_logo, "show_bank": show_bank, "show_terms": show_terms,
+             "show_signature": show_signature, "show_ship_to": show_ship_to, "watermark": watermark}
+    if primary_color:
+        theme["primary_color"] = primary_color
+    sample = {
+        "invoice_no": "INV-2026-0055", "invoice_date": now_iso()[:10], "due_date": now_iso()[:10],
+        "type": "sale", "status": "finalized", "same_state": True, "po_number": "PO-4417",
+        "party_snapshot": {"name": "63Ideas Infolabs Private Limited", "gstin": "33AAACZ8597L1ZJ",
+                           "state": "Tamil Nadu", "state_code": "33",
+                           "billing_address": "IndiQube Viceroy, Sardar Patel Rd,\nGuindy, Chennai 600032",
+                           "shipping_address": "Warehouse 2, Ambattur Industrial Estate,\nChennai 600058"},
+        "items": [
+            {"name": "Sugar 50 KGS", "hsn": "17011490", "qty": 1900, "unit": "BAGS", "rate": 2200,
+             "discount_pct": 0, "gst_rate": 5, "taxable": 4180000, "cgst": 104500, "sgst": 104500,
+             "igst": 0, "total": 4389000},
+            {"name": "Freight & handling", "hsn": "996511", "qty": 1, "unit": "NOS", "rate": 25000,
+             "discount_pct": 0, "gst_rate": 5, "taxable": 25000, "cgst": 625, "sgst": 625,
+             "igst": 0, "total": 26250},
+        ],
+        "totals": {"subtotal": 4205000, "discount": 0, "taxable_amount": 4205000, "cgst": 105125,
+                   "sgst": 105125, "igst": 0, "round_off": 0, "grand_total": 4415250},
+    }
+    pdf = generate_invoice_pdf(sample, {**biz, "invoice_theme": theme}, template=template)
+    return StreamingResponse(BytesIO(pdf), media_type="application/pdf",
+                             headers={"Content-Disposition": 'inline; filename="invoice-preview.pdf"'})
+
+
 @api.get("/gst/filing-settings")
 async def get_gst_filing_settings(ctx=Depends(require_permission("settings.view"))):
     cfg = await _gst_settings(ctx["org_id"])
