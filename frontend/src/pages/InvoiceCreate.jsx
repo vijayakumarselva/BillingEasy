@@ -17,6 +17,9 @@ function blankItem() {
   return { product_id: "", name: "", description: "", hsn: "", qty: 1, unit: "NOS", rate: 0, discount_pct: 0, gst_rate: 5, stock: null };
 }
 
+const SHIPPING_LINE = "Shipping charges";
+const ADJUSTMENT_LINE = "Adjustment";
+
 const TERMS_OPTIONS = [
   { label: "Due on Receipt", days: 0 },
   { label: "Net 15",         days: 15 },
@@ -261,7 +264,11 @@ export default function InvoiceCreate() {
         setShipLabel(inv.shipping_label || "Custom");
         setShipSel("custom");
       }
-      setItems((inv.items || []).map(it => ({
+      const ship = (inv.items || []).find(it => it.name === SHIPPING_LINE);
+      const adj = (inv.items || []).find(it => it.name === ADJUSTMENT_LINE);
+      if (ship) setShippingCharges(ship.rate || 0);
+      if (adj) setAdjustment(adj.rate || 0);
+      setItems((inv.items || []).filter(it => it.name !== SHIPPING_LINE && it.name !== ADJUSTMENT_LINE).map(it => ({
         product_id: it.product_id || "", name: it.name, description: "",
         hsn: it.hsn || "", qty: it.qty, unit: it.unit || "NOS",
         rate: it.rate, discount_pct: it.discount_pct || 0, gst_rate: it.gst_rate ?? 5, stock: null,
@@ -386,6 +393,16 @@ export default function InvoiceCreate() {
         }
         return it;
       });
+      // Shipping and adjustment are part of what the customer owes, so they have to
+      // reach the invoice — saved as their own lines (untaxed, as shown on screen).
+      if (shippingCharges) {
+        normalizedItems.push({ product_id: "", name: SHIPPING_LINE, hsn: "996812", qty: 1,
+                               unit: "NOS", rate: shippingCharges, discount_pct: 0, gst_rate: 0 });
+      }
+      if (adjustment) {
+        normalizedItems.push({ product_id: "", name: ADJUSTMENT_LINE, hsn: "", qty: 1,
+                               unit: "NOS", rate: adjustment, discount_pct: 0, gst_rate: 0 });
+      }
       const payload = {
         party_id: partyId, invoice_date: invoiceDate, due_date: dueDate,
         items: normalizedItems,
