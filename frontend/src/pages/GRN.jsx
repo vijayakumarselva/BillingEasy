@@ -23,6 +23,8 @@ export default function GRN() {
   const [warehouses, setWarehouses] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [products, setProducts] = useState([]);
+  const [allProducts, setAllProducts] = useState([]);   // every profile — used to match names
+  const [creating, setCreating] = useState(false);
 
   // Form
   const [warehouseId, setWarehouseId] = useState("");
@@ -41,24 +43,36 @@ export default function GRN() {
   };
 
   const loadMeta = async () => {
-    const [wh, sup, prod] = await Promise.all([
+    const [wh, sup, prod, all] = await Promise.all([
       api.get("/warehouses"),
       api.get("/parties", { params: { type: "supplier" } }),
       api.get("/products"),
+      api.get("/products", { params: { mode: "all" } }).catch(() => ({ data: [] })),
     ]);
     setWarehouses(wh.data.filter(w => w.active !== false));
     setSuppliers(sup.data);
     setProducts(prod.data);
+    setAllProducts(all.data?.length ? all.data : prod.data);
+    return all.data?.length ? all.data : prod.data;
   };
 
   useEffect(() => { load(); loadMeta(); }, []);
+
+  const norm = (v) => (v || "").toString().trim().toLowerCase();
 
   // Auto-open with data from purchase bill (navigate from Purchases page)
   useEffect(() => {
     const po = location.state?.fromPurchase;
     if (!po) return;
     // Wait for meta to load, then prefill
-    const tryPrefill = () => {
+    const tryPrefill = (catalogue = allProducts) => {
+      const findMatch = (it) => {
+        if (it.product_id) return it.product_id;
+        const byName = catalogue.find(p => norm(p.name) === norm(it.name));
+        if (byName) return byName.id;
+        const bySku = it.sku ? catalogue.find(p => norm(p.sku) === norm(it.sku)) : null;
+        return bySku ? bySku.id : "";
+      };
       setVendorId(po.party_id || "");
       setGrnDate(po.purchase_date || todayISO());
       setRefNo(po.bill_no || "");
@@ -66,7 +80,7 @@ export default function GRN() {
       if (po.warehouse_id) setWarehouseId(po.warehouse_id);
       if (po.items?.length) {
         setItems(po.items.map(it => ({
-          product_id: it.product_id || "",
+          product_id: findMatch(it),
           name: it.name || "",
           hsn: it.hsn || "",
           qty: it.qty || 1,
@@ -78,12 +92,51 @@ export default function GRN() {
       setOpen(true);
     };
     // Small delay to let loadMeta finish
-    setTimeout(tryPrefill, 400);
+    loadMeta().then(cat => tryPrefill(cat)).catch(() => setTimeout(tryPrefill, 400));
     // Clear state so refresh doesn't re-open
     window.history.replaceState({}, "");
   }, [location.state]);
 
   const setItem = (i, patch) => setItems(prev => prev.map((it, idx) => idx === i ? { ...it, ...patch } : it));
+
+  const mode = () => {
+    const orgId = localStorage.getItem("be_org_id") || "";
+    return localStorage.getItem(`biz_mode_${orgId}`) || "b2b";
+  };
+
+  const createProductFor = async (i) => {
+    const it = items[i];
+    if (!it?.name?.trim()) { toast.error("This row has no item name — pick a product instead"); return null; }
+    try {
+      const { data } = await api.post("/products", {
+        name: it.name.trim(), hsn: it.hsn || "", unit: it.unit || "NOS",
+        purchase_price: it.rate || 0, sale_price: 0, gst_rate: it.gst_rate ?? 5,
+        stock: 0, low_stock_alert: 5, category: "General", modes: [mode()],
+      });
+      setProducts(ps => [...ps, data]);
+      setAllProducts(ps => [...ps, data]);
+      setItem(i, { product_id: data.id });
+      return data;
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || `Could not create “${it.name}”`);
+      return null;
+    }
+  };
+
+  const missingCount = items.filter(it => !it.product_id && it.name?.trim()).length;
+
+  const createAllMissing = async () => {
+    setCreating(true);
+    let made = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (!items[i].product_id && items[i].name?.trim()) {
+        // eslint-disable-next-line no-await-in-loop
+        if (await createProductFor(i)) made += 1;
+      }
+    }
+    setCreating(false);
+    if (made) toast.success(`${made} product${made > 1 ? "s" : ""} added to your catalogue`);
+  };
 
   const totals = useMemo(() => {
     return items.reduce((acc, it) => {
@@ -219,6 +272,18 @@ export default function GRN() {
 
           {/* Items table */}
           <div className="mt-4 overflow-x-auto rounded-md border">
+            {missingCount > 0 && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                <span>
+                  {missingCount} item{missingCount > 1 ? "s aren't" : " isn't"} in your product list yet — stock can only be
+                  updated for items that exist there.
+                </span>
+                <Button type="button" size="sm" className="h-7 text-xs ml-auto bg-amber-600 hover:bg-amber-700 text-white"
+                  disabled={creating} onClick={createAllMissing}>
+                  {creating ? "Adding…" : `Add ${missingCount} to catalogue`}
+                </Button>
+              </div>
+            )}
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
@@ -248,6 +313,13 @@ export default function GRN() {
                         }}>
                           <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select product" /></SelectTrigger>
                           <SelectContent>
+                            {!it.product_id && it.name?.trim() && (
+                              <button type="button"
+                                className="w-full text-left px-2 py-1.5 text-xs font-semibold text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30 border-b"
+                                onMouseDown={e => { e.preventDefault(); createProductFor(i); }}>
+                                + Create “{it.name}”
+                              </button>
+                            )}
                             {rowOptions.map(p => (
                               <SelectItem key={p.id} value={p.id}>
                                 {p.name}{p._external ? " (from the bill)" : ""}
@@ -255,9 +327,13 @@ export default function GRN() {
                             ))}
                           </SelectContent>
                         </Select>
-                        <div className="text-xs text-muted-foreground ml-1 mt-0.5 flex flex-wrap gap-x-2">
+                        <div className="text-xs ml-1 mt-0.5 flex flex-wrap gap-x-2 items-center">
                           {it.name && <span className="font-medium text-foreground/70">{it.name}</span>}
-                          {it.hsn && <span>HSN {it.hsn}</span>}
+                          {it.hsn && <span className="text-muted-foreground">HSN {it.hsn}</span>}
+                          {!it.product_id && it.name?.trim() && (
+                            <button type="button" className="text-blue-600 hover:underline font-medium"
+                              onClick={() => createProductFor(i)}>+ create this product</button>
+                          )}
                         </div>
                       </td>
                       <td className="px-2 py-2">
