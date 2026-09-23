@@ -265,6 +265,15 @@ export default function InvoiceCreate() {
     }).catch(() => toast.error("Failed to load invoice"));
   }, [editId]);
 
+  // Handle terms change → auto-set due date
+  const handleTermsChange = (t) => {
+    setTerms(t);
+    const opt = TERMS_OPTIONS.find(o => o.label === t);
+    if (opt && opt.days !== null) setDueDate(addDaysISO(opt.days, invoiceDate));
+  };
+
+  const party = parties.find(p => p.id === partyId);
+
   // Which delivery address goes on this invoice
   const shipOptions = (party?.shipping_addresses || []).map((a, i) => ({
     id: a.id || `addr-${i}`,
@@ -290,14 +299,6 @@ export default function InvoiceCreate() {
     setShipSel("billing"); setShipText(""); setShipLabel(""); setShipEditing(false);
   }, [partyId, editId]);
 
-  // Handle terms change → auto-set due date
-  const handleTermsChange = (t) => {
-    setTerms(t);
-    const opt = TERMS_OPTIONS.find(o => o.label === t);
-    if (opt && opt.days !== null) setDueDate(addDaysISO(opt.days, invoiceDate));
-  };
-
-  const party = parties.find(p => p.id === partyId);
   const selectedBranch = branches.find(b => b.id === branchId);
   const sellerStateCode = selectedBranch?.state_code || biz.state_code || "33";
   const sameState = sellerStateCode === (party?.state_code || placeOfSupply || "33");
