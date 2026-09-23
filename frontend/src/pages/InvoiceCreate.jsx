@@ -9,6 +9,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { Trash2, Plus, ArrowLeft, Search, Paperclip, ChevronRight, BarChart2, RefreshCw, Warehouse } from "lucide-react";
 import { inr, todayISO, addDaysISO } from "@/lib/format";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import GstinField from "@/components/GstinField";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 function blankItem() {
@@ -185,6 +187,8 @@ export default function InvoiceCreate() {
   const [shipText, setShipText]         = useState("");           // the address actually printed
   const [shipLabel, setShipLabel]       = useState("");
   const [shipEditing, setShipEditing]   = useState(false);
+  const [newCust, setNewCust]           = useState(null);   // quick-create customer form
+  const [savingCust, setSavingCust]     = useState(false);
   const [type, setType]                 = useState("sale");
   const [status, setStatus]             = useState("finalized");
   const [invoiceCategory, setInvoiceCategory] = useState("stock");
@@ -273,6 +277,34 @@ export default function InvoiceCreate() {
   };
 
   const party = parties.find(p => p.id === partyId);
+
+  // Add a customer without leaving the invoice
+  const openNewCustomer = () => {
+    setShowPartyDD(false);
+    setNewCust({ name: partySearch || "", phone: "", email: "", gstin: "", state_code: placeOfSupply || "33",
+                 billing_address: "" });
+  };
+  const saveNewCustomer = async () => {
+    const f = newCust;
+    if (!f?.name?.trim()) { toast.error("Customer name is required"); return; }
+    setSavingCust(true);
+    try {
+      const st = STATES.find(x => x.code === f.state_code);
+      const { data } = await api.post("/parties", {
+        type: "customer", name: f.name.trim(), phone: f.phone.trim(), email: f.email.trim(),
+        gstin: f.gstin.trim().toUpperCase(), state: st?.name || "", state_code: f.state_code,
+        billing_address: f.billing_address.trim(), shipping_addresses: [],
+      });
+      setParties(ps => [...ps, data]);
+      setPartyId(data.id);
+      setPartySearch("");
+      setPlaceOfSupply(data.state_code || "33");
+      setNewCust(null);
+      toast.success(`${data.name} added`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not add the customer");
+    } finally { setSavingCust(false); }
+  };
 
   // Which delivery address goes on this invoice
   const shipOptions = (party?.shipping_addresses || []).map((a, i) => ({
@@ -445,7 +477,9 @@ export default function InvoiceCreate() {
                   {showPartyDD && (
                     <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-white dark:bg-zinc-900 border border-border rounded-md shadow-lg max-h-48 overflow-y-auto">
                       {filteredParties.length === 0 && (
-                        <div className="px-3 py-2 text-sm text-muted-foreground">No customers found</div>
+                        <div className="px-3 py-2 text-sm text-muted-foreground">
+                          No customer matches “{partySearch}”.
+                        </div>
                       )}
                       {filteredParties.map(p => (
                         <div key={p.id} className="px-3 py-2 text-sm hover:bg-muted cursor-pointer"
@@ -454,6 +488,11 @@ export default function InvoiceCreate() {
                           {p.gstin && <div className="text-xs text-muted-foreground">{p.gstin}</div>}
                         </div>
                       ))}
+                      <button type="button" data-testid="inv-add-customer"
+                        className="w-full text-left px-3 py-2 text-sm font-semibold text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30 border-t border-border sticky bottom-0 bg-white dark:bg-zinc-900"
+                        onMouseDown={e => { e.preventDefault(); openNewCustomer(); }}>
+                        + Add new customer{partySearch ? ` “${partySearch}”` : ""}
+                      </button>
                     </div>
                   )}
                 </div>
@@ -831,6 +870,66 @@ export default function InvoiceCreate() {
 
       {/* Click outside to close party dropdown */}
       {showPartyDD && <div className="fixed inset-0 z-40" onClick={() => setShowPartyDD(false)} />}
+
+      {/* Quick-add a customer without leaving the invoice */}
+      <Dialog open={!!newCust} onOpenChange={o => { if (!o && !savingCust) setNewCust(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>New customer</DialogTitle></DialogHeader>
+          {newCust && (
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div className="sm:col-span-2 space-y-1.5">
+                <Label>Customer name *</Label>
+                <Input autoFocus value={newCust.name} data-testid="new-cust-name"
+                  onChange={e => setNewCust(c => ({ ...c, name: e.target.value }))}
+                  onKeyDown={e => { if (e.key === "Enter") saveNewCustomer(); }} />
+              </div>
+              <div className="sm:col-span-2 space-y-1.5">
+                <Label>GSTIN <span className="text-xs text-muted-foreground">(fills name, address and state)</span></Label>
+                <GstinField value={newCust.gstin}
+                  onChange={v => setNewCust(c => ({ ...c, gstin: v.toUpperCase() }))}
+                  onLookup={(info) => {
+                    if (!info || info.error) return;
+                    setNewCust(c => ({
+                      ...c,
+                      name: c.name || info.trade_name || info.legal_name || "",
+                      billing_address: c.billing_address || info.address || "",
+                      state_code: info.state_code || c.state_code,
+                    }));
+                  }} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Phone</Label>
+                <Input value={newCust.phone} onChange={e => setNewCust(c => ({ ...c, phone: e.target.value }))} placeholder="9876543210" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Email</Label>
+                <Input value={newCust.email} onChange={e => setNewCust(c => ({ ...c, email: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>State (place of supply)</Label>
+                <Select value={newCust.state_code} onValueChange={v => setNewCust(c => ({ ...c, state_code: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{STATES.map(st => <SelectItem key={st.code} value={st.code}>{st.name} ({st.code})</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div className="sm:col-span-2 space-y-1.5">
+                <Label>Billing address</Label>
+                <Textarea rows={2} value={newCust.billing_address}
+                  onChange={e => setNewCust(c => ({ ...c, billing_address: e.target.value }))} />
+              </div>
+              <p className="sm:col-span-2 text-xs text-muted-foreground">
+                Saved to Parties straight away — add delivery addresses and credit limits there later.
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNewCust(null)} disabled={savingCust}>Cancel</Button>
+            <Button onClick={saveNewCustomer} disabled={savingCust} className="bg-blue-600 hover:bg-blue-700" data-testid="new-cust-save">
+              {savingCust ? "Adding…" : "Add & use"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
