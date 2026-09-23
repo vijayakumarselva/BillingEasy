@@ -233,6 +233,12 @@ export default function GRN() {
               <tbody>
                 {items.map((it, i) => {
                   const amt = it.qty * it.rate * (1 + it.gst_rate / 100);
+                  // A bill raised under another business profile carries products that
+                  // aren't in this profile's catalogue — keep showing their name.
+                  const inList = products.some(p => p.id === it.product_id);
+                  const rowOptions = (!inList && it.product_id)
+                    ? [{ id: it.product_id, name: it.name || "Item from the bill", _external: true }, ...products]
+                    : products;
                   return (
                     <tr key={i} className="border-t">
                       <td className="px-3 py-2">
@@ -242,10 +248,17 @@ export default function GRN() {
                         }}>
                           <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select product" /></SelectTrigger>
                           <SelectContent>
-                            {products.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                            {rowOptions.map(p => (
+                              <SelectItem key={p.id} value={p.id}>
+                                {p.name}{p._external ? " (from the bill)" : ""}
+                              </SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
-                        {it.hsn && <span className="text-xs text-muted-foreground ml-1">HSN {it.hsn}</span>}
+                        <div className="text-xs text-muted-foreground ml-1 mt-0.5 flex flex-wrap gap-x-2">
+                          {it.name && <span className="font-medium text-foreground/70">{it.name}</span>}
+                          {it.hsn && <span>HSN {it.hsn}</span>}
+                        </div>
                       </td>
                       <td className="px-2 py-2">
                         <Input className="h-8 text-sm text-right" type="number" min="0"
