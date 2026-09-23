@@ -16,6 +16,16 @@ import { inr, fmtDate } from "@/lib/format";
 import GstinField from "@/components/GstinField";
 import { useNavigate } from "react-router-dom";
 
+const blankShipping = () => ({
+  id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+  label: "", attention: "", line1: "", line2: "", city: "", state: "", state_code: "", pincode: "", phone: "",
+});
+
+// Older records kept the whole address in one box — show it as line 1 so it can be edited.
+const splitLegacy = (a) => (a.line1 || a.city || a.pincode)
+  ? { ...blankShipping(), ...a }
+  : { ...blankShipping(), ...a, line1: a.address || "" };
+
 const emptyForm = {
   type: "customer", name: "", phone: "", email: "", gstin: "", pan: "",
   state: "Tamil Nadu", state_code: "33",
@@ -130,9 +140,9 @@ export default function Parties() {
   const startCreate = () => { setForm({ ...emptyForm, type: tab }); setEditId(null); setOpen(true); };
   const startEdit = (p) => {
     // migrate legacy single shipping_address to array if needed
-    const addrs = Array.isArray(p.shipping_addresses) && p.shipping_addresses.length
+    const addrs = (Array.isArray(p.shipping_addresses) && p.shipping_addresses.length
       ? p.shipping_addresses
-      : p.shipping_address ? [{ label: "Default", address: p.shipping_address }] : [];
+      : p.shipping_address ? [{ label: "Default", address: p.shipping_address }] : []).map(splitLegacy);
     setForm({ ...p, shipping_addresses: addrs });
     setEditId(p.id); setOpen(true);
   };
@@ -402,43 +412,58 @@ export default function Parties() {
               <div className="flex items-center justify-between">
                 <Label className="flex items-center gap-1.5"><MapPin className="h-3.5 w-3.5" /> Shipping Addresses</Label>
                 <Button type="button" size="sm" variant="outline" className="h-7 text-xs gap-1"
-                  onClick={() => setForm(f => ({ ...f, shipping_addresses: [...(f.shipping_addresses || []), { label: "", address: "" }] }))}>
+                  onClick={() => setForm(f => ({ ...f, shipping_addresses: [...(f.shipping_addresses || []), blankShipping()] }))}>
                   <Plus className="h-3 w-3" /> Add Address
                 </Button>
               </div>
               {(form.shipping_addresses || []).length === 0 && (
                 <p className="text-xs text-muted-foreground">No shipping addresses yet. Click "Add Address" to add one.</p>
               )}
-              {(form.shipping_addresses || []).map((sa, i) => (
-                <div key={i} className="border rounded-lg p-3 space-y-2 bg-muted/20">
-                  <div className="flex items-center gap-2">
-                    <Input
-                      placeholder="Label (e.g. Warehouse, Site 1)"
-                      className="h-8 text-sm w-44 shrink-0"
-                      value={sa.label}
-                      onChange={e => setForm(f => {
-                        const a = [...f.shipping_addresses];
-                        a[i] = { ...a[i], label: e.target.value };
-                        return { ...f, shipping_addresses: a };
-                      })}
-                    />
-                    <button type="button" className="ml-auto text-rose-400 hover:text-rose-600 p-1"
-                      onClick={() => setForm(f => ({ ...f, shipping_addresses: f.shipping_addresses.filter((_, idx) => idx !== i) }))}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+              {(form.shipping_addresses || []).map((sa, i) => {
+                const upd = (patch) => setForm(f => {
+                  const a = [...f.shipping_addresses];
+                  a[i] = { ...a[i], ...patch };
+                  return { ...f, shipping_addresses: a };
+                });
+                return (
+                  <div key={sa.id || i} className="border rounded-lg p-3 space-y-2 bg-muted/20">
+                    <div className="flex items-center gap-2">
+                      <Input placeholder="Label (e.g. Warehouse, Site 1)" className="h-8 text-sm w-44 shrink-0"
+                        value={sa.label || ""} onChange={e => upd({ label: e.target.value })} />
+                      <Button type="button" size="sm" variant="ghost" className="h-7 text-xs"
+                        onClick={() => upd({
+                          line1: form.billing_address || "", line2: "", city: "",
+                          state: form.state, state_code: form.state_code, pincode: "",
+                        })}>Copy billing address</Button>
+                      <button type="button" className="ml-auto text-rose-400 hover:text-rose-600 p-1"
+                        onClick={() => setForm(f => ({ ...f, shipping_addresses: f.shipping_addresses.filter((_, idx) => idx !== i) }))}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <div className="grid sm:grid-cols-2 gap-2">
+                      <Input className="h-8 text-sm sm:col-span-2" placeholder="Attention (contact person)"
+                        value={sa.attention || ""} onChange={e => upd({ attention: e.target.value })} />
+                      <Input className="h-8 text-sm sm:col-span-2" placeholder="Address line 1 — building, street"
+                        value={sa.line1 || ""} onChange={e => upd({ line1: e.target.value })} />
+                      <Input className="h-8 text-sm sm:col-span-2" placeholder="Address line 2 — area, landmark"
+                        value={sa.line2 || ""} onChange={e => upd({ line2: e.target.value })} />
+                      <Input className="h-8 text-sm" placeholder="City"
+                        value={sa.city || ""} onChange={e => upd({ city: e.target.value })} />
+                      <Input className="h-8 text-sm" placeholder="PIN code" inputMode="numeric" maxLength={6}
+                        value={sa.pincode || ""} onChange={e => upd({ pincode: e.target.value.replace(/\D/g, "").slice(0, 6) })} />
+                      <Select value={sa.state_code || ""} onValueChange={v => {
+                        const st = STATES.find(x => x.code === v);
+                        upd({ state_code: v, state: st ? st.name : "" });
+                      }}>
+                        <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="State" /></SelectTrigger>
+                        <SelectContent>{STATES.map(st => <SelectItem key={st.code} value={st.code}>{st.name} ({st.code})</SelectItem>)}</SelectContent>
+                      </Select>
+                      <Input className="h-8 text-sm" placeholder="Phone at this address"
+                        value={sa.phone || ""} onChange={e => upd({ phone: e.target.value })} />
+                    </div>
                   </div>
-                  <Input
-                    placeholder="Full shipping address"
-                    className="text-sm"
-                    value={sa.address}
-                    onChange={e => setForm(f => {
-                      const a = [...f.shipping_addresses];
-                      a[i] = { ...a[i], address: e.target.value };
-                      return { ...f, shipping_addresses: a };
-                    })}
-                  />
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
           <DialogFooter>

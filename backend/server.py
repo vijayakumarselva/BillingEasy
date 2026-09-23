@@ -355,8 +355,41 @@ class SubscribeIn(BaseModel):
 
 
 class ShippingAddress(BaseModel):
-    label: str = ""
+    """A delivery address. Structured fields are authoritative; `address` is the
+    composed one-line version kept for older records, PDFs and e-way bills."""
+    id: str = ""
+    label: str = ""          # e.g. Warehouse, Site 1
+    attention: str = ""
+    line1: str = ""
+    line2: str = ""
+    city: str = ""
+    state: str = ""
+    state_code: str = ""
+    pincode: str = ""
+    phone: str = ""
     address: str = ""
+
+
+def compose_address(a: dict) -> str:
+    parts = [a.get("attention"), a.get("line1"), a.get("line2"), a.get("city")]
+    tail = " ".join(x for x in [a.get("state"), a.get("pincode")] if x)
+    parts.append(tail)
+    text = ", ".join(x.strip() for x in parts if x and x.strip())
+    return text or (a.get("address") or "").strip()
+
+
+def normalise_shipping(addrs) -> list:
+    """Accept old {label,address} rows and new structured ones; always return both."""
+    out = []
+    for a in addrs or []:
+        a = dict(a)
+        if not any(a.get(k) for k in ("line1", "line2", "city", "pincode")) and a.get("address"):
+            a["line1"] = a["address"]          # legacy single box becomes line 1
+        a["address"] = compose_address(a)
+        if not a.get("id"):
+            a["id"] = str(uuid.uuid4())
+        out.append(a)
+    return out
 
 class PartyIn(BaseModel):
     type: str
@@ -476,6 +509,7 @@ class InvoiceIn(BaseModel):
     branch_id: str = ""
     invoice_category: str = "stock"   # "stock" | "service"
     shipping_address: str = ""
+    shipping_label: str = ""
     po_number: str = ""
     tds_rate: float = 0          # TDS rate customer will deduct (e.g. 0.1%)
     tds_amount: float = 0        # Expected TDS deduction by customer
@@ -2649,7 +2683,9 @@ async def list_parties(type: Optional[str] = None, search: Optional[str] = None,
 @api.post("/parties")
 async def create_party(body: PartyIn, ctx=Depends(get_org_ctx)):
     await ensure_active_subscription(ctx)
-    doc = {**body.model_dump(), "id": str(uuid.uuid4()),
+    data = body.model_dump()
+    data["shipping_addresses"] = normalise_shipping(data.get("shipping_addresses"))
+    doc = {**data, "id": str(uuid.uuid4()),
            "org_id": ctx["org_id"], "biz_type": ctx.get("biz_type"), "created_at": now_iso()}
     await db.parties.insert_one(doc)
     return strip_id(doc)
@@ -2666,7 +2702,9 @@ async def get_party(pid: str, ctx=Depends(get_org_ctx)):
 @api.put("/parties/{pid}")
 async def update_party(pid: str, body: PartyIn, ctx=Depends(get_org_ctx)):
     await ensure_active_subscription(ctx)
-    await db.parties.update_one(org_filter(ctx, {"id": pid}), {"$set": body.model_dump()})
+    data = body.model_dump()
+    data["shipping_addresses"] = normalise_shipping(data.get("shipping_addresses"))
+    await db.parties.update_one(org_filter(ctx, {"id": pid}), {"$set": data})
     return await db.parties.find_one(org_filter(ctx, {"id": pid}), {"_id": 0})
 
 
@@ -2908,6 +2946,7 @@ async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
         "branch_id": body.branch_id, "branch_snapshot": branch,
         "invoice_category": getattr(body, "invoice_category", "stock"),
         "shipping_address": getattr(body, "shipping_address", ""),
+        "shipping_label": getattr(body, "shipping_label", ""),
         "po_number": getattr(body, "po_number", ""),
         "tds_rate": getattr(body, "tds_rate", 0) or 0,
         "tds_amount": round(getattr(body, "tds_amount", 0) or 0, 2),

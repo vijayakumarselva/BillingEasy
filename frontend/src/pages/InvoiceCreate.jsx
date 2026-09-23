@@ -181,6 +181,10 @@ export default function InvoiceCreate() {
   const [dueDate, setDueDate]           = useState(todayISO());
   const [placeOfSupply, setPlaceOfSupply] = useState("33");
   const [subject, setSubject]           = useState("");
+  const [shipSel, setShipSel]           = useState("billing");   // billing | <address id> | custom
+  const [shipText, setShipText]         = useState("");           // the address actually printed
+  const [shipLabel, setShipLabel]       = useState("");
+  const [shipEditing, setShipEditing]   = useState(false);
   const [type, setType]                 = useState("sale");
   const [status, setStatus]             = useState("finalized");
   const [invoiceCategory, setInvoiceCategory] = useState("stock");
@@ -248,6 +252,11 @@ export default function InvoiceCreate() {
       setCustomerNotes(inv.notes || "");
       setOrderNo(inv.po_number || "");
       setBranchId(inv.branch_id || "");
+      if (inv.shipping_address) {
+        setShipText(inv.shipping_address);
+        setShipLabel(inv.shipping_label || "Custom");
+        setShipSel("custom");
+      }
       setItems((inv.items || []).map(it => ({
         product_id: it.product_id || "", name: it.name, description: "",
         hsn: it.hsn || "", qty: it.qty, unit: it.unit || "NOS",
@@ -255,6 +264,31 @@ export default function InvoiceCreate() {
       })));
     }).catch(() => toast.error("Failed to load invoice"));
   }, [editId]);
+
+  // Which delivery address goes on this invoice
+  const shipOptions = (party?.shipping_addresses || []).map((a, i) => ({
+    id: a.id || `addr-${i}`,
+    label: a.label || `Address ${i + 1}`,
+    text: a.address || [a.attention, a.line1, a.line2, a.city,
+                        [a.state, a.pincode].filter(Boolean).join(" ")].filter(Boolean).join(", "),
+  }));
+  const chooseShipping = (val) => {
+    setShipSel(val);
+    if (val === "billing") {
+      setShipText(""); setShipLabel(""); setShipEditing(false);
+    } else if (val === "custom") {
+      setShipText(t => t || party?.billing_address || ""); setShipLabel("Custom"); setShipEditing(true);
+    } else {
+      const o = shipOptions.find(x => x.id === val);
+      setShipText(o?.text || ""); setShipLabel(o?.label || ""); setShipEditing(false);
+    }
+  };
+
+  // A different customer means a different set of delivery addresses
+  useEffect(() => {
+    if (editId) return;
+    setShipSel("billing"); setShipText(""); setShipLabel(""); setShipEditing(false);
+  }, [partyId, editId]);
 
   // Handle terms change → auto-set due date
   const handleTermsChange = (t) => {
@@ -327,7 +361,8 @@ export default function InvoiceCreate() {
         branch_id: (branchId && branchId !== "__none__") ? branchId : "",
         invoice_category: invoiceCategory,
         tax_mode: taxMode,
-        shipping_address: "",
+        shipping_address: shipSel === "billing" ? "" : shipText,
+        shipping_label: shipSel === "billing" ? "" : shipLabel,
         po_number: orderNo,
         subject,
         tds_rate: tdsMode !== "none" ? tdsRate : 0,
@@ -435,11 +470,34 @@ export default function InvoiceCreate() {
                     </div>
                     <div>
                       <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1 flex items-center gap-1">
-                        SHIPPING ADDRESS <button className="text-blue-500 hover:underline ml-1">✏</button>
+                        SHIPPING ADDRESS
+                        <button type="button" className="text-blue-500 hover:underline ml-1"
+                          onClick={() => { if (shipSel === "billing") chooseShipping("custom"); else setShipEditing(v => !v); }}
+                          title="Edit this address for this invoice">✏</button>
                       </div>
-                      <div className="text-xs text-foreground leading-relaxed">
-                        {party.shipping_address || party.billing_address || "Same as billing"}
-                      </div>
+                      <Select value={shipSel} onValueChange={chooseShipping}>
+                        <SelectTrigger className="h-8 text-xs mb-1" data-testid="invoice-shipping-select">
+                          <SelectValue placeholder="Same as billing" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="billing">Same as billing</SelectItem>
+                          {shipOptions.map(o => <SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>)}
+                          <SelectItem value="custom">Custom address…</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {shipEditing ? (
+                        <Textarea rows={3} className="text-xs" value={shipText} placeholder="Delivery address for this invoice"
+                          onChange={e => setShipText(e.target.value)} onBlur={() => setShipLabel(l => l || "Custom")} />
+                      ) : (
+                        <div className="text-xs text-foreground leading-relaxed whitespace-pre-line">
+                          {shipSel === "billing" ? (party.billing_address || "Same as billing") : (shipText || "—")}
+                        </div>
+                      )}
+                      {shipOptions.length === 0 && (
+                        <p className="text-[11px] text-muted-foreground mt-1">
+                          Add delivery addresses on the customer in Parties to pick them here.
+                        </p>
+                      )}
                     </div>
                   </div>
                 )}
