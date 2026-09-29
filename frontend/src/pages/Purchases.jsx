@@ -891,7 +891,15 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
                         {purchaseCategory === "stock" && (
                           <Select value={it.product_id} onValueChange={(v) => pickProduct(i, v)}>
                             <SelectTrigger className="h-9 w-44"><SelectValue placeholder="Pick product" /></SelectTrigger>
-                            <SelectContent>{products.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
+                            <SelectContent>
+                              {products.length === 0 && (
+                                <div className="px-3 py-2 text-xs text-muted-foreground max-w-[16rem]">
+                                  No products in this business profile yet. Add them under Products &amp; Stock,
+                                  or just type the item name here — the bill still saves, only stock won't move.
+                                </div>
+                              )}
+                              {products.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                            </SelectContent>
                           </Select>
                         )}
                         <Input className={`h-8 text-xs ${purchaseCategory === "stock" ? "mt-1" : ""}`} placeholder={purchaseCategory === "stock" ? "Or type name" : "Service / expense description"} value={it.name} onChange={(e) => setItem(i, { name: e.target.value })} />

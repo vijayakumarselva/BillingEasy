@@ -2747,8 +2747,10 @@ VALID_MODES = ("b2b", "b2c", "restaurant", "pos", "stay")
 def product_mode_query(ctx: dict, mode: Optional[str]) -> dict:
     """Mongo filter restricting products to what this user may see.
 
-    - Restricted users (role has allowed_modes): only products explicitly tagged
-      with one of their modes. Untagged products are hidden from them.
+    - Restricted users (role has allowed_modes): products tagged with one of their
+      modes, plus untagged ones (those belong to nobody in particular — hiding them
+      leaves staff with an empty catalogue). Products tagged only for another
+      profile stay hidden.
     - Unrestricted users (owner etc.): mode="all" shows everything; an explicit
       mode shows that mode; no mode follows the active business profile
       (X-Biz-Type / entity). Untagged legacy products stay visible to them.
@@ -2759,7 +2761,8 @@ def product_mode_query(ctx: dict, mode: Optional[str]) -> dict:
         if req not in allowed:
             bt = ctx.get("biz_type")
             req = bt if bt in allowed else ""
-        return {"modes": req} if req else {"modes": {"$in": allowed}}
+        untagged = [{"modes": {"$exists": False}}, {"modes": []}, {"modes": None}]
+        return {"$or": ([{"modes": req}] if req else [{"modes": {"$in": allowed}}]) + untagged}
     if not req:
         req = ctx.get("biz_type") or ""
     if req and req != "all":
