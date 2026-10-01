@@ -8255,6 +8255,136 @@ async def bank_feed_settings(body: BankFeedSettingsIn, ctx=Depends(require_permi
     return await bank_feed_status(ctx)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Bulk import of invoices already raised elsewhere (migration / catch-up).
+# Keeps the original invoice number and date, is idempotent on the number, and
+# leaves stock alone unless you ask for it. Dry run by default.
+# ─────────────────────────────────────────────────────────────────────────────
+class ImportInvoiceItem(BaseModel):
+    name: str
+    hsn: str = ""
+    qty: float = 1
+    unit: str = "NOS"
+    rate: float                       # per unit; GST-inclusive when tax_inclusive is true
+    gst_rate: float = 0
+    discount_pct: float = 0
+    sku: str = ""
+
+
+class ImportInvoiceIn(BaseModel):
+    invoice_no: str = Field(min_length=1)
+    invoice_date: str
+    due_date: str = ""
+    type: str = "sale"
+    tax_inclusive: bool = False
+    customer: PublicPartyIn
+    items: List[ImportInvoiceItem]
+    notes: str = ""
+    po_number: str = ""
+    paid_amount: float = 0
+    payment_mode: str = "Bank Transfer"
+
+
+class ImportBatchIn(BaseModel):
+    invoices: List[ImportInvoiceIn]
+    biz_type: str = ""                # which business profile the invoices belong to
+    invoice_category: str = "stock"
+    update_stock: bool = False        # historical invoices normally shouldn't move today's stock
+    commit: bool = False              # false = dry run, nothing is written
+
+
+@api.post("/v1/invoices/import")
+async def public_import_invoices(body: ImportBatchIn, ictx=Depends(api_key_ctx)):
+    org_id = ictx["org_id"]
+    org = await get_org_doc(org_id)
+    seller_state = org.get("state_code", "33")
+    ctx = {**ictx, "biz_type": body.biz_type or ictx.get("biz_type")}
+    results, created = [], 0
+    for inv in body.invoices:
+        row = {"invoice_no": inv.invoice_no, "date": inv.invoice_date[:10]}
+        existing = await db.invoices.find_one({"org_id": org_id, "invoice_no": inv.invoice_no},
+                                              {"_id": 0, "id": 1, "totals": 1})
+        if existing:
+            results.append({**row, "status": "already_present",
+                            "total": (existing.get("totals") or {}).get("grand_total", 0)})
+            continue
+        if not inv.items:
+            results.append({**row, "status": "error", "message": "no items"})
+            continue
+        party = None
+        gstin = (inv.customer.gstin or "").strip().upper()
+        if gstin:
+            party = await db.parties.find_one({"org_id": org_id, "gstin": gstin}, {"_id": 0})
+        if not party:
+            if body.commit:
+                party = await _intake_guest(org_id, IntakeGuest(
+                    name=inv.customer.name, phone=inv.customer.phone, email=inv.customer.email,
+                    gstin=gstin, state=inv.customer.state, address=inv.customer.address), seller_state)
+            else:
+                party = {"id": "(would be created)", "name": inv.customer.name, "gstin": gstin,
+                         "state_code": GST_STATE_CODES.get((inv.customer.state or "").strip().lower(), seller_state)}
+        line_items, matched, unmatched = [], [], []
+        for it in inv.items:
+            prod = None
+            if it.sku:
+                prod = await db.products.find_one({"org_id": org_id, "sku": it.sku}, {"_id": 0})
+            if not prod:
+                prod = await db.products.find_one(
+                    {"org_id": org_id, "name": {"$regex": f"^{re.escape(it.name.strip())}$", "$options": "i"}}, {"_id": 0})
+            (matched if prod else unmatched).append(it.name)
+            gst = it.gst_rate if it.gst_rate is not None else float((prod or {}).get("gst_rate", 0) or 0)
+            rate = round(it.rate / (1 + gst / 100), 6) if (body and inv.tax_inclusive and gst) else it.rate
+            line_items.append(LineItem(product_id=(prod or {}).get("id", ""), name=it.name,
+                                       hsn=it.hsn or (prod or {}).get("hsn", ""), qty=it.qty,
+                                       unit=it.unit or (prod or {}).get("unit", "NOS"), rate=rate,
+                                       discount_pct=it.discount_pct, gst_rate=gst))
+        same_state = seller_state == (party.get("state_code") or seller_state)
+        totals = calc_invoice_totals([i.model_dump() for i in line_items], same_state)
+        row.update({"customer": party.get("name"), "total": totals["grand_total"],
+                    "taxable": totals["taxable_amount"],
+                    "tax": round(totals["cgst"] + totals["sgst"] + totals["igst"], 2),
+                    "matched_products": matched, "unmatched_products": unmatched})
+        if not body.commit:
+            results.append({**row, "status": "would_create"})
+            continue
+        doc = {
+            "id": str(uuid.uuid4()), "org_id": org_id, "biz_type": ctx.get("biz_type"),
+            "invoice_no": inv.invoice_no, "party_id": party["id"], "party_snapshot": party,
+            "invoice_date": inv.invoice_date[:10], "due_date": (inv.due_date or inv.invoice_date)[:10],
+            "items": totals["items"], "totals": {k: v for k, v in totals.items() if k != "items"},
+            "notes": inv.notes, "status": "finalized", "type": inv.type, "is_recurring": False,
+            "same_state": same_state, "branch_id": "", "branch_snapshot": None,
+            "invoice_category": body.invoice_category, "shipping_address": "", "po_number": inv.po_number,
+            "tds_rate": 0, "tds_amount": 0, "net_receivable": totals["grand_total"], "warehouse_id": "",
+            "imported": True, "import_source": "api", "created_at": now_iso(),
+        }
+        await db.invoices.insert_one(doc)
+        created += 1
+        if body.update_stock and body.invoice_category == "stock" and inv.type == "sale":
+            for it in totals["items"]:
+                if it.get("product_id"):
+                    await db.products.update_one({"org_id": org_id, "id": it["product_id"]},
+                                                 {"$inc": {"stock": -it.get("qty", 0)}})
+                    await _log_stock_movement(org_id, it["product_id"], -it.get("qty", 0), movement_type="sale",
+                                              ref_id=doc["id"], ref_no=doc["invoice_no"],
+                                              party_name=party.get("name", ""), date=doc["invoice_date"])
+        if inv.paid_amount and inv.paid_amount > 0:
+            await db.payments.insert_one({
+                "id": str(uuid.uuid4()), "org_id": org_id, "party_id": party["id"], "direction": "received",
+                "amount": round(inv.paid_amount, 2), "mode": inv.payment_mode, "date": doc["invoice_date"],
+                "reference": inv.invoice_no, "bank_account_id": "", "invoice_id": doc["id"], "expense_id": "",
+                "linked_ref": doc["invoice_no"], "linked_type": "invoice", "biz_type": ctx.get("biz_type"),
+                "source": "import", "created_at": now_iso()})
+            if inv.paid_amount >= totals["grand_total"] * 0.99:
+                await db.invoices.update_one({"org_id": org_id, "id": doc["id"]},
+                                             {"$set": {"status": "paid", "status_changed_at": now_iso()}})
+        results.append({**row, "status": "created", "invoice_id": doc["id"]})
+    return {"ok": True, "dry_run": not body.commit, "created": created,
+            "total_value": round(sum(r.get("total", 0) for r in results
+                                     if r["status"] in ("created", "would_create")), 2),
+            "invoices": results}
+
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
