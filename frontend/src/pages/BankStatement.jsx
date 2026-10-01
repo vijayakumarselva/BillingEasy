@@ -25,65 +25,96 @@ function splitCSVLine(line) {
   return cols;
 }
 
-const parseAmt = v => parseFloat(String(v || "0").replace(/[,\s]/g, "")) || 0;
+const parseAmt = v => parseFloat(String(v || "0").replace(/[,\s₹]/g, "")) || 0;
 
-// Find column index — ordered from most-specific to least-specific to avoid false matches
-function findColIdx(headers, ...priorities) {
-  for (const name of priorities) {
-    const idx = headers.findIndex(h => h.includes(name));
-    if (idx >= 0) return idx;
+// Bank exports (HDFC, ICICI, Axis …) start with 15-25 lines of account/address
+// blurb before the real header row, so never assume row 1 is the header.
+const normHdr = v => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+const COLS = {
+  date:    ["txndate", "transactiondate", "valuedt", "valuedate", "date"],
+  desc:    ["narration", "description", "particulars", "remarks", "details", "transactionremarks"],
+  debit:   ["withdrawalamt", "withdrawal", "debitamt", "debit", "dr"],
+  credit:  ["depositamt", "deposit", "creditamt", "credit", "cr"],
+  balance: ["closingbalance", "runningbalance", "balance"],
+};
+
+// Map a candidate header row to column indexes; most-specific name wins.
+function mapHeaderRow(cells) {
+  const norm = cells.map(normHdr);
+  const used = new Set();
+  const pick = (names) => {
+    for (const n of names) {
+      const i = norm.findIndex((h, idx) => h && !used.has(idx) && h.includes(n));
+      if (i >= 0) { used.add(i); return i; }
+    }
+    return -1;
+  };
+  // Resolve in this order so "Withdrawal Amt." is claimed before a looser "amt"
+  const date = pick(COLS.date), desc = pick(COLS.desc);
+  const debit = pick(COLS.debit), credit = pick(COLS.credit), balance = pick(COLS.balance);
+  const score = [date, desc, debit, credit, balance].filter(i => i >= 0).length;
+  return { date, desc, debit, credit, balance, score };
+}
+
+// Scan the first 40 lines for the row that looks most like a header.
+function findHeader(matrix) {
+  let best = null;
+  for (let i = 0; i < Math.min(matrix.length, 40); i++) {
+    const m = mapHeaderRow(matrix[i] || []);
+    // A header must at least name a date column and one other known column
+    if (m.date >= 0 && m.score >= 3 && (!best || m.score > best.m.score)) best = { i, m };
   }
-  return -1;
+  return best;
+}
+
+// "11/06/26", "11-06-2026", "2026-06-11", Excel serials and Date objects → YYYY-MM-DD
+function normDate(v) {
+  if (v instanceof Date && !isNaN(v)) {
+    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+  }
+  const t = String(v ?? "").trim();
+  if (!t) return "";
+  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = t.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})/);   // Indian dd/mm/yy(yy)
+  if (m) {
+    let [, d, mo, y] = m;
+    if (y.length === 2) y = String(2000 + Number(y));
+    return `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+  const d = new Date(t);
+  if (!isNaN(d.getTime())) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  return "";
+}
+
+// Shared by CSV and Excel: a matrix of cells → statement rows.
+function rowsFromMatrix(matrix) {
+  const hdr = findHeader(matrix);
+  if (!hdr) return [];
+  const { date, desc, debit, credit, balance } = hdr.m;
+  const get = (row, i) => (i >= 0 ? String(row[i] ?? "").replace(/['"]/g, "").trim() : "");
+  return matrix.slice(hdr.i + 1).map(row => ({
+    date:        normDate(date >= 0 ? row[date] : ""),
+    description: get(row, desc),
+    debit:       parseAmt(get(row, debit)),    // Withdrawal = money OUT
+    credit:      parseAmt(get(row, credit)),   // Deposit = money IN
+    balance:     parseAmt(get(row, balance)),
+  })).filter(r => r.date && r.description && !/^[*\-=_\s]+$/.test(r.description));
 }
 
 function rowsFromSheet(sheet) {
-  const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-  if (!json.length) return [];
-  const keys = Object.keys(json[0]);
-  const norm = k => k.toLowerCase().replace(/[^a-z0-9]/g, "");
-
-  // Most-specific first: "withdrawal amt" > "withdrawal" > "debit"
-  const findK = (...names) => keys.find(k => names.some(n => norm(k).includes(n.replace(/\s/g, ""))));
-
-  const dateKey    = findK("valuedt", "txndate", "transactiondate", "date");
-  const descKey    = findK("narration", "description", "particulars", "remarks", "details");
-  const debitKey   = findK("withdrawalamt", "withdrawal", "debitamt", "debit", "dr");
-  const creditKey  = findK("depositamt", "deposit", "creditamt", "credit", "cr");
-  const balanceKey = findK("closingbalance", "balance");
-
-  return json.map(row => ({
-    date:        dateKey  ? String(row[dateKey] || "").trim()  : "",
-    description: descKey  ? String(row[descKey] || "").trim() : "",
-    debit:       debitKey  ? parseAmt(row[debitKey])  : 0,  // Withdrawal = money OUT = debit
-    credit:      creditKey ? parseAmt(row[creditKey]) : 0,  // Deposit = money IN = credit
-    balance:     balanceKey ? parseAmt(row[balanceKey]) : 0,
-  })).filter(r => r.date && r.description);
+  // header:1 keeps the leading blurb rows so findHeader can skip them; raw:false
+  // renders dates with the sheet's own formatting instead of Excel serials.
+  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false, blankrows: true });
+  return rowsFromMatrix(matrix);
 }
 
 function parseCSV(text) {
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) return [];
-  // Use proper quoted CSV splitting
-  const headers = splitCSVLine(lines[0]).map(h => h.toLowerCase().replace(/['"]/g, "").trim());
-
-  // Most-specific first to avoid false matches
-  const dateIdx    = findColIdx(headers, "value dt", "txn date", "transaction date", "date");
-  const descIdx    = findColIdx(headers, "narration", "description", "particulars", "remarks", "details");
-  const debitIdx   = findColIdx(headers, "withdrawal amt", "withdrawal", "debit amt", "debit");  // Withdrawal = OUT = debit
-  const creditIdx  = findColIdx(headers, "deposit amt", "deposit", "credit amt", "credit");       // Deposit = IN = credit
-  const balanceIdx = findColIdx(headers, "closing balance", "balance");
-
-  return lines.slice(1).map(line => {
-    const cols = splitCSVLine(line);
-    const get = i => i >= 0 ? (cols[i] || "").replace(/['"]/g, "").trim() : "";
-    return {
-      date:        get(dateIdx),
-      description: get(descIdx),
-      debit:       parseAmt(get(debitIdx)),   // Withdrawal Amt → debit (money OUT)
-      credit:      parseAmt(get(creditIdx)),  // Deposit Amt → credit (money IN)
-      balance:     parseAmt(get(balanceIdx)),
-    };
-  }).filter(r => r.date && r.description);
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
+  return rowsFromMatrix(lines.map(splitCSVLine));
 }
 
 export default function BankStatement() {
@@ -142,9 +173,13 @@ export default function BankStatement() {
       let parsed;
       if (isExcel) {
         const wb = XLSX.read(ev.target.result, { type: "array", cellDates: true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        parsed = rowsFromSheet(ws);
-        if (!parsed.length) { toast.error("Could not read Excel sheet. Check column headers."); return; }
+        // Some bank exports put the statement on a later sheet — take the first one that parses
+        parsed = [];
+        for (const name of wb.SheetNames) {
+          const got = rowsFromSheet(wb.Sheets[name]);
+          if (got.length) { parsed = got; break; }
+        }
+        if (!parsed.length) { toast.error("Could not find a statement table in this file — we look for a row headed Date / Narration / Withdrawal / Deposit."); return; }
       } else {
         parsed = parseCSV(ev.target.result);
         if (!parsed.length) { toast.error("Could not parse CSV. Check column headers."); return; }
@@ -339,7 +374,7 @@ export default function BankStatement() {
       <Card className="p-4 bg-blue-50 border-blue-100">
         <p className="text-xs text-blue-700 font-medium mb-1">Supported formats: CSV and Excel (.xlsx / .xls)</p>
         <code className="text-xs text-blue-600">Date, Description, Debit, Credit, Balance</code>
-        <p className="text-xs text-blue-500 mt-1">Re-uploading the full year replaces what is on screen for this account — older files stay under Upload Versions. Column names are flexible — "Narration", "Withdrawal", "Deposit" etc. are also recognised. For Excel, data must be on the first sheet.</p>
+        <p className="text-xs text-blue-500 mt-1">Re-uploading the full year replaces what is on screen for this account — older files stay under Upload Versions. Upload the bank's file as-is — the account header, address and summary lines above the table are skipped automatically, and dd/mm/yy dates are understood. Column names are flexible: "Narration", "Withdrawal Amt.", "Deposit Amt.", "Closing Balance" etc. are all recognised.</p>
       </Card>
       )}
 
