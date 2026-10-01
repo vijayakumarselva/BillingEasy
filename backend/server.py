@@ -4208,6 +4208,10 @@ class BankStatementUpload(BaseModel):
     bank_account_id: str
     rows: List[BankStatementRow]
     filename: str = ""
+    keep_previous: bool = False   # default: this upload replaces the account's current view
+
+
+ACTIVE_ROWS = {"superseded": {"$ne": True}}
 
 @api.get("/bank-statement/batches")
 async def list_statement_batches(bank_account_id: str = Query(None), ctx=Depends(get_org_ctx)):
@@ -4227,6 +4231,7 @@ async def list_statement_batches(bank_account_id: str = Query(None), ctx=Depends
         matched_live = await db.bank_statement_rows.count_documents({**base_row_q, "batch_id": bid, "matched": True})
         b["row_count"] = total
         b["matched_count"] = matched_live
+        b["active"] = not b.get("superseded")
 
     # Also check for "legacy" rows that have no batch_id (uploaded before batch tracking)
     legacy_q = {**base_row_q, "batch_id": {"$exists": False}}
@@ -4247,6 +4252,24 @@ async def list_statement_batches(bank_account_id: str = Query(None), ctx=Depends
             "is_legacy": True,
         })
     return batches
+
+@api.post("/bank-statement/batch/{batch_id}/activate")
+async def activate_statement_batch(batch_id: str, ctx=Depends(get_org_ctx)):
+    """Put an earlier upload back on screen (and replace whatever is showing now)."""
+    batch = await db.bank_statement_uploads.find_one(org_filter(ctx, {"id": batch_id}), {"_id": 0})
+    if not batch:
+        raise HTTPException(404, "Upload not found")
+    acc = batch.get("bank_account_id")
+    await db.bank_statement_uploads.update_many(org_filter(ctx, {"bank_account_id": acc}),
+                                                {"$set": {"superseded": True, "superseded_at": now_iso()}})
+    await db.bank_statement_rows.update_many(org_filter(ctx, {"bank_account_id": acc}),
+                                             {"$set": {"superseded": True}})
+    await db.bank_statement_uploads.update_one(org_filter(ctx, {"id": batch_id}),
+                                               {"$set": {"superseded": False}, "$unset": {"superseded_by": ""}})
+    res = await db.bank_statement_rows.update_many(org_filter(ctx, {"batch_id": batch_id}),
+                                                   {"$set": {"superseded": False}, "$unset": {"superseded_by": ""}})
+    return {"ok": True, "active_batch": batch_id, "rows": res.modified_count}
+
 
 @api.get("/bank-statement/batch/{batch_id}/rows")
 async def get_batch_rows(batch_id: str, ctx=Depends(get_org_ctx)):
@@ -4274,9 +4297,12 @@ async def analyze_bank_statement(bank_account_id: str = Query(None), batch_id: s
     from collections import defaultdict
 
     q = org_filter(ctx)
-    if bank_account_id: q["bank_account_id"] = bank_account_id
-    if batch_id: q["batch_id"] = batch_id
-    rows = await db.bank_statement_rows.find(q, {"_id": 0}).to_list(5000)
+    if bank_account_id and bank_account_id != "all": q["bank_account_id"] = bank_account_id
+    if batch_id:
+        q["batch_id"] = batch_id
+    else:
+        q.update(ACTIVE_ROWS)
+    rows = await db.bank_statement_rows.find(q, {"_id": 0}).to_list(20000)
     if not rows:
         return {"vendors": [], "categories": [], "monthly": [], "insights": "", "total_in": 0, "total_out": 0}
 
@@ -4368,6 +4394,18 @@ async def upload_bank_statement(body: BankStatementUpload, ctx=Depends(get_org_c
     """Accept parsed bank statement rows and auto-match against invoices/purchases."""
     batch_id = str(uuid.uuid4())
     results = []
+    # A re-upload of the same (fuller) statement replaces what is on screen; older
+    # versions stay in the list for download and can be made active again.
+    prev_versions = await db.bank_statement_uploads.count_documents(
+        org_filter(ctx, {"bank_account_id": body.bank_account_id}))
+    if not body.keep_previous:
+        await db.bank_statement_uploads.update_many(
+            org_filter(ctx, {"bank_account_id": body.bank_account_id, "superseded": {"$ne": True}}),
+            {"$set": {"superseded": True, "superseded_at": now_iso(), "superseded_by": batch_id}})
+        await db.bank_statement_rows.update_many(
+            org_filter(ctx, {"bank_account_id": body.bank_account_id, "superseded": {"$ne": True},
+                             "batch_id": {"$exists": True}}),
+            {"$set": {"superseded": True, "superseded_by": batch_id}})
     for row in body.rows:
         entry = {
             "id": str(uuid.uuid4()),
@@ -4396,20 +4434,64 @@ async def upload_bank_statement(body: BankStatementUpload, ctx=Depends(get_org_c
         "id": batch_id, "org_id": ctx["org_id"],
         "bank_account_id": body.bank_account_id,
         "filename": body.filename or "upload",
+        "version": prev_versions + 1, "superseded": False, "replaced_previous": not body.keep_previous,
         "row_count": len(results), "matched_count": matched,
         "date_from": dates[0] if dates else "", "date_to": dates[-1] if dates else "",
         "uploaded_at": now_iso(),
     }
     await db.bank_statement_uploads.insert_one(batch_doc)
-    return {"uploaded": len(results), "matched": matched, "rows": results, "batch_id": batch_id}
+    return {"uploaded": len(results), "matched": matched, "rows": results, "batch_id": batch_id,
+            "version": batch_doc["version"], "replaced_previous": batch_doc["replaced_previous"]}
 
 @api.get("/bank-statement")
-async def get_bank_statement(bank_account_id: str = Query(None), ctx=Depends(get_org_ctx)):
+async def get_bank_statement(bank_account_id: str = Query(None), include_superseded: bool = False,
+                             ctx=Depends(get_org_ctx)):
+    """Rows for one account, or for every account when no id is given.
+    Replaced uploads are hidden unless you ask for them."""
     q = org_filter(ctx)
-    if bank_account_id:
+    if bank_account_id and bank_account_id != "all":
         q["bank_account_id"] = bank_account_id
-    rows = await db.bank_statement_rows.find(q, {"_id": 0}).sort("date", -1).to_list(10000)
+    if not include_superseded:
+        q.update(ACTIVE_ROWS)
+    rows = await db.bank_statement_rows.find(q, {"_id": 0}).sort("date", -1).to_list(20000)
+    names = {a["id"]: f"{a.get('bank_name','')} – {str(a.get('account_no',''))[-4:]}"
+             async for a in db.bank_accounts.find(org_filter(ctx), {"_id": 0, "id": 1, "bank_name": 1, "account_no": 1})}
+    for r in rows:
+        r["bank_account_name"] = names.get(r.get("bank_account_id"), r.get("bank_account_name", ""))
     return rows
+
+
+@api.get("/bank-statement/summary")
+async def bank_statement_summary(ctx=Depends(get_org_ctx)):
+    """One line per bank account plus a combined total — the multi-account view."""
+    accounts = await db.bank_accounts.find(org_filter(ctx), {"_id": 0}).to_list(50)
+    out, tot_in, tot_out, tot_rows, tot_matched = [], 0.0, 0.0, 0, 0
+    for a in accounts:
+        q = org_filter(ctx, {"bank_account_id": a["id"], **ACTIVE_ROWS})
+        rows = await db.bank_statement_rows.find(q, {"_id": 0, "credit": 1, "debit": 1, "date": 1,
+                                                     "matched": 1, "balance": 1}).to_list(20000)
+        if not rows:
+            continue
+        dates = sorted(r["date"] for r in rows if r.get("date"))
+        cin = round(sum(r.get("credit", 0) for r in rows), 2)
+        cout = round(sum(r.get("debit", 0) for r in rows), 2)
+        matched = sum(1 for r in rows if r.get("matched"))
+        last = max(rows, key=lambda r: (r.get("date") or ""))
+        latest_upload = await db.bank_statement_uploads.find_one(
+            org_filter(ctx, {"bank_account_id": a["id"], "superseded": {"$ne": True}}),
+            {"_id": 0, "filename": 1, "uploaded_at": 1, "version": 1}, sort=[("uploaded_at", -1)])
+        out.append({"bank_account_id": a["id"],
+                    "name": f"{a.get('bank_name','')} – {str(a.get('account_no',''))[-4:]}",
+                    "account_type": a.get("account_type", ""), "rows": len(rows), "matched": matched,
+                    "unmatched": len(rows) - matched, "total_in": cin, "total_out": cout,
+                    "net": round(cin - cout, 2), "closing_balance": last.get("balance", 0),
+                    "date_from": dates[0] if dates else "", "date_to": dates[-1] if dates else "",
+                    "latest_upload": latest_upload})
+        tot_in += cin; tot_out += cout; tot_rows += len(rows); tot_matched += matched
+    return {"accounts": out,
+            "combined": {"accounts": len(out), "rows": tot_rows, "matched": tot_matched,
+                         "unmatched": tot_rows - tot_matched, "total_in": round(tot_in, 2),
+                         "total_out": round(tot_out, 2), "net": round(tot_in - tot_out, 2)}}
 
 @api.patch("/bank-statement/{row_id}/match")
 async def manual_match(row_id: str, body: dict, ctx=Depends(get_org_ctx)):

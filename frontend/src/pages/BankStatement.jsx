@@ -96,19 +96,34 @@ export default function BankStatement() {
   const [loading, setLoading]   = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef();
+  const [summary, setSummary] = useState(null);
+  const allAccounts = bankId === "all";
 
   useEffect(() => {
     api.get("/bank-accounts").then(r => { setBanks(r.data); if (r.data[0]) setBankId(r.data[0].id); });
   }, []);
 
   useEffect(() => {
-    if (bankId) { loadRows(); loadBatches(); }
+    if (bankId) { loadRows(); loadBatches(); loadSummary(); }
     // eslint-disable-next-line
   }, [bankId]);
 
   const loadBatches = async () => {
+    if (allAccounts) { setBatches([]); return; }
     const { data } = await api.get("/bank-statement/batches", { params: { bank_account_id: bankId } });
     setBatches(data);
+  };
+
+  const loadSummary = async () => {
+    try { const { data } = await api.get("/bank-statement/summary"); setSummary(data); } catch { setSummary(null); }
+  };
+
+  const activateVersion = async (b) => {
+    try {
+      await api.post(`/bank-statement/batch/${b.id}/activate`);
+      toast.success(`Showing v${b.version || ""} — ${b.filename}`);
+      loadRows(); loadBatches(); loadSummary();
+    } catch (e) { toast.error(e?.response?.data?.detail || "Could not switch version"); }
   };
 
   const loadRows = async () => {
@@ -147,7 +162,12 @@ export default function BankStatement() {
     setUploading(true);
     try {
       const { data } = await api.post("/bank-statement/upload", { bank_account_id: bankId, rows: preview, filename });
-      toast.success(`Uploaded ${data.uploaded} rows — ${data.matched} auto-matched!`);
+      toast.success(
+        `v${data.version}: ${data.uploaded} rows — ${data.matched} auto-matched`,
+        { description: data.replaced_previous
+            ? "This is now the view for this account; earlier uploads are kept under Upload Versions."
+            : "Added alongside the earlier uploads." });
+      loadSummary();
       setPreview([]); setFilename("");
       fileRef.current.value = "";
       loadRows(); loadBatches();
@@ -215,10 +235,9 @@ export default function BankStatement() {
 
   const [showHistory, setShowHistory] = useState(false);
 
-  // Use batch totals (live-counted by backend) for summary so partial row loads don't skew the numbers
-  const totalRowCount = batches.reduce((s, b) => s + (b.row_count || 0), 0);
-  const matched   = batches.reduce((s, b) => s + (b.matched_count || 0), 0);
-  const unmatched = totalRowCount - matched;
+  // Counted from what is actually on screen — the active upload(s), one account or all
+  const matched   = rows.filter(r => r.matched).length;
+  const unmatched = rows.length - matched;
   const totalIn   = rows.reduce((s, r) => s + r.credit, 0);
   const totalOut  = rows.reduce((s, r) => s + r.debit, 0);
 
@@ -267,6 +286,7 @@ export default function BankStatement() {
             <SelectValue placeholder="Select bank account" />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value="all">All accounts</SelectItem>
             {banks.map(b => (
               <SelectItem key={b.id} value={b.id}>{b.bank_name} – {b.account_no || b.account_number || "—"}</SelectItem>
             ))}
@@ -303,21 +323,25 @@ export default function BankStatement() {
         </div>
       )}
 
-      <DropZone
-        accept=".csv,.xlsx,.xls,.ods"
-        onFile={(f) => onFile({ target: { files: [f] } })}
-        label="Drag & drop your bank statement here"
-        hint="CSV or Excel (.xlsx / .xls) · or use the Upload button above"
-        icon={FileText}
-        compact
-      />
+      {!allAccounts && (
+        <DropZone
+          accept=".csv,.xlsx,.xls,.ods"
+          onFile={(f) => onFile({ target: { files: [f] } })}
+          label="Drag & drop your bank statement here"
+          hint="CSV or Excel (.xlsx / .xls) · or use the Upload button above"
+          icon={FileText}
+          compact
+        />
+      )}
 
       {/* Format hint */}
+      {!allAccounts && (
       <Card className="p-4 bg-blue-50 border-blue-100">
         <p className="text-xs text-blue-700 font-medium mb-1">Supported formats: CSV and Excel (.xlsx / .xls)</p>
         <code className="text-xs text-blue-600">Date, Description, Debit, Credit, Balance</code>
-        <p className="text-xs text-blue-500 mt-1">Column names are flexible — "Narration", "Withdrawal", "Deposit" etc. are also recognised. For Excel, data must be on the first sheet.</p>
+        <p className="text-xs text-blue-500 mt-1">Re-uploading the full year replaces what is on screen for this account — older files stay under Upload Versions. Column names are flexible — "Narration", "Withdrawal", "Deposit" etc. are also recognised. For Excel, data must be on the first sheet.</p>
       </Card>
+      )}
 
       {/* Preview before upload */}
       {preview.length > 0 && (
@@ -351,12 +375,58 @@ export default function BankStatement() {
         </Card>
       )}
 
+      {/* Per-account view when looking at everything together */}
+      {allAccounts && summary?.accounts?.length > 0 && (
+        <Card className="overflow-hidden">
+          <div className="px-4 py-3 border-b flex items-center justify-between">
+            <span className="text-sm font-semibold">🏦 All bank accounts</span>
+            <span className="text-xs text-muted-foreground">
+              {summary.combined.accounts} accounts · {summary.combined.rows} transactions
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="app-table">
+              <thead><tr>
+                <th>Account</th><th>Period</th><th className="text-right">Money in</th>
+                <th className="text-right">Money out</th><th className="text-right">Net</th>
+                <th className="text-right">Closing balance</th><th className="text-right">Unmatched</th>
+              </tr></thead>
+              <tbody>
+                {summary.accounts.map(a => (
+                  <tr key={a.bank_account_id} className="cursor-pointer" onClick={() => setBankId(a.bank_account_id)}>
+                    <td className="font-medium">{a.name}
+                      {a.latest_upload?.filename && (
+                        <div className="text-[11px] text-muted-foreground">
+                          {a.latest_upload.filename}{a.latest_upload.version ? ` · v${a.latest_upload.version}` : ""}
+                        </div>)}
+                    </td>
+                    <td className="text-xs text-muted-foreground whitespace-nowrap">{fmtDate(a.date_from)} → {fmtDate(a.date_to)}</td>
+                    <td className="num text-green-600">{inr(a.total_in)}</td>
+                    <td className="num text-red-600">{inr(a.total_out)}</td>
+                    <td className={`num font-semibold ${a.net >= 0 ? "text-emerald-700" : "text-rose-600"}`}>{inr(a.net)}</td>
+                    <td className="num">{inr(a.closing_balance)}</td>
+                    <td className="num text-amber-600">{a.unmatched}</td>
+                  </tr>
+                ))}
+                <tr className="bg-muted/40 font-semibold">
+                  <td>Combined</td><td />
+                  <td className="num text-green-700">{inr(summary.combined.total_in)}</td>
+                  <td className="num text-red-700">{inr(summary.combined.total_out)}</td>
+                  <td className={`num ${summary.combined.net >= 0 ? "text-emerald-700" : "text-rose-600"}`}>{inr(summary.combined.net)}</td>
+                  <td /><td className="num text-amber-700">{summary.combined.unmatched}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
       {/* Summary stats */}
       {rows.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
-            { label: "Total In",    value: inr(totalIn),   color: "text-green-600" },
-            { label: "Total Out",   value: inr(totalOut),  color: "text-red-600" },
+            { label: allAccounts ? "Total In (all accounts)" : "Total In",  value: inr(totalIn),   color: "text-green-600" },
+            { label: allAccounts ? "Total Out (all accounts)" : "Total Out", value: inr(totalOut),  color: "text-red-600" },
             { label: "Matched",     value: matched,         color: "text-blue-600" },
             { label: "Unmatched",   value: unmatched,       color: "text-amber-600" },
           ].map(s => (
@@ -368,8 +438,8 @@ export default function BankStatement() {
         </div>
       )}
 
-      {/* Upload Versions — always visible when bank selected */}
-      {bankId && (
+      {/* Upload Versions — per account (hidden in the combined view) */}
+      {bankId && !allAccounts && (
         <Card className="p-0 overflow-hidden">
           <div className="px-4 py-3 border-b flex items-center justify-between">
             <span className="text-sm font-semibold text-gray-700">📂 Upload Versions</span>
@@ -398,7 +468,14 @@ export default function BankStatement() {
                       <div className="font-medium text-sm truncate max-w-[180px]" title={b.filename}>
                         {b.is_legacy ? "⚠ " : ""}{b.filename}
                       </div>
-                      {!b.is_legacy && <div className="text-[10px] text-muted-foreground">v{batches.length - idx}</div>}
+                      {!b.is_legacy && (
+                        <div className="text-[10px] text-muted-foreground flex items-center gap-1.5">
+                          v{b.version || (batches.length - idx)}
+                          {b.active
+                            ? <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">On screen</span>
+                            : <span className="px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">Replaced</span>}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-2.5 text-muted-foreground text-sm">
                       {b.uploaded_at ? fmtDate(b.uploaded_at.slice(0,10)) : <span className="text-amber-600 text-xs">Before tracking</span>}
@@ -413,6 +490,12 @@ export default function BankStatement() {
                       </span>
                     </td>
                     <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                      {!b.is_legacy && !b.active && (
+                        <Button size="sm" variant="outline" className="h-7 text-xs mr-1.5"
+                          onClick={() => activateVersion(b)} title="Show this version instead">
+                          ↩ Use this
+                        </Button>
+                      )}
                       <Button size="sm" variant="outline" className="h-7 text-xs mr-1.5" onClick={() => downloadBatch(b)}>
                         ⬇ Download
                       </Button>
@@ -611,10 +694,12 @@ export default function BankStatement() {
               <Button size="sm" variant="outline" className="h-7 text-xs" onClick={downloadAllRows}>
                 ⬇ Download All
               </Button>
-              <Button size="sm" variant="ghost" className="h-7 text-xs text-rose-500 hover:text-rose-700 hover:bg-rose-50"
-                onClick={clearAllRows}>
-                🗑 Clear All
-              </Button>
+              {!allAccounts && (
+                <Button size="sm" variant="ghost" className="h-7 text-xs text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                  onClick={clearAllRows}>
+                  🗑 Clear All
+                </Button>
+              )}
             </div>
           )}
         </div>
@@ -631,6 +716,7 @@ export default function BankStatement() {
               <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                 <tr>
                   <th className="px-4 py-2 text-left">Date</th>
+                  {allAccounts && <th className="px-4 py-2 text-left">Account</th>}
                   <th className="px-4 py-2 text-left">Description</th>
                   <th className="px-4 py-2 text-right">Debit</th>
                   <th className="px-4 py-2 text-right">Credit</th>
@@ -642,6 +728,7 @@ export default function BankStatement() {
                 {rows.map(r => (
                   <tr key={r.id} className="border-t hover:bg-gray-50">
                     <td className="px-4 py-2 text-gray-500 whitespace-nowrap">{fmtDate(r.date)}</td>
+                    {allAccounts && <td className="px-4 py-2 text-xs text-muted-foreground whitespace-nowrap">{r.bank_account_name || "—"}</td>}
                     <td className="px-4 py-2 text-gray-700 max-w-xs truncate">{r.description}</td>
                     <td className="px-4 py-2 text-right text-red-600 font-medium">{r.debit > 0 ? inr(r.debit) : "—"}</td>
                     <td className="px-4 py-2 text-right text-green-600 font-medium">{r.credit > 0 ? inr(r.credit) : "—"}</td>
