@@ -19,12 +19,82 @@ Usage:  python migrate_pricing.py [--dry-run]
 import asyncio
 import os
 import sys
+from typing import Optional
 from datetime import timedelta
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
 import pricing as P
 import subscriptions as S
+
+
+async def migrate_account(db, account_id: str, *, dry_run: bool = False) -> Optional[dict]:
+    """Create the subscription for one login from its existing organisations.
+
+    Returns None when the account already has one (so this is safe to call on
+    every request as a lazy backfill).
+    """
+    if await db.subscriptions.find_one({"account_id": account_id}, {"_id": 0}):
+        return None
+    orgs = await db.organizations.find(
+        {"owner_user_id": account_id, "deleted": {"$ne": True}}, {"_id": 0}
+    ).sort("created_at", 1).to_list(500)
+    if not orgs:
+        return None
+
+    # The most generous state across the owner's businesses wins.
+    paid = [o for o in orgs if o.get("subscription_status") == "active"
+            and S.parse_dt(o.get("current_period_end"))
+            and S.parse_dt(o.get("current_period_end")) > S.now_dt()]
+    trialing = [o for o in orgs if o.get("subscription_status") == "trialing"]
+
+    sub = S.blank_subscription(account_id)
+    kind = "free"
+    if paid:
+        latest = max(paid, key=lambda o: S.parse_dt(o["current_period_end"]))
+        sub.update({
+            "plan_code": "PRO_YEARLY", "status": "active",
+            "current_period_start": latest.get("created_at"),
+            "current_period_end": latest["current_period_end"],
+            "migrated_from": latest.get("plan_code"),
+            "migration_note": "Kept on Pro at no charge until the old period ends",
+        })
+        kind = "paid_kept"
+    elif trialing:
+        earliest = min(trialing, key=lambda o: str(o.get("created_at") or ""))
+        started = S.parse_dt(earliest.get("created_at")) or S.now_dt()
+        trial_end = started + timedelta(days=P.TRIAL_DAYS)
+        if trial_end > S.now_dt():
+            sub.update({"plan_code": P.plan_code(P.TRIAL_TIER, "year"),
+                        "status": "trialing", "trial_ends_at": trial_end.isoformat()})
+            kind = "trial"
+
+    if dry_run:
+        return {"account_id": account_id, "kind": kind, "plan_code": sub["plan_code"]}
+
+    await db.subscriptions.insert_one(dict(sub))
+
+    # Carry paid-for wallet credits across as never-expiring pack credits.
+    org_ids = [o["id"] for o in orgs]
+    carried = 0
+    async for w in db.wallets.find({"org_id": {"$in": org_ids}}, {"_id": 0}):
+        carried += max(0, int(w.get("balance") or 0))
+    if carried:
+        await S.grant_credits(db, account_id, carried, source="pack",
+                              reason="Carried over from your old credit wallet")
+    else:
+        await S.grant_credits(db, account_id, P.PLAN_TIERS["FREE"]["signup_credits"],
+                              source="pack", reason="Signup credits")
+
+    if sub["status"] in ("active", "trialing"):
+        plan = P.get_plan(sub["plan_code"])
+        if plan.get("credits_per_period"):
+            await S.reset_plan_credits(db, account_id, plan["credits_per_period"],
+                                       S.period_key(sub),
+                                       reason=f"{plan['name']} plan credits")
+    await S.sync_readonly_flags(db, account_id)
+    return {"account_id": account_id, "kind": kind, "plan_code": sub["plan_code"],
+            "carried_credits": carried}
 
 
 async def migrate(db, dry_run: bool = False) -> dict:
@@ -35,81 +105,20 @@ async def migrate(db, dry_run: bool = False) -> dict:
     for account_id in owner_ids:
         if not account_id:
             continue
-        existing = await db.subscriptions.find_one({"account_id": account_id}, {"_id": 0})
-        if existing:
+        if await db.subscriptions.find_one({"account_id": account_id}, {"_id": 0}):
             stats["skipped"] += 1
             continue
-
-        orgs = await db.organizations.find(
-            {"owner_user_id": account_id, "deleted": {"$ne": True}}, {"_id": 0}
-        ).sort("created_at", 1).to_list(500)
-        if not orgs:
+        res = await migrate_account(db, account_id, dry_run=dry_run)
+        if not res:
             continue
         stats["accounts"] += 1
-
-        # The most generous state across the owner's businesses wins.
-        paid = [o for o in orgs if o.get("subscription_status") == "active"
-                and S.parse_dt(o.get("current_period_end"))
-                and S.parse_dt(o.get("current_period_end")) > S.now_dt()]
-        trialing = [o for o in orgs if o.get("subscription_status") == "trialing"]
-
-        sub = S.blank_subscription(account_id)
-        if paid:
-            latest = max(paid, key=lambda o: S.parse_dt(o["current_period_end"]))
-            sub.update({
-                "plan_code": "PRO_YEARLY",
-                "status": "active",
-                "current_period_start": latest.get("created_at"),
-                "current_period_end": latest["current_period_end"],
-                "migrated_from": latest.get("plan_code"),
-                "migration_note": "Kept on Pro at no charge until the old period ends",
-            })
-            stats["paid_kept"] += 1
-        elif trialing:
-            earliest = min(trialing, key=lambda o: str(o.get("created_at") or ""))
-            started = S.parse_dt(earliest.get("created_at")) or S.now_dt()
-            trial_end = started + timedelta(days=P.TRIAL_DAYS)
-            if trial_end > S.now_dt():
-                sub.update({
-                    "plan_code": P.plan_code(P.TRIAL_TIER, "year"),
-                    "status": "trialing",
-                    "trial_ends_at": trial_end.isoformat(),
-                })
-                stats["trials"] += 1
+        stats[{"paid_kept": "paid_kept", "trial": "trials", "free": "free"}[res["kind"]]] += 1
+        if not dry_run:
+            carried = res.get("carried_credits") or 0
+            if carried:
+                stats["pack_credits_carried"] += carried
             else:
-                stats["free"] += 1
-        else:
-            stats["free"] += 1
-
-        if dry_run:
-            continue
-
-        await db.subscriptions.insert_one(dict(sub))
-
-        # Carry paid-for wallet credits across as never-expiring pack credits.
-        org_ids = [o["id"] for o in orgs]
-        carried = 0
-        async for w in db.wallets.find({"org_id": {"$in": org_ids}}, {"_id": 0}):
-            carried += max(0, int(w.get("balance") or 0))
-        if carried:
-            await S.grant_credits(db, account_id, carried, source="pack",
-                                  reason="Carried over from your old credit wallet")
-            stats["pack_credits_carried"] += carried
-
-        # Signup credits for accounts that never bought any.
-        if not carried:
-            free_credits = P.PLAN_TIERS["FREE"]["signup_credits"]
-            await S.grant_credits(db, account_id, free_credits, source="pack",
-                                  reason="Signup credits")
-            stats["signup_credits"] += free_credits
-
-        if sub["status"] in ("active", "trialing"):
-            plan = P.get_plan(sub["plan_code"])
-            if plan.get("credits_per_period"):
-                await S.reset_plan_credits(db, account_id, plan["credits_per_period"],
-                                           S.period_key(sub),
-                                           reason=f"{plan['name']} plan credits")
-        await S.sync_readonly_flags(db, account_id)
+                stats["signup_credits"] += P.PLAN_TIERS["FREE"]["signup_credits"]
 
     return stats
 

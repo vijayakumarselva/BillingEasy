@@ -282,6 +282,35 @@ def test_staff_and_credits():
           all(r["source"] in ("plan", "pack") for r in led["ledger"]))
 
 
+def test_legacy_account_keeps_access():
+    """An account created before per-account billing must not silently land on
+    Free the first time a plan gate runs."""
+    print("\nlegacy accounts")
+    async def seed_legacy():
+        await mdb.users.insert_one({"id": "legacy1", "email": "legacy@test.in", "name": "Old Customer"})
+        await mdb.organizations.insert_one({
+            "id": "legacyorg", "name": "Legacy Traders", "owner_user_id": "legacy1",
+            "state_code": "33", "plan_code": "GROWTH_9999", "subscription_status": "active",
+            "current_period_end": (S.now_dt() + __import__("datetime").timedelta(days=120)).isoformat(),
+            "created_at": "2026-01-01T00:00:00+00:00"})
+        await mdb.memberships.insert_one({"id": "lm", "user_id": "legacy1",
+                                          "org_id": "legacyorg", "role": "owner"})
+        await mdb.wallets.insert_one({"org_id": "legacyorg", "balance": 320})
+        await server.ensure_system_roles(mdb, "legacyorg")
+    asyncio.run(seed_legacy())
+
+    LEGACY = {"id": "legacy1", "email": "legacy@test.in", "name": "Old Customer"}
+    CURRENT["u"] = LEGACY
+    HL = {"X-Org-Id": "legacyorg"}
+    check("a legacy customer is not locked out of GSTR",
+          c.get("/api/gst/gstr1", headers=HL).status_code == 200)
+    d = c.get("/api/subscription", headers=HL).json()
+    check("they keep full access on Pro", d["plan"]["tier"] == "PRO")
+    check("their paid period is honoured", 119 <= d["days_left"] <= 121)
+    check("their paid-for credits carry over", d["credits"]["pack"] == 320)
+    CURRENT["u"] = OWNER
+
+
 def test_renewals():
     print("\nrenewal job")
     r = c.post("/api/super/billing/run-renewals")
@@ -302,6 +331,7 @@ def main():
     test_business_limit()
     test_super_admin()
     test_staff_and_credits()
+    test_legacy_account_keeps_access()
     test_renewals()
     failed = [n for n, ok in OK if not ok]
     print(f"\n{len(OK) - len(failed)}/{len(OK)} checks passed")

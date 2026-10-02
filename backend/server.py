@@ -280,16 +280,38 @@ async def account_id_for_ctx(ctx: dict) -> str:
     return await account_id_for_org(ctx["org_id"])
 
 
+async def ensure_subscription(account_id: str):
+    """Back-fill a login that predates per-account subscriptions.
+
+    Accounts created under the old per-organisation billing have no
+    subscriptions row. Reading one would silently hand them the Free plan and
+    its limits, so the first touch runs the same migration the script does:
+    anyone mid-period keeps full access, trials are preserved, paid-for wallet
+    credits carry over.
+    """
+    if await db.subscriptions.find_one({"account_id": account_id}, {"_id": 0, "id": 1}):
+        return
+    try:
+        from migrate_pricing import migrate_account
+        await migrate_account(db, account_id)
+    except Exception:
+        logger.exception("Could not back-fill the subscription for %s", account_id)
+
+
 async def plan_for_ctx(ctx: dict) -> dict:
     cat = await PRICING.load_catalogue(db)
-    return await SUBS.account_plan(db, await account_id_for_ctx(ctx), cat)
+    account_id = await account_id_for_ctx(ctx)
+    await ensure_subscription(account_id)
+    return await SUBS.account_plan(db, account_id, cat)
 
 
 def require_feature(feature: str):
     """Dependency: 402 FEATURE_NOT_IN_PLAN unless the owner's plan includes it."""
     async def checker(ctx=Depends(get_org_ctx)):
         cat = await PRICING.load_catalogue(db)
-        await SUBS.require_feature(db, await account_id_for_ctx(ctx), feature, cat)
+        account_id = await account_id_for_ctx(ctx)
+        await ensure_subscription(account_id)
+        await SUBS.require_feature(db, account_id, feature, cat)
         return ctx
     return checker
 
@@ -297,13 +319,17 @@ def require_feature(feature: str):
 async def guard_feature(ctx: dict, feature: str):
     """Same check, inline, for endpoints that gate only part of their work."""
     cat = await PRICING.load_catalogue(db)
-    return await SUBS.require_feature(db, await account_id_for_ctx(ctx), feature, cat)
+    account_id = await account_id_for_ctx(ctx)
+    await ensure_subscription(account_id)
+    return await SUBS.require_feature(db, account_id, feature, cat)
 
 
 async def guard_account_limit(ctx: dict, kind: str, override: Optional[dict] = None):
     cat = await PRICING.load_catalogue(db)
+    account_id = await account_id_for_ctx(ctx)
+    await ensure_subscription(account_id)
     return await SUBS.check_account_limit(
-        db, await account_id_for_ctx(ctx), kind, catalogue=cat, override=override)
+        db, account_id, kind, catalogue=cat, override=override)
 
 
 async def guard_writable(ctx: dict):
@@ -320,8 +346,10 @@ async def guard_writable(ctx: dict):
 
 async def spend_scan_credit(ctx: dict, ref_id: str = "", reason: str = "AI invoice scan"):
     """Take one credit before an AI scan. Refund with SUBS.refund_credit on failure."""
+    account_id = await account_id_for_ctx(ctx)
+    await ensure_subscription(account_id)
     return await SUBS.consume_credit(
-        db, await account_id_for_ctx(ctx), reason=reason,
+        db, account_id, reason=reason,
         org_id=ctx.get("org_id"), ref_id=ref_id)
 
 
@@ -2552,6 +2580,7 @@ async def my_subscription(ctx=Depends(get_org_ctx)):
     """Current plan, usage, credits and billing history for the active login."""
     cat = await PRICING.load_catalogue(db)
     account_id = await account_id_for_ctx(ctx)
+    await ensure_subscription(account_id)
     info = await SUBS.account_plan(db, account_id, cat)
     usage = await SUBS.account_usage(db, account_id)
     bal = await SUBS.get_balance(db, account_id)
@@ -3276,6 +3305,18 @@ async def super_revenue(user=Depends(get_current_user)):
         "founding_spots_left": await _founding_spots_left(cat),
         "top_referrers": top_referrers,
     }
+
+
+@api.post("/super/billing/migrate")
+async def super_run_migration(dry_run: bool = True, user=Depends(get_current_user)):
+    """Back-fill subscriptions for every login that predates per-account billing.
+
+    Accounts are also healed lazily on first use, so this is a convenience for
+    doing them all at once. Idempotent; defaults to a dry run.
+    """
+    _require_super(user)
+    from migrate_pricing import migrate as run_migration
+    return await run_migration(db, dry_run=dry_run)
 
 
 @api.post("/super/billing/run-renewals")
@@ -6101,6 +6142,7 @@ class BusinessCreateIn(BaseModel):
 async def business_cap_for(user_id: str) -> dict:
     """How many businesses this login may run: the plan's cap, raised (never
     lowered) by any per-account override the BillingsEasy super admin has set."""
+    await ensure_subscription(user_id)
     cat = await PRICING.load_catalogue(db)
     info = await SUBS.account_plan(db, user_id, cat)
     lim = await owner_business_limits(user_id)
