@@ -3383,6 +3383,14 @@ async def dine_live(token: str, since: int = 0):
     session = await db.dining_sessions.find_one(
         {"org_id": org_id, "table_id": table["id"],
          "status": {"$in": [DINING.SESSION_OPEN, DINING.SESSION_BILL_REQUESTED]}}, {"_id": 0})
+    if not session:
+        # Just settled: keep showing the thank-you and the bill number for a few
+        # minutes, rather than blanking back to the menu as they stand up.
+        cutoff = (now_dt() - timedelta(minutes=5)).isoformat()
+        session = await db.dining_sessions.find_one(
+            {"org_id": org_id, "table_id": table["id"],
+             "status": DINING.SESSION_SETTLED, "settled_at": {"$gt": cutoff}},
+            {"_id": 0}, sort=[("settled_at", -1)])
     events = [e for e in await DINING.events_since(db, org_id, since)
               if e.get("table_id") == table["id"]]
     return {

@@ -14,7 +14,7 @@ import {
   LayoutDashboard, Users, Package, FileText, ShoppingCart, Wallet,
   Receipt, BookOpen, Landmark, Settings, LogOut, Moon, Sun, Building2,
   FileBarChart, ChevronDown, Plus, Bot, Wrench, FileSpreadsheet, Coins, Zap,
-  UtensilsCrossed, Scan, SlidersHorizontal, Sparkles, Menu, X, ChevronRight,
+  UtensilsCrossed, ChefHat, Scan, SlidersHorizontal, Sparkles, Menu, X, ChevronRight,
   Home, Lock, ArrowLeftRight, Store, PackageCheck, Truck, BedDouble,
 } from "lucide-react";
 import { STATES } from "@/pages/Parties";
@@ -34,7 +34,9 @@ const ALL_NAV = [
   { to: "/pos",              label: "Retail POS",          icon: Scan,             tid: "nav-pos",           badge: "New", group: "Modules", modes: ["pos","b2c"] },
   { to: "/pos/admin",        label: "POS Settings",        icon: SlidersHorizontal,tid: "nav-pos-admin",                   group: "Modules", modes: ["pos"] },
   { to: "/stay",             label: "Stay & Bookings",     icon: BedDouble,        tid: "nav-stay",          badge: "New", group: "Modules", modes: ["stay"] },
-  { to: "/restaurant",       label: "Restaurant",          icon: UtensilsCrossed,  tid: "nav-restaurant",    badge: "New", group: "Modules", modes: ["restaurant"] },
+  { to: "/dining",           label: "Floor & QR dining",   icon: UtensilsCrossed,  tid: "nav-dining",        badge: "New", group: "Modules", modes: ["restaurant"] },
+  { to: "/kitchen",          label: "Kitchen display",     icon: ChefHat,          tid: "nav-kitchen",       group: "Modules", modes: ["restaurant"] },
+  { to: "/restaurant",       label: "Counter billing",     icon: Receipt,          tid: "nav-restaurant",    group: "Modules", modes: ["restaurant"] },
   { to: "/restaurant/admin", label: "Restaurant Settings", icon: SlidersHorizontal,tid: "nav-restaurant-admin",            group: "Modules", modes: ["restaurant"] },
   { to: "/bank-statement", label: "Bank Statement",  icon: FileSpreadsheet, tid: "nav-bank-statement", group: "Accounting", modes: ["b2b","b2c","stay"] },
   { to: "/gst",            label: "GST Returns",     icon: FileBarChart,    tid: "nav-gst",  shortcut: "Alt+G", group: "Accounting", modes: ["b2b","b2c","stay"] },

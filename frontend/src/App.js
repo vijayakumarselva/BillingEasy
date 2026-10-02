@@ -24,6 +24,9 @@ import TDS from "@/pages/TDS";
 import Settings from "@/pages/Settings";
 import MockCheckout from "@/pages/MockCheckout";
 import Pricing from "@/pages/Pricing";
+import DineIn from "@/pages/DineIn";
+import KitchenDisplay from "@/pages/KitchenDisplay";
+import DiningFloor from "@/pages/DiningFloor";
 import Billing from "@/pages/Billing";
 import UpgradeModal from "@/components/UpgradeModal";
 import ForgotPassword from "@/pages/ForgotPassword";
@@ -137,6 +140,7 @@ export default function App() {
             <Route path="/play/sv2026" element={<CouplesGame />} />{/* couples-game-v1 */}
             <Route path="/free/tools" element={<PublicTools />} />
             <Route path="/pricing" element={<Pricing />} />
+            <Route path="/dine/:token" element={<DineIn />} />
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/refund" element={<Refund />} />
@@ -179,6 +183,8 @@ export default function App() {
               <Route path="/pos/admin" element={<POSAdmin />} />
               <Route path="/stay" element={<Stay />} />
               <Route path="/restaurant" element={<Restaurant />} />
+              <Route path="/dining" element={<DiningFloor />} />
+              <Route path="/kitchen" element={<KitchenDisplay />} />
               <Route path="/restaurant/admin" element={<RestaurantAdmin />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
