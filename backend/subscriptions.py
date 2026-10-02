@@ -166,19 +166,56 @@ def effective_status(sub: Dict[str, Any], now: Optional[datetime] = None) -> Dic
     }
 
 
+async def get_override(db, account_id: str) -> Dict[str, Any]:
+    """A BillingsEasy-granted exception for one account.
+
+    Lets support unlock a single feature or raise one cap without moving the
+    customer onto a plan they are not paying for — a demo account, an apology,
+    a pilot. It only ever *adds*: it can never take away what the plan includes.
+    """
+    row = await db.account_overrides.find_one({"account_id": account_id}, {"_id": 0})
+    if not row:
+        return {}
+    until = parse_dt(row.get("expires_at"))
+    if until and now_dt() > until:
+        return {}                      # lapsed, and no longer applied
+    return row
+
+
 async def account_plan(db, account_id: str, catalogue: Optional[dict] = None) -> Dict[str, Any]:
     """Everything a request needs: live status, resolved limits and features."""
     sub = await get_subscription(db, account_id)
     state = effective_status(sub)
     plan = P.get_plan(state["plan_code"], catalogue)
     limits = dict(plan["limits"])
+    features = list(plan["features"])
     addons = state["addons"]
     # Add-ons raise the caps they were bought for (never on an unlimited cap).
     if limits.get("businesses", 0) != P.UNLIMITED:
         limits["businesses"] += int(addons.get("EXTRA_BUSINESS", 0))
     if limits.get("users", 0) != P.UNLIMITED:
         limits["users"] += int(addons.get("EXTRA_USER", 0))
-    return {**state, "limits": limits, "features": plan["features"], "plan": plan}
+
+    override = await get_override(db, account_id)
+    if override:
+        for f in override.get("features") or []:
+            if f not in features:
+                features.append(f)
+        for key, value in (override.get("limits") or {}).items():
+            if value is None:
+                continue
+            current = limits.get(key, 0)
+            # An override can only be more generous, never less.
+            if int(value) == P.UNLIMITED or current == P.UNLIMITED:
+                limits[key] = P.UNLIMITED if int(value) == P.UNLIMITED else current
+            else:
+                limits[key] = max(int(current), int(value))
+
+    return {**state, "limits": limits, "features": features, "plan": plan,
+            "override": {"features": override.get("features") or [],
+                         "limits": override.get("limits") or {},
+                         "reason": override.get("reason", ""),
+                         "expires_at": override.get("expires_at")} if override else None}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

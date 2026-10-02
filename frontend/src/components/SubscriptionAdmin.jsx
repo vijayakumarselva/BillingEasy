@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { fmtDate } from "@/lib/format";
-import { Search, Gift, Ticket, TrendingUp, Loader2 } from "lucide-react";
+import { Search, Gift, Ticket, TrendingUp, Loader2, Unlock, X } from "lucide-react";
 
 const inr = (paise) => "₹" + Math.round((paise || 0) / 100).toLocaleString("en-IN");
 
@@ -86,6 +86,24 @@ export function SubscriptionList() {
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
   const [grant, setGrant] = useState(null);
+  const [override, setOverride] = useState(null);
+  // The plan list comes from the live catalogue, so nobody has to remember codes.
+  const [plans, setPlans] = useState([]);
+  useEffect(() => {
+    api.get("/pricing")
+      .then((r) => {
+        const out = [];
+        for (const t of r.data.tiers || []) {
+          if (t.yearly_code && t.tier !== "FREE")
+            out.push({ code: t.yearly_code, label: `${t.name} — yearly (${t.yearly_label})` });
+          if (t.monthly_code)
+            out.push({ code: t.monthly_code, label: `${t.name} — monthly (${t.monthly_label})` });
+        }
+        out.push({ code: "FREE", label: "Free" });
+        setPlans(out);
+      })
+      .catch(() => setPlans([]));
+  }, []);
 
   const load = async (query = "") => {
     setBusy(true);
@@ -112,6 +130,53 @@ export function SubscriptionList() {
     } catch (e) {
       toast.error(e.response?.data?.detail || "Could not apply that");
     }
+  };
+
+  // Unlock one feature or raise one cap for this account, free, without moving
+  // them onto a plan they are not paying for.
+  const openOverride = async (row) => {
+    const { data } = await api.get(`/super/accounts/${row.account_id}/override`);
+    setOverride({
+      account_id: row.account_id,
+      name: row.name || row.email,
+      plan: data.plan,
+      all: data.all_features,
+      features: data.override?.features || [],
+      limits: data.override?.limits || {},
+      reason: data.override?.reason || "",
+      expires_at: (data.override?.expires_at || "").slice(0, 10),
+      existing: !!data.override,
+    });
+  };
+
+  const saveOverride = async () => {
+    if (!override.reason || override.reason.length < 3)
+      return toast.error("Say why — it goes in the audit log");
+    setBusy(true);
+    try {
+      await api.put(`/super/accounts/${override.account_id}/override`, {
+        features: override.features,
+        limits: Object.fromEntries(
+          Object.entries(override.limits).filter(([, v]) => v !== "" && v != null)
+            .map(([k, v]) => [k, Number(v)])),
+        reason: override.reason,
+        expires_at: override.expires_at ? `${override.expires_at}T23:59:59+00:00` : null,
+      });
+      toast.success(`Unlocked for ${override.name}`);
+      setOverride(null);
+      load(q);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not apply that");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearOverride = async () => {
+    await api.delete(`/super/accounts/${override.account_id}/override`);
+    toast.success("Override removed — back to their plan");
+    setOverride(null);
+    load(q);
   };
 
   return (
@@ -173,11 +238,15 @@ export function SubscriptionList() {
                 <td className="px-4 py-2 text-right">{r.usage.users}</td>
                 <td className="px-4 py-2 text-right">{r.credits.toLocaleString("en-IN")}</td>
                 <td className="px-4 py-2 text-right font-medium">{inr(r.revenue_paise)}</td>
-                <td className="px-4 py-2 text-right">
+                <td className="px-4 py-2 text-right whitespace-nowrap">
+                  <Button size="sm" variant="ghost" className="gap-1"
+                          onClick={() => openOverride(r)} title="Unlock a feature for free">
+                    <Unlock className="h-3.5 w-3.5" /> Unlock
+                  </Button>
                   <Button size="sm" variant="outline"
                           onClick={() => setGrant({ account_id: r.account_id, reason: "",
                                                     name: r.name || r.email })}>
-                    Grant
+                    Grant plan
                   </Button>
                 </td>
               </tr>
@@ -186,19 +255,149 @@ export function SubscriptionList() {
         </table>
       </Card>
 
+      {override && (
+        <div className="fixed inset-0 z-50 grid place-items-center p-4"
+             onClick={() => setOverride(null)}>
+          <div className="absolute inset-0 bg-black/40" />
+          <Card className="relative w-full max-w-lg p-5 max-h-[88vh] overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="font-bold text-lg">Unlock for free</h3>
+                <p className="text-sm text-muted-foreground">
+                  {override.name} · on {override.plan?.name}
+                </p>
+              </div>
+              <Button size="sm" variant="ghost" onClick={() => setOverride(null)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              This adds to their plan without changing it, so their renewal price stays the
+              same. It can only give more, never less.
+            </p>
+
+            <div className="mt-4">
+              <p className="text-xs font-medium text-muted-foreground mb-1.5">Features</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                {Object.entries(override.all || {}).map(([key, label]) => (
+                  <label key={key} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={override.features.includes(key)}
+                      onChange={(e) =>
+                        setOverride((o) => ({
+                          ...o,
+                          features: e.target.checked
+                            ? [...o.features, key]
+                            : o.features.filter((f) => f !== key),
+                        }))}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <p className="text-xs font-medium text-muted-foreground mb-1.5">
+                Raise a limit (leave blank to keep the plan's)
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {["businesses", "users", "devices"].map((k) => (
+                  <div key={k}>
+                    <label className="text-[11px] text-muted-foreground capitalize">{k}</label>
+                    <Input
+                      type="number"
+                      placeholder="—"
+                      value={override.limits[k] ?? ""}
+                      onChange={(e) =>
+                        setOverride((o) => ({ ...o, limits: { ...o.limits, [k]: e.target.value } }))}
+                    />
+                  </div>
+                ))}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">Use -1 for unlimited.</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 mt-4">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Ends on (optional)
+                </label>
+                <Input type="date" value={override.expires_at}
+                       onChange={(e) => setOverride((o) => ({ ...o, expires_at: e.target.value }))} />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Reason (logged)</label>
+                <Input value={override.reason} placeholder="Pilot customer, agreed with owner"
+                       onChange={(e) => setOverride((o) => ({ ...o, reason: e.target.value }))} />
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-5">
+              {override.existing && (
+                <Button variant="ghost" className="text-rose-600" onClick={clearOverride}>
+                  Remove override
+                </Button>
+              )}
+              <div className="flex-1" />
+              <Button variant="ghost" onClick={() => setOverride(null)}>Cancel</Button>
+              <Button disabled={busy} onClick={saveOverride} className="gap-1.5">
+                {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Unlock
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
+
       {grant && (
         <Card className="p-4 border-blue-300">
           <h4 className="font-semibold text-sm mb-3">Grant to {grant.name}</h4>
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
-            <Input placeholder="Plan code (e.g. PRO_YEARLY)" value={grant.plan_code || ""}
-                   onChange={(e) => setGrant({ ...grant, plan_code: e.target.value.toUpperCase() })} />
-            <Input placeholder="Months" type="number" value={grant.months || ""}
-                   onChange={(e) => setGrant({ ...grant, months: e.target.value })} />
-            <Input placeholder="Credits" type="number" value={grant.credits || ""}
-                   onChange={(e) => setGrant({ ...grant, credits: e.target.value })} />
-            <Input placeholder="Reason (logged)" value={grant.reason}
-                   onChange={(e) => setGrant({ ...grant, reason: e.target.value })} />
+            <div>
+              <label className="text-[11px] text-muted-foreground">Plan</label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm bg-background h-10"
+                value={grant.plan_code || ""}
+                onChange={(e) => setGrant({ ...grant, plan_code: e.target.value })}
+              >
+                <option value="">No plan change</option>
+                {plans.map((p) => (
+                  <option key={p.code} value={p.code}>{p.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] text-muted-foreground">
+                For how long
+              </label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm bg-background h-10"
+                value={grant.months || ""}
+                onChange={(e) => setGrant({ ...grant, months: e.target.value })}
+              >
+                <option value="">Plan's own period</option>
+                {[1, 3, 6, 12, 24].map((m) => (
+                  <option key={m} value={m}>{m} month{m === 1 ? "" : "s"}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] text-muted-foreground">AI scans</label>
+              <Input placeholder="e.g. 500" type="number" value={grant.credits || ""}
+                     onChange={(e) => setGrant({ ...grant, credits: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-[11px] text-muted-foreground">Reason (logged)</label>
+              <Input placeholder="Pilot customer, agreed with owner" value={grant.reason}
+                     onChange={(e) => setGrant({ ...grant, reason: e.target.value })} />
+            </div>
           </div>
+          <p className="text-[11px] text-muted-foreground mt-2">
+            A granted plan costs the customer nothing and renews at the normal price when it
+            runs out. To unlock just one feature instead, use Unlock.
+          </p>
           <div className="flex gap-2 mt-3">
             <Button variant="ghost" size="sm" onClick={() => setGrant(null)}>Cancel</Button>
             <Button size="sm" onClick={submitGrant}>Apply grant</Button>

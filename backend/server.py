@@ -2824,6 +2824,90 @@ async def super_grant(body: GrantIn, request: Request, user=Depends(get_current_
     return out
 
 
+# ── Comps and overrides: unlock one thing for one account, free ──────────────
+class OverrideIn(BaseModel):
+    features: List[str] = []                 # e.g. ["staff_roles", "einvoicing"]
+    limits: Dict[str, int] = {}              # e.g. {"users": 10, "businesses": 3}
+    reason: str = Field(min_length=3, max_length=300)
+    expires_at: Optional[str] = None         # ISO; leave empty for no end date
+
+
+@api.get("/super/accounts/{account_id}/override")
+async def super_get_override(account_id: str, user=Depends(get_current_user)):
+    """What this account has been granted beyond its plan."""
+    _require_super(user)
+    cat = await PRICING.load_catalogue(db)
+    info = await SUBS.account_plan(db, account_id, cat)
+    row = await db.account_overrides.find_one({"account_id": account_id}, {"_id": 0})
+    return {
+        "account_id": account_id,
+        "override": row,
+        "active": info.get("override"),
+        "plan": {"code": info["plan_code"], "name": info["plan"]["name"]},
+        "effective_features": info["features"],
+        "effective_limits": info["limits"],
+        "all_features": PRICING.FEATURES,
+    }
+
+
+@api.put("/super/accounts/{account_id}/override")
+async def super_set_override(account_id: str, body: OverrideIn, request: Request,
+                             user=Depends(get_current_user)):
+    """Grant features or raise caps for this account without changing its plan.
+
+    Use it to comp a customer, run a pilot, or unlock a demo account. It only
+    ever adds: nothing here can take away what the plan already includes, and
+    the plan itself is untouched, so their renewal price does not change.
+    """
+    _require_super(user)
+    unknown = [f for f in body.features if f not in PRICING.FEATURES]
+    if unknown:
+        raise HTTPException(400, f"Unknown feature(s): {', '.join(unknown)}")
+    bad_limits = [k for k in body.limits if k not in ("businesses", "users", "devices")]
+    if bad_limits:
+        raise HTTPException(400, f"Unknown limit(s): {', '.join(bad_limits)}")
+
+    row = {
+        "account_id": account_id,
+        "features": sorted(set(body.features)),
+        "limits": {k: int(v) for k, v in body.limits.items()},
+        "reason": body.reason.strip(),
+        "expires_at": body.expires_at or None,
+        "granted_by": user.get("email"),
+        "granted_at": now_iso(),
+    }
+    await db.account_overrides.update_one({"account_id": account_id},
+                                          {"$set": row}, upsert=True)
+    await db.admin_grants.insert_one({
+        "id": str(uuid.uuid4()), "account_id": account_id,
+        "plan_code": None, "months": None, "credits": None,
+        "override": {"features": row["features"], "limits": row["limits"],
+                     "expires_at": row["expires_at"]},
+        "reason": f"Override: {row['reason']}",
+        "by_user_id": user["id"], "by_email": user.get("email"),
+        "created_at": now_iso(),
+    })
+    await audit_log(db, org_id="platform", user=user, action="billing.override",
+                    entity_type="account", entity_id=account_id,
+                    metadata={"features": row["features"], "limits": row["limits"],
+                              "reason": row["reason"]}, request=request)
+    cat = await PRICING.load_catalogue(db)
+    info = await SUBS.account_plan(db, account_id, cat)
+    return {"ok": True, "override": row, "effective_features": info["features"],
+            "effective_limits": info["limits"]}
+
+
+@api.delete("/super/accounts/{account_id}/override")
+async def super_clear_override(account_id: str, request: Request,
+                               user=Depends(get_current_user)):
+    """Take the comp away — the account falls back to exactly what it pays for."""
+    _require_super(user)
+    await db.account_overrides.delete_one({"account_id": account_id})
+    await audit_log(db, org_id="platform", user=user, action="billing.override_cleared",
+                    entity_type="account", entity_id=account_id, request=request)
+    return {"ok": True}
+
+
 @api.get("/super/grants")
 async def super_grant_log(limit: int = 100, user=Depends(get_current_user)):
     _require_super(user)

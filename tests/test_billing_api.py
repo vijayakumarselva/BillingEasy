@@ -268,6 +268,64 @@ def test_super_admin():
     c.put("/api/super/pricing", json={"tiers": {"BUSINESS": {"yearly_paise": 249900}}})
 
 
+def test_free_override():
+    """Unlock one feature for an account without changing what it pays."""
+    print("\ncomp / override")
+    # Put the account back on Free so the gate is real.
+    import asyncio as _a
+    _a.run(mdb.subscriptions.update_one({"account_id": "owner1"},
+                                        {"$set": {"plan_code": "FREE", "status": "free",
+                                                  "addons": {}}}))
+    r = c.get("/api/gst/gstr1", headers=H)
+    check("on Free the feature is blocked", r.status_code == 402)
+
+    r = c.put("/api/super/accounts/owner1/override", json={
+        "features": ["gst_returns", "staff_roles"],
+        "limits": {"users": 5},
+        "reason": "Pilot restaurant, agreed with the owner"})
+    check("an override can be granted", r.status_code == 200, r.text[:200])
+    check("it reports what they now have",
+          "gst_returns" in r.json()["effective_features"])
+
+    check("the blocked feature opens up",
+          c.get("/api/gst/gstr1", headers=H).status_code == 200)
+    d = c.get("/api/subscription", headers=H).json()
+    check("the plan itself is untouched", d["plan"]["tier"] == "FREE")
+    check("so their renewal price does not change", d["plan"]["paise"] == 0)
+    check("but the raised cap applies", d["limits"]["users"] == 5)
+
+    r = c.put("/api/super/accounts/owner1/override",
+              json={"features": ["not_a_feature"], "reason": "typo test"})
+    check("a made-up feature is refused", r.status_code == 400)
+
+    # An override may only ever add.
+    c.put("/api/super/accounts/owner1/override",
+          json={"limits": {"businesses": 0}, "reason": "cannot take away"})
+    d = c.get("/api/subscription", headers=H).json()
+    check("an override cannot reduce what the plan gives",
+          d["limits"]["businesses"] >= 1)
+
+    log = c.get("/api/super/grants").json()
+    check("every override is logged with its reason",
+          any("Override:" in g.get("reason", "") for g in log))
+
+    r = c.delete("/api/super/accounts/owner1/override")
+    check("it can be taken away again", r.status_code == 200)
+    check("and the feature closes", c.get("/api/gst/gstr1", headers=H).status_code == 402)
+
+    # An expired override stops applying on its own.
+    c.put("/api/super/accounts/owner1/override", json={
+        "features": ["gst_returns"], "reason": "two-week trial",
+        "expires_at": "2020-01-01T00:00:00+00:00"})
+    check("a lapsed override does not apply",
+          c.get("/api/gst/gstr1", headers=H).status_code == 402)
+    c.delete("/api/super/accounts/owner1/override")
+    # Restore Business for the tests that follow.
+    c.post("/api/super/subscriptions/grant",
+           json={"account_id": "owner1", "plan_code": "BUSINESS_YEARLY",
+                 "reason": "restore for the remaining tests"})
+
+
 def test_staff_and_credits():
     print("\nstaff + credit ledger")
     # What the owner pays, and every subscription invoice, is the owner's
@@ -336,6 +394,7 @@ def main():
     test_downgrade_flow()
     test_business_limit()
     test_super_admin()
+    test_free_override()
     test_staff_and_credits()
     test_legacy_account_keeps_access()
     test_renewals()
