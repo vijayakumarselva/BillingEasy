@@ -64,6 +64,7 @@ from subscriptions import PlanError
 import offers as OFFERS
 import payment_provider as PAYPROVIDER
 import billing_invoice as BILLINV
+import dining as DINING
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
@@ -3176,6 +3177,691 @@ async def sign_out_device(device_id: str, ctx=Depends(get_org_ctx)):
     if not r.matched_count:
         raise HTTPException(404, "Device not found")
     return {"ok": True}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# QR DINING — guest phone ⇄ kitchen display ⇄ owner floor view.
+# Guests are not logged in: the table's QR token is the credential, and it only
+# ever grants access to that one table's live session. See dining.py.
+# ═════════════════════════════════════════════════════════════════════════════
+async def _dining_table_by_token(token: str) -> tuple[dict, dict]:
+    table = await db.dining_tables.find_one({"token": token, "active": {"$ne": False}}, {"_id": 0})
+    if not table:
+        raise HTTPException(404, "This QR code is not in use. Please ask our staff for help.")
+    org = await db.organizations.find_one({"id": table["org_id"]}, {"_id": 0})
+    if not org:
+        raise HTTPException(404, "Outlet not found")
+    return table, org
+
+
+async def _dining_settings(org_id: str) -> dict:
+    row = await db.dining_settings.find_one({"org_id": org_id}, {"_id": 0}) or {}
+    return {
+        "accept_orders": row.get("accept_orders", True),
+        "require_kitchen_accept": row.get("require_kitchen_accept", True),
+        "gst_rate": row.get("gst_rate", DINING.DEFAULT_GST_RATE),
+        "service_charge_pct": row.get("service_charge_pct", 0.0),
+        "prices_include_gst": row.get("prices_include_gst", True),
+        "welcome_note": row.get("welcome_note", ""),
+        "pay_at_counter_note": row.get(
+            "pay_at_counter_note",
+            "Please pay at the counter — cash, UPI or card."),
+    }
+
+
+async def _menu_for(org_id: str) -> List[dict]:
+    """Menu = products tagged for the restaurant mode that are marked available."""
+    rows = await db.products.find(
+        {"org_id": org_id,
+         "$or": [{"modes": "restaurant"}, {"modes": {"$exists": False}}, {"modes": []}],
+         "menu_hidden": {"$ne": True}},
+        {"_id": 0, "id": 1, "name": 1, "category": 1, "sale_price": 1, "gst_rate": 1,
+         "image_b64": 1, "unit": 1, "menu_veg": 1, "menu_description": 1,
+         "menu_out_of_stock": 1}
+    ).sort("name", 1).to_list(500)
+    return [{
+        "id": r["id"], "name": r["name"],
+        "category": r.get("category") or "Others",
+        "price": round(float(r.get("sale_price") or 0), 2),
+        "veg": r.get("menu_veg"),
+        "description": r.get("menu_description", ""),
+        "image_b64": r.get("image_b64", ""),
+        "available": not r.get("menu_out_of_stock"),
+    } for r in rows]
+
+
+# ── Guest: the page behind the QR code ──────────────────────────────────────
+@api.get("/public/dine/{token}")
+async def dine_home(token: str):
+    """Everything the guest's phone needs on first load."""
+    table, org = await _dining_table_by_token(token)
+    settings = await _dining_settings(org["id"])
+    session = await db.dining_sessions.find_one(
+        {"org_id": org["id"], "table_id": table["id"],
+         "status": {"$in": [DINING.SESSION_OPEN, DINING.SESSION_BILL_REQUESTED]}}, {"_id": 0})
+    view = await DINING.session_view(db, org["id"], session) if session else None
+    return {
+        "outlet": {"name": org.get("name"), "logo_url": org.get("logo_url", ""),
+                   "phone": org.get("phone", ""), "address": org.get("address", "")},
+        "table": {"id": table["id"], "name": table.get("name"), "zone": table.get("zone", "")},
+        "menu": await _menu_for(org["id"]),
+        "settings": settings,
+        "session": view,
+        "seq": await DINING.current_seq(db, org["id"]),
+    }
+
+
+class DineOrderIn(BaseModel):
+    items: List[dict]
+    note: str = ""
+    guests: int = 0
+    guest_name: str = ""
+    guest_phone: str = ""
+
+
+@api.post("/public/dine/{token}/order")
+async def dine_place_order(token: str, body: DineOrderIn, request: Request):
+    """The guest sends a round of dishes to the kitchen."""
+    table, org = await _dining_table_by_token(token)
+    org_id = org["id"]
+    if not limiter.hit(f"dine:{token}:{client_ip(request)}", max_hits=30, window_seconds=300):
+        raise HTTPException(429, "That is a lot of orders very quickly — please call a waiter.")
+    settings = await _dining_settings(org_id)
+    if not settings["accept_orders"]:
+        raise HTTPException(
+            423, "The kitchen has stopped taking orders from the table just now — "
+                 "please call a waiter.")
+
+    session = await DINING.open_session(db, org_id, table, guests=body.guests)
+    if session["status"] != DINING.SESSION_OPEN:
+        raise HTTPException(409, "The bill for this table has been requested. "
+                                 "Please ask a waiter to reopen it for more orders.")
+
+    # Price every line from the menu, never from what the phone sent.
+    menu = {m["id"]: m for m in await _menu_for(org_id)}
+    priced, unavailable = [], []
+    for it in body.items:
+        m = menu.get(it.get("product_id"))
+        if not m:
+            continue
+        if not m["available"]:
+            unavailable.append(m["name"])
+            continue
+        priced.append({"product_id": m["id"], "name": m["name"], "qty": it.get("qty", 1),
+                       "rate": m["price"], "note": it.get("note", "")})
+    if unavailable:
+        raise HTTPException(409, f"Sorry — {', '.join(unavailable)} just ran out. "
+                                 f"Please remove it and send the order again.")
+
+    rounds = await db.dining_orders.count_documents({"org_id": org_id, "session_id": session["id"]})
+    order = DINING.build_order(org_id, session, priced, round_no=rounds + 1, note=body.note)
+    if not settings["require_kitchen_accept"]:
+        order.update({"status": "accepted", "accepted_at": DINING.now_iso()})
+    await db.dining_orders.insert_one(dict(order))
+
+    patch = {k: v for k, v in {"guest_name": body.guest_name.strip()[:60],
+                               "guest_phone": body.guest_phone.strip()[:15]}.items() if v}
+    if body.guests:
+        patch["guests"] = body.guests
+    if patch:
+        await db.dining_sessions.update_one({"id": session["id"]}, {"$set": patch})
+
+    await DINING.emit(db, org_id, "order.placed", table_id=table["id"],
+                      session_id=session["id"], order_id=order["id"],
+                      payload={"table_name": table.get("name"), "round": order["round"],
+                               "items": len(order["items"]),
+                               "total": DINING.order_total(order)})
+    session = await db.dining_sessions.find_one({"id": session["id"]}, {"_id": 0})
+    return {"ok": True, "order": order,
+            "session": await DINING.session_view(db, org_id, session)}
+
+
+@api.post("/public/dine/{token}/orders/{order_id}/confirm")
+async def dine_confirm_changes(token: str, order_id: str, body: dict = Body(default={})):
+    """The kitchen could not make something; the guest says go ahead or drop it."""
+    table, org = await _dining_table_by_token(token)
+    org_id = org["id"]
+    order = await db.dining_orders.find_one(
+        {"org_id": org_id, "id": order_id, "table_id": table["id"]}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "Order not found")
+    if order["status"] != "needs_guest":
+        return {"ok": True, "order": order, "already": True}
+
+    if body.get("cancel"):
+        await db.dining_orders.update_one({"id": order_id}, {"$set": {"status": "cancelled"}})
+        kind, status = "order.cancelled_by_guest", "cancelled"
+    else:
+        await db.dining_orders.update_one(
+            {"id": order_id}, {"$set": {"status": "accepted", "accepted_at": DINING.now_iso()}})
+        kind, status = "order.guest_confirmed", "accepted"
+    await DINING.emit(db, org_id, kind, table_id=table["id"], session_id=order["session_id"],
+                      order_id=order_id, payload={"table_name": table.get("name")})
+    return {"ok": True, "status": status}
+
+
+@api.post("/public/dine/{token}/call-waiter")
+async def dine_call_waiter(token: str, body: dict = Body(default={})):
+    table, org = await _dining_table_by_token(token)
+    session = await DINING.open_session(db, org["id"], table)
+    await db.dining_sessions.update_one({"id": session["id"]}, {"$inc": {"waiter_calls": 1}})
+    await DINING.emit(db, org["id"], "waiter.called", table_id=table["id"],
+                      session_id=session["id"],
+                      payload={"table_name": table.get("name"),
+                               "reason": (body.get("reason") or "")[:80]})
+    return {"ok": True, "message": "A waiter is on the way."}
+
+
+@api.post("/public/dine/{token}/request-bill")
+async def dine_request_bill(token: str, body: dict = Body(default={})):
+    """The guest asks for the bill. Payment is taken at the counter for now."""
+    table, org = await _dining_table_by_token(token)
+    org_id = org["id"]
+    session = await db.dining_sessions.find_one(
+        {"org_id": org_id, "table_id": table["id"],
+         "status": {"$in": [DINING.SESSION_OPEN, DINING.SESSION_BILL_REQUESTED]}}, {"_id": 0})
+    if not session:
+        raise HTTPException(404, "Nothing has been ordered at this table yet.")
+    await db.dining_sessions.update_one(
+        {"id": session["id"]},
+        {"$set": {"status": DINING.SESSION_BILL_REQUESTED,
+                  "bill_requested_at": DINING.now_iso(),
+                  "preferred_payment": (body.get("payment_mode") or "")[:20]}})
+    await DINING.emit(db, org_id, "bill.requested", table_id=table["id"],
+                      session_id=session["id"], payload={"table_name": table.get("name")})
+    session = await db.dining_sessions.find_one({"id": session["id"]}, {"_id": 0})
+    settings = await _dining_settings(org_id)
+    return {"ok": True, "session": await DINING.session_view(db, org_id, session),
+            "message": settings["pay_at_counter_note"]}
+
+
+@api.get("/public/dine/{token}/live")
+async def dine_live(token: str, since: int = 0):
+    """Poll target for the guest's phone — only this table's news."""
+    table, org = await _dining_table_by_token(token)
+    org_id = org["id"]
+    session = await db.dining_sessions.find_one(
+        {"org_id": org_id, "table_id": table["id"],
+         "status": {"$in": [DINING.SESSION_OPEN, DINING.SESSION_BILL_REQUESTED]}}, {"_id": 0})
+    events = [e for e in await DINING.events_since(db, org_id, since)
+              if e.get("table_id") == table["id"]]
+    return {
+        "seq": await DINING.current_seq(db, org_id),
+        "events": events,
+        "session": await DINING.session_view(db, org_id, session) if session else None,
+    }
+
+
+# ── Kitchen display ─────────────────────────────────────────────────────────
+@api.get("/dining/kitchen")
+async def kitchen_board(ctx=Depends(get_org_ctx)):
+    """Every order the kitchen still has to do something about."""
+    orders = await db.dining_orders.find(
+        {"org_id": ctx["org_id"], "status": {"$in": DINING.OPEN_ORDER_STATES}}, {"_id": 0}
+    ).sort("placed_at", 1).to_list(200)
+    return {"orders": orders, "seq": await DINING.current_seq(db, ctx["org_id"]),
+            "settings": await _dining_settings(ctx["org_id"])}
+
+
+class KitchenActionIn(BaseModel):
+    note: str = ""
+    unavailable_item_ids: List[str] = []
+
+
+@api.post("/dining/orders/{order_id}/{action}")
+async def kitchen_action(order_id: str, action: str, body: KitchenActionIn = Body(default=None),
+                         ctx=Depends(get_org_ctx)):
+    """accept · unavailable · preparing · ready · served · reject · cancel"""
+    body = body or KitchenActionIn()
+    org_id = ctx["org_id"]
+    order = await db.dining_orders.find_one({"org_id": org_id, "id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    now = DINING.now_iso()
+    patch: Dict[str, Any] = {}
+    kind = f"order.{action}"
+
+    if action == "unavailable":
+        # Something is off the menu: strike those lines and ask the guest.
+        if not body.unavailable_item_ids:
+            raise HTTPException(400, "Tell us which dishes are unavailable")
+        items = [{**i, "status": "cancelled"} if i["id"] in body.unavailable_item_ids else i
+                 for i in order["items"]]
+        if all(i["status"] == "cancelled" for i in items):
+            # Nothing left to cook — the guest still needs to be told why.
+            patch = {"items": items, "status": "cancelled",
+                     "kitchen_note": body.note.strip()[:200]}
+            kind = "order.cancelled"
+        else:
+            DINING.check_transition(order["status"], "needs_guest")
+            patch = {"items": items, "status": "needs_guest",
+                     "kitchen_note": body.note.strip()[:200]}
+            kind = "order.needs_guest"
+    elif action in ("accept", "preparing", "ready", "served"):
+        target = {"accept": "accepted"}.get(action, action)
+        DINING.check_transition(order["status"], target)
+        patch = {"status": target}
+        patch.update({"accepted_at": now} if target == "accepted" else {})
+        patch.update({"ready_at": now} if target == "ready" else {})
+        patch.update({"served_at": now} if target == "served" else {})
+        kind = f"order.{target}"
+    elif action in ("reject", "cancel"):
+        target = "rejected" if action == "reject" else "cancelled"
+        DINING.check_transition(order["status"], target)
+        patch = {"status": target, "kitchen_note": body.note.strip()[:200]}
+        kind = f"order.{target}"
+    else:
+        raise HTTPException(400, f"Unknown action '{action}'")
+
+    await db.dining_orders.update_one({"org_id": org_id, "id": order_id}, {"$set": patch})
+    await DINING.emit(db, org_id, kind, table_id=order["table_id"],
+                      session_id=order["session_id"], order_id=order_id,
+                      payload={"table_name": order.get("table_name"),
+                               "note": patch.get("kitchen_note", "")})
+    return {"ok": True, "status": patch.get("status", order["status"])}
+
+
+# ── Floor view (owner / cashier) ────────────────────────────────────────────
+@api.get("/dining/floor")
+async def dining_floor(ctx=Depends(get_org_ctx)):
+    """Every table, what state it is in, and what it is worth right now."""
+    org_id = ctx["org_id"]
+    tables = await db.dining_tables.find({"org_id": org_id}, {"_id": 0}) \
+        .sort("name", 1).to_list(300)
+    sessions = await db.dining_sessions.find(
+        {"org_id": org_id, "status": {"$in": [DINING.SESSION_OPEN, DINING.SESSION_BILL_REQUESTED]}},
+        {"_id": 0}).to_list(300)
+    by_table = {s["table_id"]: s for s in sessions}
+    orders = await db.dining_orders.find(
+        {"org_id": org_id, "session_id": {"$in": [s["id"] for s in sessions]}},
+        {"_id": 0}).to_list(1000)
+
+    rows, live_total = [], 0.0
+    for t in tables:
+        sess = by_table.get(t["id"])
+        t_orders = [o for o in orders if sess and o["session_id"] == sess["id"]]
+        totals = DINING.session_totals(
+            t_orders, gst_rate=(sess or {}).get("gst_rate", DINING.DEFAULT_GST_RATE),
+            service_charge_pct=(sess or {}).get("service_charge_pct", 0.0),
+            discount=(sess or {}).get("discount", 0.0)) if sess else None
+        if totals:
+            live_total += totals["grand_total"]
+        state = DINING.table_state(sess, t_orders)
+        rows.append({
+            "table": t, "state": state, "state_label": DINING.STATE_LABELS[state],
+            "session": sess, "totals": totals,
+            "orders": t_orders,
+            "waiting_orders": len([o for o in t_orders if o["status"] in ("placed", "needs_guest")]),
+            "ready_orders": len([o for o in t_orders if o["status"] == "ready"]),
+            "waiter_calls": (sess or {}).get("waiter_calls", 0),
+        })
+
+    today = now_dt().strftime("%Y-%m-%d")
+    settled = await db.dining_sessions.find(
+        {"org_id": org_id, "status": DINING.SESSION_SETTLED,
+         "settled_at": {"$regex": f"^{today}"}}, {"_id": 0}).to_list(500)
+    return {
+        "tables": rows,
+        "seq": await DINING.current_seq(db, org_id),
+        "summary": {
+            "tables_total": len(tables),
+            "occupied": len(sessions),
+            "bill_requested": len([s for s in sessions if s["status"] == DINING.SESSION_BILL_REQUESTED]),
+            "live_total": round(live_total, 2),
+            "covers": sum(s.get("guests", 0) for s in sessions),
+            "settled_today": len(settled),
+            "sales_today": round(sum(s.get("settled_total", 0) for s in settled), 2),
+        },
+    }
+
+
+@api.get("/dining/live")
+async def dining_live(since: int = 0, ctx=Depends(get_org_ctx)):
+    """Shared poll target for the kitchen and floor screens."""
+    return {"seq": await DINING.current_seq(db, ctx["org_id"]),
+            "events": await DINING.events_since(db, ctx["org_id"], since)}
+
+
+class OpenSessionIn(BaseModel):
+    table_id: str
+    guests: int = 0
+    guest_name: str = ""
+
+
+@api.post("/dining/sessions/open")
+async def dining_open_session(body: OpenSessionIn, ctx=Depends(get_org_ctx)):
+    """Seat a walk-in from the floor screen, without the guest scanning."""
+    table = await db.dining_tables.find_one(
+        {"org_id": ctx["org_id"], "id": body.table_id}, {"_id": 0})
+    if not table:
+        raise HTTPException(404, "Table not found")
+    sess = await DINING.open_session(db, ctx["org_id"], table, guests=body.guests,
+                                     opened_by="staff")
+    if body.guest_name:
+        await db.dining_sessions.update_one({"id": sess["id"]},
+                                            {"$set": {"guest_name": body.guest_name[:60]}})
+    return await DINING.session_view(db, ctx["org_id"], sess)
+
+
+class StaffOrderIn(BaseModel):
+    session_id: str
+    items: List[dict]
+    note: str = ""
+
+
+@api.post("/dining/orders")
+async def dining_staff_order(body: StaffOrderIn, ctx=Depends(get_org_ctx)):
+    """A waiter takes the order at the table on their own phone."""
+    org_id = ctx["org_id"]
+    session = await db.dining_sessions.find_one(
+        {"org_id": org_id, "id": body.session_id}, {"_id": 0})
+    if not session or session["status"] != DINING.SESSION_OPEN:
+        raise HTTPException(404, "No open session for that table")
+    menu = {m["id"]: m for m in await _menu_for(org_id)}
+    priced = [{"product_id": m["id"], "name": m["name"], "qty": it.get("qty", 1),
+               "rate": m["price"], "note": it.get("note", "")}
+              for it in body.items if (m := menu.get(it.get("product_id")))]
+    rounds = await db.dining_orders.count_documents(
+        {"org_id": org_id, "session_id": session["id"]})
+    order = DINING.build_order(org_id, session, priced, round_no=rounds + 1,
+                               note=body.note, placed_by="staff")
+    await db.dining_orders.insert_one(dict(order))
+    await DINING.emit(db, org_id, "order.placed", table_id=session["table_id"],
+                      session_id=session["id"], order_id=order["id"],
+                      payload={"table_name": session.get("table_name"),
+                               "round": order["round"], "by": "staff"})
+    return order
+
+
+class SettleIn(BaseModel):
+    payment_mode: str = "cash"           # cash · upi · card
+    discount: float = 0
+    service_charge_pct: float = 0
+    guest_name: str = ""
+    guest_phone: str = ""
+    party_id: str = ""
+
+
+@api.post("/dining/sessions/{session_id}/settle")
+async def dining_settle(session_id: str, body: SettleIn, request: Request,
+                        ctx=Depends(require_permission("invoice.create"))):
+    """Close the table: raise the GST bill and record the payment.
+
+    Payment is taken at the counter today; when a gateway is connected the
+    same call records whatever it reports instead.
+    """
+    org_id = ctx["org_id"]
+    session = await db.dining_sessions.find_one({"org_id": org_id, "id": session_id}, {"_id": 0})
+    if not session:
+        raise HTTPException(404, "Table session not found")
+    if session["status"] == DINING.SESSION_SETTLED:
+        inv = await db.invoices.find_one({"id": session.get("invoice_id")}, {"_id": 0})
+        return {"already": True, "session": session, "invoice": strip_id(inv) if inv else None}
+
+    orders = await DINING.session_orders(db, org_id, session_id)
+    live = [o for o in orders if o["status"] not in ("cancelled", "rejected")]
+    if not live:
+        raise HTTPException(400, "Nothing has been ordered at this table yet.")
+
+    settings = await _dining_settings(org_id)
+    totals = DINING.session_totals(
+        orders, gst_rate=settings["gst_rate"],
+        service_charge_pct=body.service_charge_pct or session.get("service_charge_pct", 0),
+        discount=body.discount or session.get("discount", 0),
+        prices_include_gst=settings["prices_include_gst"])
+
+    # One invoice line per dish, priced net of the GST already inside the menu price.
+    factor = (100 / (100 + settings["gst_rate"])) if settings["prices_include_gst"] else 1.0
+    items = []
+    for o in live:
+        for it in o["items"]:
+            if it.get("status") == "cancelled":
+                continue
+            items.append(LineItem(
+                product_id=it.get("product_id", ""), name=it["name"],
+                hsn=DINING.RESTAURANT_SAC, qty=it["qty"], unit="NOS",
+                rate=round(it["rate"] * factor, 2), discount_pct=0,
+                gst_rate=settings["gst_rate"]))
+    if totals["service_charge"]:
+        items.append(LineItem(product_id="", name="Service charge",
+                              hsn=DINING.RESTAURANT_SAC, qty=1, unit="NOS",
+                              rate=round(totals["service_charge"] * factor, 2),
+                              discount_pct=0, gst_rate=settings["gst_rate"]))
+
+    guest_name = body.guest_name or session.get("guest_name") or ""
+    inv_body = InvoiceIn(
+        party_id=body.party_id or "", items=items,
+        invoice_date=now_dt().strftime("%Y-%m-%d"),
+        type="sale", status="finalized", invoice_category="service",
+        notes=(f"Table {session.get('table_name')}"
+               + (f" · {guest_name}" if guest_name else "")
+               + f" · {len(live)} order{'s' if len(live) != 1 else ''}"
+               + f" · paid by {body.payment_mode}"))
+    doc = await _build_invoice_doc(inv_body, ctx, "INV")
+    if guest_name:
+        doc["party_snapshot"] = {**doc["party_snapshot"], "name": guest_name,
+                                 "phone": body.guest_phone or session.get("guest_phone", "")}
+    doc["dining_session_id"] = session_id
+    await db.invoices.insert_one(doc)
+
+    await db.payments.insert_one({
+        "id": str(uuid.uuid4()), "org_id": org_id, "biz_type": ctx.get("biz_type"),
+        "type": "receipt", "party_id": body.party_id or "",
+        "party_name": guest_name or "Walk-in guest",
+        "invoice_id": doc["id"], "invoice_no": doc["invoice_no"],
+        "amount": doc["totals"]["grand_total"], "mode": body.payment_mode,
+        "payment_date": now_dt().strftime("%Y-%m-%d"),
+        "notes": f"Table {session.get('table_name')} · dine-in",
+        "created_at": now_iso(),
+    })
+
+    await db.dining_sessions.update_one(
+        {"id": session_id},
+        {"$set": {"status": DINING.SESSION_SETTLED, "settled_at": now_iso(),
+                  "invoice_id": doc["id"], "invoice_no": doc["invoice_no"],
+                  "payment_mode": body.payment_mode,
+                  "settled_total": doc["totals"]["grand_total"],
+                  "discount": body.discount or session.get("discount", 0),
+                  "service_charge_pct": body.service_charge_pct or 0}})
+    await db.dining_orders.update_many(
+        {"org_id": org_id, "session_id": session_id, "status": {"$in": ["ready", "accepted", "preparing"]}},
+        {"$set": {"status": "served", "served_at": now_iso()}})
+    await db.dining_tables.update_one({"org_id": org_id, "id": session["table_id"]},
+                                      {"$set": {"status": "free"}})
+    await DINING.emit(db, org_id, "session.settled", table_id=session["table_id"],
+                      session_id=session_id,
+                      payload={"table_name": session.get("table_name"),
+                               "invoice_no": doc["invoice_no"],
+                               "total": doc["totals"]["grand_total"],
+                               "mode": body.payment_mode})
+    await audit_log(db, org_id=org_id, user=ctx["user"], action="dining.settled",
+                    entity_type="dining_session", entity_id=session_id,
+                    metadata={"invoice_no": doc["invoice_no"],
+                              "total": doc["totals"]["grand_total"]}, request=request)
+    return {"ok": True, "invoice": strip_id(doc), "totals": totals}
+
+
+@api.post("/dining/sessions/{session_id}/reopen")
+async def dining_reopen(session_id: str, ctx=Depends(get_org_ctx)):
+    """Guest asked for the bill then changed their mind — let them order again."""
+    sess = await db.dining_sessions.find_one({"org_id": ctx["org_id"], "id": session_id}, {"_id": 0})
+    if not sess:
+        raise HTTPException(404, "Session not found")
+    if sess["status"] == DINING.SESSION_SETTLED:
+        raise HTTPException(409, "That bill is already settled — start a fresh session.")
+    await db.dining_sessions.update_one(
+        {"id": session_id}, {"$set": {"status": DINING.SESSION_OPEN, "bill_requested_at": None}})
+    await DINING.emit(db, ctx["org_id"], "session.reopened", table_id=sess["table_id"],
+                      session_id=session_id, payload={"table_name": sess.get("table_name")})
+    return {"ok": True}
+
+
+@api.post("/dining/sessions/{session_id}/cancel")
+async def dining_cancel_session(session_id: str, ctx=Depends(get_org_ctx)):
+    """Free a table nobody ever ordered at (a mis-scan, or guests who left)."""
+    sess = await db.dining_sessions.find_one({"org_id": ctx["org_id"], "id": session_id}, {"_id": 0})
+    if not sess:
+        raise HTTPException(404, "Session not found")
+    orders = await DINING.session_orders(db, ctx["org_id"], session_id)
+    if any(o["status"] not in ("cancelled", "rejected") for o in orders):
+        raise HTTPException(409, "This table has live orders — settle the bill instead.")
+    await db.dining_sessions.update_one(
+        {"id": session_id}, {"$set": {"status": DINING.SESSION_CANCELLED,
+                                      "settled_at": now_iso()}})
+    await db.dining_tables.update_one({"org_id": ctx["org_id"], "id": sess["table_id"]},
+                                      {"$set": {"status": "free"}})
+    await DINING.emit(db, ctx["org_id"], "session.cancelled", table_id=sess["table_id"],
+                      session_id=session_id, payload={"table_name": sess.get("table_name")})
+    return {"ok": True}
+
+
+# ── Tables & settings ───────────────────────────────────────────────────────
+class TableIn(BaseModel):
+    name: str = Field(min_length=1, max_length=20)
+    seats: int = Field(default=4, ge=1, le=40)
+    zone: str = ""
+
+
+@api.get("/dining/tables")
+async def list_dining_tables(ctx=Depends(get_org_ctx)):
+    rows = await db.dining_tables.find({"org_id": ctx["org_id"]}, {"_id": 0}) \
+        .sort("name", 1).to_list(300)
+    return rows
+
+
+@api.post("/dining/tables")
+async def create_dining_table(body: TableIn, ctx=Depends(get_org_ctx)):
+    org_id = ctx["org_id"]
+    if await db.dining_tables.find_one({"org_id": org_id, "name": body.name.strip()}):
+        raise HTTPException(400, f"Table {body.name} already exists")
+    row = {"id": str(uuid.uuid4()), "org_id": org_id, "name": body.name.strip(),
+           "seats": body.seats, "zone": body.zone.strip()[:40],
+           "token": DINING.new_token(), "active": True, "status": "free",
+           "created_at": now_iso()}
+    await db.dining_tables.insert_one(dict(row))
+    row.pop("_id", None)
+    return row
+
+
+class BulkTablesIn(BaseModel):
+    count: int = Field(ge=1, le=100)
+    prefix: str = "T"
+    seats: int = Field(default=4, ge=1, le=40)
+    zone: str = ""
+
+
+@api.post("/dining/tables/bulk")
+async def create_dining_tables_bulk(body: BulkTablesIn, ctx=Depends(get_org_ctx)):
+    """Set the whole floor up in one go — T1…T20 with their QR codes.
+
+    `count` is how many tables the place has, not how many to add, so running
+    this twice leaves the floor the same size instead of doubling it.
+    """
+    org_id = ctx["org_id"]
+    existing = {t["name"] async for t in db.dining_tables.find({"org_id": org_id}, {"_id": 0, "name": 1})}
+    made = []
+    n = 1
+    while len(existing) + len(made) < body.count and n < 500:
+        name = f"{body.prefix}{n}"
+        n += 1
+        if name in existing:
+            continue
+        made.append({"id": str(uuid.uuid4()), "org_id": org_id, "name": name,
+                     "seats": body.seats, "zone": body.zone.strip()[:40],
+                     "token": DINING.new_token(), "active": True, "status": "free",
+                     "created_at": now_iso()})
+    if made:
+        await db.dining_tables.insert_many([dict(m) for m in made])
+    return {"created": len(made), "tables": [{k: v for k, v in m.items() if k != "_id"} for m in made]}
+
+
+@api.put("/dining/tables/{table_id}")
+async def update_dining_table(table_id: str, body: dict, ctx=Depends(get_org_ctx)):
+    patch = {k: v for k, v in body.items() if k in ("name", "seats", "zone", "active")}
+    if not patch:
+        raise HTTPException(400, "Nothing to update")
+    r = await db.dining_tables.update_one({"org_id": ctx["org_id"], "id": table_id}, {"$set": patch})
+    if not r.matched_count:
+        raise HTTPException(404, "Table not found")
+    return await db.dining_tables.find_one({"id": table_id}, {"_id": 0})
+
+
+@api.delete("/dining/tables/{table_id}")
+async def delete_dining_table(table_id: str, ctx=Depends(get_org_ctx)):
+    open_sess = await db.dining_sessions.find_one(
+        {"org_id": ctx["org_id"], "table_id": table_id,
+         "status": {"$in": [DINING.SESSION_OPEN, DINING.SESSION_BILL_REQUESTED]}})
+    if open_sess:
+        raise HTTPException(409, "Guests are seated at this table right now.")
+    await db.dining_tables.delete_one({"org_id": ctx["org_id"], "id": table_id})
+    return {"ok": True}
+
+
+@api.post("/dining/tables/{table_id}/new-qr")
+async def regenerate_table_qr(table_id: str, ctx=Depends(get_org_ctx)):
+    """Print a fresh QR — the old sticker stops working immediately."""
+    token = DINING.new_token()
+    r = await db.dining_tables.update_one({"org_id": ctx["org_id"], "id": table_id},
+                                          {"$set": {"token": token}})
+    if not r.matched_count:
+        raise HTTPException(404, "Table not found")
+    return {"ok": True, "token": token}
+
+
+@api.get("/dining/settings")
+async def get_dining_settings(ctx=Depends(get_org_ctx)):
+    return await _dining_settings(ctx["org_id"])
+
+
+@api.put("/dining/settings")
+async def set_dining_settings(body: dict, ctx=Depends(get_org_ctx)):
+    allowed = {"accept_orders", "require_kitchen_accept", "gst_rate", "service_charge_pct",
+               "prices_include_gst", "welcome_note", "pay_at_counter_note"}
+    patch = {k: v for k, v in body.items() if k in allowed}
+    if not patch:
+        raise HTTPException(400, "Nothing to update")
+    await db.dining_settings.update_one({"org_id": ctx["org_id"]},
+                                        {"$set": {**patch, "org_id": ctx["org_id"]}}, upsert=True)
+    return await _dining_settings(ctx["org_id"])
+
+
+@api.get("/dining/menu")
+async def dining_menu(ctx=Depends(get_org_ctx)):
+    return await _menu_for(ctx["org_id"])
+
+
+class MenuFlagsIn(BaseModel):
+    product_id: str
+    menu_out_of_stock: Optional[bool] = None
+    menu_hidden: Optional[bool] = None
+    menu_veg: Optional[bool] = None
+    menu_description: Optional[str] = None
+
+
+@api.put("/dining/menu")
+async def update_menu_item(body: MenuFlagsIn, ctx=Depends(get_org_ctx)):
+    """86 a dish, hide it, or tag it veg — straight from the floor screen."""
+    patch = {k: v for k, v in body.model_dump(exclude={"product_id"}).items() if v is not None}
+    if not patch:
+        raise HTTPException(400, "Nothing to update")
+    r = await db.products.update_one(
+        org_filter(ctx, {"id": body.product_id}), {"$set": patch})
+    if not r.matched_count:
+        raise HTTPException(404, "Menu item not found")
+    await DINING.emit(db, ctx["org_id"], "menu.updated",
+                      payload={"product_id": body.product_id, **patch})
+    return {"ok": True, **patch}
+
+
+@api.get("/dining/sessions")
+async def dining_session_history(limit: int = 50, ctx=Depends(get_org_ctx)):
+    """Settled tables, newest first — the day's covers and what they spent."""
+    rows = await db.dining_sessions.find(
+        {"org_id": ctx["org_id"], "status": {"$in": [DINING.SESSION_SETTLED,
+                                                     DINING.SESSION_CANCELLED]}},
+        {"_id": 0}).sort("settled_at", -1).to_list(min(limit, 200))
+    return rows
 
 
 # ---------------- ROLES & PERMISSIONS ----------------
