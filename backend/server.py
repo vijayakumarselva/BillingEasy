@@ -2565,6 +2565,10 @@ async def my_subscription(ctx=Depends(get_org_ctx)):
         "plan": {"code": plan["code"], "name": plan["name"], "tier": info["tier"],
                  "interval": info["interval"], "paise": plan["paise"],
                  "label": PRICING.fmt_inr(plan["paise"]),
+                 # Founding members renew at the price they locked in.
+                 "renewal_paise": (info["price_lock_paise"]
+                                   if info.get("price_lock_paise") is not None
+                                   else plan["paise"]),
                  "support": plan["support"]},
         "status": info["status"],
         "is_paid": info["is_paid"],

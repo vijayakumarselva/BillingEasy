@@ -23,6 +23,9 @@ import Reports from "@/pages/Reports";
 import TDS from "@/pages/TDS";
 import Settings from "@/pages/Settings";
 import MockCheckout from "@/pages/MockCheckout";
+import Pricing from "@/pages/Pricing";
+import Billing from "@/pages/Billing";
+import UpgradeModal from "@/components/UpgradeModal";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
 import SuperAdmin from "@/pages/SuperAdmin";
@@ -135,6 +138,7 @@ export default function App() {
             <Route path="/p/invoice/:token" element={<PublicInvoice />} />
             <Route path="/play/sv2026" element={<CouplesGame />} />{/* couples-game-v1 */}
             <Route path="/free/tools" element={<PublicTools />} />
+            <Route path="/pricing" element={<Pricing />} />
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/refund" element={<Refund />} />
@@ -169,6 +173,7 @@ export default function App() {
               <Route path="/reports" element={<Reports />} />
               <Route path="/tds" element={<TDS />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/billing" element={<Billing />} />
               <Route path="/entities" element={<Entities />} />
               <Route path="/pos" element={<RetailPOS />} />
               <Route path="/pos/admin" element={<POSAdmin />} />
@@ -178,6 +183,7 @@ export default function App() {
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          <UpgradeModal />
           <Toaster position="top-right" richColors closeButton />
         </BrowserRouter>
       </AuthProvider>

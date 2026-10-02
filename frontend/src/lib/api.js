@@ -61,8 +61,16 @@ api.interceptors.response.use(
       localStorage.removeItem("be_refresh");
       if (!window.location.pathname.startsWith("/login")) window.location.href = "/login";
     }
-    if (status === 402 && !window.location.pathname.startsWith("/billing")) {
-      window.location.href = "/billing";
+    // A plan limit is not an error page — it is an upgrade prompt. Hand the
+    // detail to whoever is listening (UpgradeModal) and let the caller carry on.
+    if (status === 402) {
+      const d = data?.detail_raw || data?.detail;
+      if (d && typeof d === "object" && d.code) {
+        window.dispatchEvent(new CustomEvent("be:plan-limit", { detail: d }));
+        err.planLimit = d;
+      } else if (!window.location.pathname.startsWith("/billing")) {
+        window.location.href = "/billing";
+      }
     }
     return Promise.reject(err);
   }
@@ -75,6 +83,8 @@ export function formatApiErrorDetail(detail) {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail))
     return detail.map((e) => (e && typeof e.msg === "string" ? e.msg : JSON.stringify(e))).filter(Boolean).join(" ");
+  // Plan limits come back as {code, message, suggested_plan, ...}
+  if (detail && typeof detail.message === "string") return detail.message;
   if (detail && typeof detail.msg === "string") return detail.msg;
   return String(detail);
 }

@@ -159,6 +159,7 @@ def effective_status(sub: Dict[str, Any], now: Optional[datetime] = None) -> Dic
         "cancel_at_period_end": bool(sub.get("cancel_at_period_end")),
         "pending_plan_code": sub.get("pending_plan_code"),
         "founding_member": bool(sub.get("founding_member")),
+        "price_lock_paise": sub.get("price_lock_paise"),
         "addons": sub.get("addons") or {},
         "is_paid": status in ("active", "grace", "past_due"),
         "needs_payment": status in ("expired", "past_due", "grace"),
