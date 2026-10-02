@@ -110,12 +110,16 @@ def _logo_image(data_uri: str, max_w=30*mm, max_h=18*mm):
     except Exception:
         return None
 
-def _build_with_watermark(doc, story, watermark: str, bold_font: str):
-    """Build the document, printing the watermark diagonally on every page."""
-    if not watermark:
-        doc.build(story)
-        return
-    def draw(canvas, _doc):
+BRANDING_LINE = "Made with BillingsEasy · billingseasy.com"
+
+
+def _stamp_page(canvas, *, watermark: str = "", bold_font: str = "Helvetica-Bold",
+                branding: bool = False, extra=None):
+    """Per-page furniture shared by every template: diagonal watermark, the
+    free-plan footer line, and anything else a template wants to draw."""
+    if extra:
+        extra(canvas)
+    if watermark:
         canvas.saveState()
         canvas.setFont(bold_font, 72)
         canvas.setFillColor(colors.Color(0.85, 0.85, 0.85, alpha=0.35))
@@ -123,6 +127,36 @@ def _build_with_watermark(doc, story, watermark: str, bold_font: str):
         canvas.rotate(45)
         canvas.drawCentredString(0, 0, watermark.upper())
         canvas.restoreState()
+    if branding:
+        canvas.saveState()
+        canvas.setFont("Helvetica", 7)
+        canvas.setFillColor(colors.Color(0.55, 0.55, 0.60))
+        canvas.drawCentredString(A4[0] / 2, 8 * mm, BRANDING_LINE)
+        canvas.restoreState()
+
+
+def show_branding(biz: dict) -> bool:
+    """Free plans carry the BillingsEasy line; paid plans do not.
+
+    The caller sets `_show_branding`; when it is absent nothing is stamped, so
+    PDFs generated outside a request (previews, tests) stay clean.
+    """
+    return bool(biz.get("_show_branding"))
+
+
+def _build_with_watermark(doc, story, watermark: str, bold_font: str):
+    """Build the document with the shared per-page stamp."""
+    _build_stamped(doc, story, watermark=watermark, bold_font=bold_font)
+
+
+def _build_stamped(doc, story, *, watermark: str = "", bold_font: str = "Helvetica-Bold",
+                   branding: bool = False, extra=None):
+    if not (watermark or branding or extra):
+        doc.build(story)
+        return
+    def draw(canvas, _doc):
+        _stamp_page(canvas, watermark=watermark, bold_font=bold_font,
+                    branding=branding, extra=extra)
     doc.build(story, onFirstPage=draw, onLaterPages=draw)
 
 
@@ -608,10 +642,9 @@ def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale", template: str
         canvas.drawCentredString(0, 0, WATERMARK.upper())
         canvas.restoreState()
 
-    if WATERMARK:
-        doc.build(story, onFirstPage=_draw_wm, onLaterPages=_draw_wm)
-    else:
-        doc.build(story)
+    _build_stamped(doc, story, watermark=WATERMARK,
+                   bold_font=FB if _FONT_REGISTERED else "Helvetica-Bold",
+                   branding=show_branding(biz))
 
     return buf.getvalue()
 
@@ -810,7 +843,8 @@ def _generate_modern_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
         story.append(Spacer(1,4*mm))
         story.append(sig_tbl)
 
-    _build_with_watermark(doc, story, theme.get("watermark", ""), FB)
+    _build_stamped(doc, story, watermark=theme.get("watermark", ""), bold_font=FB,
+                   branding=show_branding(biz))
     return buf.getvalue()
 
 
@@ -958,5 +992,6 @@ def _generate_compact_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes:
     ft.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP")]))
     story.append(ft)
 
-    _build_with_watermark(doc, story, theme.get("watermark", ""), FB)
+    _build_stamped(doc, story, watermark=theme.get("watermark", ""), bold_font=FB,
+                   branding=show_branding(biz))
     return buf.getvalue()

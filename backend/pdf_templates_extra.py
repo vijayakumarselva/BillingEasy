@@ -37,23 +37,14 @@ def _ctx(inv: dict, biz: dict, kind: str):
             "label": label, "no": no, "date": date, "due": due,
             "party": inv.get("party_snapshot") or {}, "totals": inv.get("totals") or {},
             "items": inv.get("items") or [], "same_state": inv.get("same_state", True),
-            "watermark": theme.get("watermark", "")}
+            "watermark": theme.get("watermark", ""),
+            "branding": bool(biz.get("_show_branding"))}
 
 
 def _build(doc, story, c, buf):
-    wm = c["watermark"]
-    if wm:
-        def draw(canvas, _doc):
-            canvas.saveState()
-            canvas.setFont(c["FB"], 72)
-            canvas.setFillColor(colors.Color(0.85, 0.85, 0.85, alpha=0.35))
-            canvas.translate(A4[0] / 2, A4[1] / 2)
-            canvas.rotate(45)
-            canvas.drawCentredString(0, 0, wm.upper())
-            canvas.restoreState()
-        doc.build(story, onFirstPage=draw, onLaterPages=draw)
-    else:
-        doc.build(story)
+    from pdf_invoice import _build_stamped
+    _build_stamped(doc, story, watermark=c["watermark"], bold_font=c["FB"],
+                   branding=c.get("branding", False))
     return buf.getvalue()
 
 
@@ -318,7 +309,9 @@ def generate_professional_pdf(inv: dict, biz: dict, kind: str = "sale") -> bytes
             canvas.translate(A4[0] / 2, A4[1] / 2); canvas.rotate(45)
             canvas.drawCentredString(0, 0, c["watermark"].upper()); canvas.restoreState()
 
-    doc.build(story, onFirstPage=side_band, onLaterPages=side_band)
+    from pdf_invoice import _build_stamped
+    _build_stamped(doc, story, branding=c.get("branding", False),
+                   extra=lambda canvas: side_band(canvas, doc))
     return buf.getvalue()
 
 

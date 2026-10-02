@@ -58,6 +58,12 @@ from launch_offer import (
     load_offer as load_launch_offer, save_offer as save_launch_offer,
     public_offer as public_launch_offer, admin_view as launch_offer_admin_view,
 )
+import pricing as PRICING
+import subscriptions as SUBS
+from subscriptions import PlanError
+import offers as OFFERS
+import payment_provider as PAYPROVIDER
+import billing_invoice as BILLINV
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
@@ -234,6 +240,91 @@ def require_roles(*roles: str):
     return checker
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Plan enforcement. The subscription belongs to the login that OWNS the
+# business, so a staff member's actions are checked against the owner's plan.
+# ─────────────────────────────────────────────────────────────────────────────
+async def pdf_biz(ctx: dict, org: Optional[dict] = None) -> dict:
+    """Org document for PDF rendering, with the branding flag the plan dictates.
+
+    Free plans carry the "Made with BillingsEasy" footer; every paid plan
+    removes it.
+    """
+    org = org or await get_org_doc(ctx["org_id"])
+    try:
+        info = await plan_for_ctx(ctx)
+        show = not PRICING.has_feature(info["plan_code"], "remove_branding")
+    except Exception:
+        logger.exception("Could not resolve the plan for invoice branding")
+        show = False
+    return {**org, "_show_branding": show}
+
+
+async def account_id_for_org(org_id: str) -> str:
+    """The login whose subscription covers this business."""
+    org = await db.organizations.find_one(
+        {"id": org_id}, {"_id": 0, "owner_user_id": 1, "billing_org_id": 1})
+    if not org:
+        raise HTTPException(404, "Org not found")
+    bid = org.get("billing_org_id")
+    if bid and bid != org_id:
+        parent = await db.organizations.find_one({"id": bid}, {"_id": 0, "owner_user_id": 1})
+        if parent and parent.get("owner_user_id"):
+            return parent["owner_user_id"]
+    return org.get("owner_user_id") or org_id
+
+
+async def account_id_for_ctx(ctx: dict) -> str:
+    if ctx.get("account_id"):
+        return ctx["account_id"]
+    return await account_id_for_org(ctx["org_id"])
+
+
+async def plan_for_ctx(ctx: dict) -> dict:
+    cat = await PRICING.load_catalogue(db)
+    return await SUBS.account_plan(db, await account_id_for_ctx(ctx), cat)
+
+
+def require_feature(feature: str):
+    """Dependency: 402 FEATURE_NOT_IN_PLAN unless the owner's plan includes it."""
+    async def checker(ctx=Depends(get_org_ctx)):
+        cat = await PRICING.load_catalogue(db)
+        await SUBS.require_feature(db, await account_id_for_ctx(ctx), feature, cat)
+        return ctx
+    return checker
+
+
+async def guard_feature(ctx: dict, feature: str):
+    """Same check, inline, for endpoints that gate only part of their work."""
+    cat = await PRICING.load_catalogue(db)
+    return await SUBS.require_feature(db, await account_id_for_ctx(ctx), feature, cat)
+
+
+async def guard_account_limit(ctx: dict, kind: str, override: Optional[dict] = None):
+    cat = await PRICING.load_catalogue(db)
+    return await SUBS.check_account_limit(
+        db, await account_id_for_ctx(ctx), kind, catalogue=cat, override=override)
+
+
+async def guard_writable(ctx: dict):
+    """Businesses parked over the plan's limit stay readable but not writable."""
+    org = await db.organizations.find_one({"id": ctx["org_id"]}, {"_id": 0, "readonly_reason": 1, "name": 1})
+    if (org or {}).get("readonly_reason") == "plan_limit":
+        raise PlanError(
+            PRICING.ERR_BUSINESSES,
+            f"\u201c{org.get('name') or 'This business'}\u201d is read-only because it is beyond "
+            f"your plan's limit. Choose it as one of your active businesses, or add "
+            f"the extra-business add-on \u2014 nothing has been deleted.",
+            org_id=ctx["org_id"])
+
+
+async def spend_scan_credit(ctx: dict, ref_id: str = "", reason: str = "AI invoice scan"):
+    """Take one credit before an AI scan. Refund with SUBS.refund_credit on failure."""
+    return await SUBS.consume_credit(
+        db, await account_id_for_ctx(ctx), reason=reason,
+        org_id=ctx.get("org_id"), ref_id=ref_id)
+
+
 def org_filter(ctx: dict, extra: Optional[dict] = None) -> dict:
     q = {"org_id": ctx["org_id"]}
     if extra: q.update(extra)
@@ -309,6 +400,7 @@ class RegisterIn(BaseModel):
     name: str
     org_name: str = "My Business"
     phone: str = ""
+    referral_code: str = ""
 
 
 class LoginIn(BaseModel):
@@ -640,6 +732,21 @@ async def register(body: RegisterIn, request: Request, response: Response):
     }
     await db.users.insert_one(user)
     org = await _create_org_internal(body.org_name, uid)
+
+    # New logins start on a 14-day Business trial (no card) and keep the signup
+    # credits for good; after the trial they drop to Free, never to a lockout.
+    trial_sub = SUBS.blank_subscription(uid, trial=True)
+    await db.subscriptions.insert_one(dict(trial_sub))
+    trial_plan = PRICING.get_plan(trial_sub["plan_code"])
+    await SUBS.grant_credits(db, uid, PRICING.PLAN_TIERS["FREE"]["signup_credits"],
+                             source="pack", reason="Signup credits")
+    if trial_plan.get("credits_per_period"):
+        await SUBS.reset_plan_credits(db, uid, trial_plan["credits_per_period"],
+                                      SUBS.period_key(trial_sub),
+                                      reason=f"{trial_plan['name']} trial credits")
+    if body.referral_code:
+        await OFFERS.record_referral_signup(db, code=body.referral_code, new_account_id=uid)
+
     token = create_access_token(uid, email)
     refresh = create_refresh_token(uid)
     response.set_cookie("access_token", token, httponly=True, samesite="lax",
@@ -675,12 +782,14 @@ async def login(body: LoginIn, request: Request, response: Response):
             if best_org_id is None:
                 best_org_id = m["org_id"]
     await db.users.update_one({"id": u["id"]}, {"$set": {"last_login": now_iso()}})
+    device = await register_device(u, request)
     response.set_cookie("access_token", token, httponly=True, samesite="lax",
                         secure=False, max_age=30*60, path="/")
     if best_org_id:
         await audit_log(db, org_id=best_org_id, user=u, action="user.login", request=request)
     return {"id": u["id"], "email": u["email"], "name": u["name"],
-            "token": token, "refresh_token": refresh, "org_id": best_org_id}
+            "token": token, "refresh_token": refresh, "org_id": best_org_id,
+            "device": device}
 
 
 @api.post("/auth/refresh")
@@ -1712,6 +1821,8 @@ async def list_members(ctx=Depends(get_org_ctx)):
 
 @api.post("/orgs/current/members")
 async def invite_member(body: InviteIn, request: Request, ctx=Depends(require_permission("user.invite"))):
+    await guard_feature(ctx, "staff_roles")
+    await guard_account_limit(ctx, "users")
     email = body.email.lower()
     user = await db.users.find_one({"email": email})
     if not user:
@@ -2417,6 +2528,921 @@ async def cashfree_webhook(request: Request):
     return {"received": True}
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# SUBSCRIPTIONS v2 — the plan belongs to the login, not to a business.
+# Prices, limits and features all come from pricing.py / platform_settings.
+# ═════════════════════════════════════════════════════════════════════════════
+async def _founding_spots_left(cat: dict) -> Optional[int]:
+    f = cat["founding"]
+    if not f.get("enabled"):
+        return None
+    taken = await db.subscriptions.count_documents({"founding_member": True})
+    return max(0, int(f["seats"]) - taken)
+
+
+@api.get("/pricing")
+async def get_public_pricing():
+    """Public catalogue — powers the website pricing page and the in-app picker."""
+    cat = await PRICING.load_catalogue(db)
+    return PRICING.public_pricing(cat, spots_left=await _founding_spots_left(cat))
+
+
+@api.get("/subscription")
+async def my_subscription(ctx=Depends(get_org_ctx)):
+    """Current plan, usage, credits and billing history for the active login."""
+    cat = await PRICING.load_catalogue(db)
+    account_id = await account_id_for_ctx(ctx)
+    info = await SUBS.account_plan(db, account_id, cat)
+    usage = await SUBS.account_usage(db, account_id)
+    bal = await SUBS.get_balance(db, account_id)
+    locked = await SUBS.over_limit_businesses(db, account_id, cat)
+    payments = await db.billing_payments.find(
+        {"account_id": account_id, "status": "paid"}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    plan = info["plan"]
+    return {
+        "account_id": account_id,
+        "plan": {"code": plan["code"], "name": plan["name"], "tier": info["tier"],
+                 "interval": info["interval"], "paise": plan["paise"],
+                 "label": PRICING.fmt_inr(plan["paise"]),
+                 "support": plan["support"]},
+        "status": info["status"],
+        "is_paid": info["is_paid"],
+        "in_grace": info["in_grace"],
+        "days_left": info["days_left"],
+        "trial_ends_at": info["trial_ends_at"],
+        "current_period_end": info["current_period_end"],
+        "grace_ends_at": info["grace_ends_at"],
+        "cancel_at_period_end": info["cancel_at_period_end"],
+        "pending_plan_code": info["pending_plan_code"],
+        "founding_member": info["founding_member"],
+        "addons": info["addons"],
+        "limits": info["limits"],
+        "usage": usage,
+        "features": info["features"],
+        "feature_labels": PRICING.FEATURES,
+        "credits": {"plan": bal.get("plan_credits", 0), "pack": bal.get("pack_credits", 0),
+                    "total": bal["total"], "low": bal["low"],
+                    "low_threshold": PRICING.LOW_CREDIT_THRESHOLD,
+                    "per_scan": PRICING.CREDITS_PER_SCAN},
+        "readonly_businesses": [{"id": o["id"], "name": o.get("name")} for o in locked],
+        "payments": payments,
+        "referral_code": await _referral_code_for(account_id),
+    }
+
+
+@api.get("/subscription/credits")
+async def my_credit_ledger(limit: int = 100, ctx=Depends(get_org_ctx)):
+    account_id = await account_id_for_ctx(ctx)
+    bal = await SUBS.get_balance(db, account_id)
+    rows = await db.credit_ledger.find({"account_id": account_id}, {"_id": 0}) \
+        .sort("created_at", -1).to_list(min(limit, 500))
+    return {"balance": bal, "ledger": rows, "packs": (await PRICING.load_catalogue(db))["packs"]}
+
+
+class KeepActiveIn(BaseModel):
+    business_ids: List[str]
+
+
+@api.post("/subscription/keep-active")
+async def choose_active_businesses(body: KeepActiveIn, ctx=Depends(get_org_ctx)):
+    """After a downgrade, the owner picks which businesses stay writable."""
+    account_id = await account_id_for_ctx(ctx)
+    if ctx["user"]["id"] != account_id:
+        raise HTTPException(403, "Only the account owner can choose active businesses")
+    cat = await PRICING.load_catalogue(db)
+    cap = (await SUBS.account_plan(db, account_id, cat))["limits"].get("businesses", 1)
+    if cap != PRICING.UNLIMITED and len(body.business_ids) > cap:
+        raise PlanError(PRICING.ERR_BUSINESSES,
+                        f"Your plan covers {cap} business{'es' if cap != 1 else ''}.",
+                        limit=cap)
+    await db.organizations.update_many({"owner_user_id": account_id},
+                                       {"$set": {"keep_active": False}})
+    await db.organizations.update_many(
+        {"owner_user_id": account_id, "id": {"$in": body.business_ids}},
+        {"$set": {"keep_active": True}})
+    locked = await SUBS.sync_readonly_flags(db, account_id, cat)
+    return {"ok": True, "readonly": locked}
+
+
+# ── Checkout ─────────────────────────────────────────────────────────────────
+class QuoteIn(BaseModel):
+    plan_code: Optional[str] = None
+    kind: str = "plan"                  # plan | addon | pack
+    addon_code: Optional[str] = None
+    pack_code: Optional[str] = None
+    quantity: int = Field(default=1, ge=1, le=50)
+    years: int = Field(default=1, ge=1, le=2)
+    coupon: str = ""
+    gstin: str = ""
+    state_code: str = ""
+
+
+async def _build_quote(ctx: dict, body: QuoteIn) -> dict:
+    """Price a purchase: base, founding/multi-year adjustment, coupon, GST."""
+    cat = await PRICING.load_catalogue(db)
+    account_id = await account_id_for_ctx(ctx)
+    info = await SUBS.account_plan(db, account_id, cat)
+    lines: List[dict] = []
+    months = None
+    plan_code = None
+
+    if body.kind == "plan":
+        plan_code = PRICING.normalise_code(body.plan_code)
+        plan = PRICING.get_plan(plan_code, cat)
+        if plan["tier"] == "FREE":
+            raise HTTPException(400, "The Free plan needs no payment.")
+        base = int(plan["paise"])
+
+        founding = await OFFERS.founding_price_for(db, cat, account_id, plan_code)
+        if founding is not None:
+            base = founding
+            lines.append({"label": cat["founding"]["label"], "note": "price locked for renewals"})
+
+        if body.years == 2 and plan["interval"] == "year":
+            my = cat["multiyear"]
+            base = round(base * my["months_charged"] / 12)
+            months = my["months_given"]
+            lines.append({"label": f"{my['months_given']} months for the price of "
+                                   f"{my['months_charged']}"})
+
+        # Upgrading mid-period: charge only the prorated difference.
+        proration = None
+        if info["is_paid"] and PRICING.is_upgrade(info["plan_code"], plan_code) and body.years == 1:
+            sub = await SUBS.get_subscription(db, account_id)
+            proration = SUBS.proration_paise(
+                PRICING.get_plan(info["plan_code"], cat), {**plan, "paise": base},
+                SUBS.parse_dt(sub.get("current_period_start")),
+                SUBS.parse_dt(sub.get("current_period_end")))
+            if proration["prorated"]:
+                base = proration["charge_paise"]
+                lines.append({"label": f"Prorated for the {proration['days_left']} days left "
+                                       f"in your current period",
+                              "note": f"less {PRICING.fmt_inr(proration['credit_paise'])} "
+                                      f"unused on {PRICING.get_plan(info['plan_code'], cat)['name']}"})
+        description = f"BillingsEasy {plan['name']} plan" + (f" — {months} months" if months else "")
+        quantity = 1
+
+    elif body.kind == "addon":
+        addon = cat["addons"].get((body.addon_code or "").upper())
+        if not addon:
+            raise HTTPException(400, "Unknown add-on")
+        tier = info["tier"]
+        if tier not in addon["available_on"]:
+            raise HTTPException(400, f"{addon['name']} is not available on {info['plan']['name']}.")
+        quantity = body.quantity
+        base = int(addon["yearly_paise"]) * quantity
+        description = f"{addon['name']} × {quantity}"
+        proration = None
+        plan_code = info["plan_code"]
+
+    elif body.kind == "pack":
+        pack = next((p for p in cat["packs"] if p["code"] == (body.pack_code or "").upper()), None)
+        if not pack:
+            raise HTTPException(400, "Unknown credit pack")
+        quantity = body.quantity
+        base = int(pack["paise"]) * quantity
+        description = f"{pack['credits'] * quantity:,} AI credits"
+        proration = None
+    else:
+        raise HTTPException(400, "Unknown purchase type")
+
+    discount, coupon = 0, None
+    if body.coupon:
+        res = await OFFERS.validate_coupon(db, body.coupon, account_id=account_id,
+                                           plan_code=plan_code, amount_paise=base,
+                                           kind=body.kind)
+        coupon, discount = res["coupon"], res["discount_paise"]
+        if discount:
+            lines.append({"label": f"Coupon {coupon['code']}",
+                          "note": f"-{PRICING.fmt_inr(discount)}"})
+
+    net = max(0, base - discount)
+    gst = PRICING.gst_on(net)
+    return {
+        "kind": body.kind, "plan_code": plan_code, "addon_code": body.addon_code,
+        "pack_code": body.pack_code, "quantity": quantity, "months": months,
+        "description": description,
+        "base_paise": base, "discount_paise": discount, "net_paise": net,
+        "gst_paise": gst, "gst_pct": PRICING.GST_RATE_PCT,
+        "total_paise": net + gst,
+        "base_label": PRICING.fmt_inr(base), "discount_label": PRICING.fmt_inr(discount),
+        "net_label": PRICING.fmt_inr(net), "gst_label": PRICING.fmt_inr(gst),
+        "total_label": PRICING.fmt_inr(net + gst),
+        "lines": lines, "coupon": coupon["code"] if coupon else None,
+        "_coupon_doc": coupon, "proration": proration,
+        "account_id": account_id,
+    }
+
+
+@api.post("/billing/quote")
+async def billing_quote(body: QuoteIn, ctx=Depends(get_org_ctx)):
+    """What this purchase costs, itemised, before anyone pays anything."""
+    q = await _build_quote(ctx, body)
+    q.pop("_coupon_doc", None)
+    return q
+
+
+@api.post("/billing/checkout")
+async def billing_checkout(body: QuoteIn, request: Request,
+                           ctx=Depends(require_permission("billing.manage"))):
+    """Start a payment. Nothing is activated until the webhook or verify confirms it."""
+    q = await _build_quote(ctx, body)
+    coupon_doc = q.pop("_coupon_doc", None)
+    account_id = q["account_id"]
+    user = ctx["user"]
+    org = await get_org_doc(ctx["org_id"])
+
+    payment = {
+        "id": str(uuid.uuid4()),
+        "order_id": f"BE-{account_id[:8]}-{int(now_dt().timestamp())}-{uuid.uuid4().hex[:6]}",
+        "account_id": account_id, "org_id": ctx["org_id"],
+        "kind": q["kind"], "plan_code": q["plan_code"],
+        "addon_code": q["addon_code"], "pack_code": q["pack_code"],
+        "quantity": q["quantity"], "months": q["months"],
+        "description": q["description"],
+        "amount_paise": q["net_paise"],          # taxable value
+        "gst_paise": q["gst_paise"],
+        "total_paise": q["total_paise"],
+        "discount_paise": q["discount_paise"],
+        "coupon_code": q["coupon"],
+        "gstin": (body.gstin or org.get("gstin") or "").upper(),
+        "state_code": body.state_code or org.get("state_code") or "",
+        "status": "created", "provider": None, "provider_ref": None,
+        "created_at": now_iso(),
+    }
+    await db.billing_payments.insert_one(dict(payment))
+    if coupon_doc:
+        await db.billing_payments.update_one({"id": payment["id"]},
+                                             {"$set": {"coupon_pending": coupon_doc["code"]}})
+
+    creds = await get_cashfree_credentials(db)
+    provider = PAYPROVIDER.get_provider(creds)
+    origin = request.headers.get("Origin", "") or "https://billingseasy.com"
+    try:
+        order = await provider.create_order(
+            order_id=payment["order_id"], amount_paise=q["total_paise"],
+            customer={"id": account_id, "email": user.get("email", ""),
+                      "phone": org.get("phone") or user.get("phone") or "",
+                      "name": user.get("name") or org.get("name") or ""},
+            note=q["description"],
+            return_url=f"{origin}/billing?order_id={payment['order_id']}")
+    except PAYPROVIDER.PaymentError as exc:
+        await db.billing_payments.update_one({"id": payment["id"]},
+                                             {"$set": {"status": "failed", "error": str(exc)}})
+        raise HTTPException(502, str(exc))
+
+    await db.billing_payments.update_one(
+        {"id": payment["id"]},
+        {"$set": {"provider": provider.name, "status": "pending",
+                  "session_id": order.get("session_id")}})
+    return {"payment_id": payment["id"], "order_id": payment["order_id"],
+            "amount_paise": q["total_paise"], "amount_label": q["total_label"],
+            "session_id": order.get("session_id"), "pay_url": order.get("pay_url"),
+            "mock": order.get("mock", False), "quote": q}
+
+
+async def _activate_payment(payment: dict, *, provider_ref: str = "") -> dict:
+    """Apply a confirmed payment. Idempotent — safe to call from both the
+    webhook and the browser's return trip."""
+    if payment.get("status") == "paid":
+        return {"already": True, "payment_id": payment["id"]}
+
+    cat = await PRICING.load_catalogue(db)
+    account_id = payment["account_id"]
+    await db.billing_payments.update_one(
+        {"id": payment["id"], "status": {"$ne": "paid"}},
+        {"$set": {"status": "paid", "paid_at": now_iso(), "provider_ref": provider_ref}})
+    fresh = await db.billing_payments.find_one({"id": payment["id"]}, {"_id": 0})
+
+    if payment["kind"] == "plan":
+        founding_price = await OFFERS.founding_price_for(db, cat, account_id, payment["plan_code"])
+        await SUBS.apply_plan(
+            db, account_id, payment["plan_code"], months=payment.get("months"),
+            provider=payment.get("provider"), provider_ref=provider_ref,
+            price_lock_paise=founding_price,
+            founding=founding_price is not None, catalogue=cat)
+    elif payment["kind"] == "addon":
+        await db.subscriptions.update_one(
+            {"account_id": account_id},
+            {"$inc": {f"addons.{payment['addon_code']}": payment["quantity"]},
+             "$set": {"updated_at": now_iso()}}, upsert=True)
+    elif payment["kind"] == "pack":
+        pack = next((p for p in cat["packs"] if p["code"] == payment["pack_code"]), None)
+        if pack:
+            await SUBS.grant_credits(
+                db, account_id, pack["credits"] * payment["quantity"], source="pack",
+                reason=f"Bought {pack['credits'] * payment['quantity']:,} credits",
+                ref_id=payment["id"])
+
+    if payment.get("coupon_pending"):
+        c = await db.coupons.find_one({"code": payment["coupon_pending"]}, {"_id": 0})
+        await OFFERS.redeem_coupon(db, c, account_id=account_id, payment_id=payment["id"],
+                                   discount_paise=payment.get("discount_paise", 0))
+
+    await SUBS.sync_readonly_flags(db, account_id, cat)
+    await OFFERS.award_referral_on_first_payment(db, account_id, SUBS.grant_credits)
+
+    # GST tax invoice for the payment, from our own invoicing engine.
+    owner = await db.users.find_one({"id": account_id}, {"_id": 0, "name": 1, "email": 1}) or {}
+    org = await db.organizations.find_one({"id": payment.get("org_id")}, {"_id": 0}) or {}
+    tax_invoice = await BILLINV.create_tax_invoice(db, payment=fresh or payment, buyer={
+        "name": org.get("name") or owner.get("name") or owner.get("email"),
+        "gstin": payment.get("gstin") or org.get("gstin") or "",
+        "address": org.get("address", ""), "state": org.get("state", ""),
+        "state_code": payment.get("state_code") or org.get("state_code") or "",
+        "email": owner.get("email", ""),
+    })
+    return {"already": False, "payment_id": payment["id"],
+            "tax_invoice_no": tax_invoice["invoice_no"]}
+
+
+@api.post("/billing/verify/{order_id}")
+async def billing_verify(order_id: str, ctx=Depends(get_org_ctx)):
+    """Browser came back from the gateway — confirm with the provider and activate."""
+    account_id = await account_id_for_ctx(ctx)
+    payment = await db.billing_payments.find_one(
+        {"order_id": order_id, "account_id": account_id}, {"_id": 0})
+    if not payment:
+        raise HTTPException(404, "Payment not found")
+    if payment["status"] == "paid":
+        return {"status": "paid", "already": True,
+                "tax_invoice_no": payment.get("tax_invoice_no")}
+    creds = await get_cashfree_credentials(db)
+    provider = PAYPROVIDER.get_provider(creds)
+    try:
+        res = await provider.fetch_order(order_id)
+    except PAYPROVIDER.PaymentError as exc:
+        raise HTTPException(502, str(exc))
+    if res["status"] != "paid":
+        return {"status": res["status"]}
+    out = await _activate_payment(payment, provider_ref=order_id)
+    return {"status": "paid", **out}
+
+
+@api.post("/billing/webhook/payments")
+async def billing_payments_webhook(request: Request):
+    """Gateway webhook for subscription, add-on and credit-pack payments.
+
+    Signature-verified and idempotent: replays of the same order do nothing.
+    """
+    raw = await request.body()
+    sig = request.headers.get("x-webhook-signature", "")
+    ts = request.headers.get("x-webhook-timestamp", "")
+    creds = await get_cashfree_credentials(db)
+    provider = PAYPROVIDER.get_provider(creds)
+    if not provider.is_mock and not provider.verify_webhook(raw_body=raw, signature=sig, timestamp=ts):
+        raise HTTPException(400, "Invalid signature")
+
+    payload = json.loads(raw or b"{}")
+    data = payload.get("data") or {}
+    order = data.get("order") or {}
+    order_id = order.get("order_id") or data.get("order_id") or payload.get("order_id")
+    event = payload.get("type") or payload.get("event_type") or ""
+    if not order_id:
+        return {"ok": True}
+
+    # Record the delivery so a replay is a no-op even mid-processing.
+    event_id = (payload.get("event_id") or request.headers.get("x-webhook-id")
+                or f"{event}:{order_id}:{ts}")
+    seen = await db.webhook_events.find_one({"id": event_id})
+    if seen:
+        return {"ok": True, "duplicate": True}
+    await db.webhook_events.insert_one({"id": event_id, "order_id": order_id,
+                                        "event": event, "created_at": now_iso()})
+
+    payment = await db.billing_payments.find_one({"order_id": order_id}, {"_id": 0})
+    if not payment:
+        return {"ok": True, "unknown_order": True}
+
+    if "SUCCESS" in event.upper() or (data.get("payment") or {}).get("payment_status") == "SUCCESS":
+        await _activate_payment(payment, provider_ref=order_id)
+    elif "FAILED" in event.upper():
+        await db.billing_payments.update_one(
+            {"id": payment["id"], "status": {"$ne": "paid"}},
+            {"$set": {"status": "failed", "failed_at": now_iso()}})
+    return {"received": True}
+
+
+class ChangePlanIn(BaseModel):
+    plan_code: str
+
+
+@api.post("/billing/downgrade")
+async def billing_downgrade(body: ChangePlanIn, ctx=Depends(require_permission("billing.manage"))):
+    """Scheduled for the end of the period — data is kept, extras go read-only."""
+    account_id = await account_id_for_ctx(ctx)
+    cat = await PRICING.load_catalogue(db)
+    target = PRICING.normalise_code(body.plan_code)
+    info = await SUBS.account_plan(db, account_id, cat)
+    if PRICING.is_upgrade(info["plan_code"], target):
+        raise HTTPException(400, "That is an upgrade — use checkout so it starts immediately.")
+    await SUBS.schedule_downgrade(db, account_id, target)
+    usage = await SUBS.account_usage(db, account_id)
+    new_cap = PRICING.plan_limits(target, cat).get("businesses", 1)
+    over = (usage["businesses"] - new_cap) if new_cap != PRICING.UNLIMITED else 0
+    return {
+        "ok": True, "effective_at": info["current_period_end"],
+        "pending_plan_code": target,
+        "will_be_readonly": max(0, over),
+        "message": (f"{PRICING.get_plan(target, cat)['name']} starts at your next renewal. "
+                    + (f"{over} business{'es' if over != 1 else ''} will become read-only — "
+                       f"nothing is deleted and you choose which ones stay active."
+                       if over > 0 else "Nothing else changes.")),
+    }
+
+
+@api.post("/billing/cancel-downgrade")
+async def billing_cancel_downgrade(ctx=Depends(require_permission("billing.manage"))):
+    account_id = await account_id_for_ctx(ctx)
+    await db.subscriptions.update_one({"account_id": account_id},
+                                      {"$set": {"pending_plan_code": None,
+                                                "cancel_at_period_end": False}})
+    return {"ok": True}
+
+
+@api.post("/billing/cancel-subscription")
+async def billing_cancel_subscription(ctx=Depends(require_permission("billing.manage"))):
+    """Stop renewing. Access continues until the period already paid for ends."""
+    account_id = await account_id_for_ctx(ctx)
+    await db.subscriptions.update_one({"account_id": account_id},
+                                      {"$set": {"cancel_at_period_end": True,
+                                                "updated_at": now_iso()}})
+    sub = await SUBS.get_subscription(db, account_id)
+    return {"ok": True, "access_until": sub.get("current_period_end")}
+
+
+@api.get("/billing/invoices")
+async def billing_invoice_list(ctx=Depends(get_org_ctx)):
+    account_id = await account_id_for_ctx(ctx)
+    rows = await db.billing_invoices.find({"account_id": account_id}, {"_id": 0}) \
+        .sort("created_at", -1).to_list(200)
+    return rows
+
+
+@api.get("/billing/invoices/{iid}/pdf")
+async def billing_invoice_pdf(iid: str, ctx=Depends(get_org_ctx)):
+    account_id = await account_id_for_ctx(ctx)
+    inv = await db.billing_invoices.find_one({"id": iid, "account_id": account_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    doc, biz = BILLINV.to_pdf_shape(inv)
+    pdf = generate_invoice_pdf(doc, biz, kind="sale", template="professional")
+    return StreamingResponse(BytesIO(pdf), media_type="application/pdf",
+                             headers={"Content-Disposition":
+                                      f'inline; filename="{inv["invoice_no"].replace("/", "-")}.pdf"'})
+
+
+@api.get("/billing/referral")
+async def billing_referral(ctx=Depends(get_org_ctx)):
+    account_id = await account_id_for_ctx(ctx)
+    return await OFFERS.referral_summary(db, account_id, name=ctx["user"].get("name", ""))
+
+
+async def _referral_code_for(account_id: str) -> str:
+    user = await db.users.find_one({"id": account_id}, {"_id": 0, "name": 1}) or {}
+    return await OFFERS.referral_code_for(db, account_id, name=user.get("name", ""))
+
+
+# ── Super admin: subscriptions, coupons, revenue ─────────────────────────────
+def _require_super(user: dict):
+    if not user.get("is_super_admin"):
+        raise HTTPException(403, "Super admin only")
+
+
+@api.get("/super/subscriptions")
+async def super_list_subscriptions(q: str = "", plan: str = "", status: str = "",
+                                   limit: int = 100, user=Depends(get_current_user)):
+    """Customers with their plan, renewal date, usage and credit balance."""
+    _require_super(user)
+    cat = await PRICING.load_catalogue(db)
+    query: Dict[str, Any] = {}
+    if plan:
+        query["plan_code"] = plan
+    subs = await db.subscriptions.find(query, {"_id": 0}).sort("updated_at", -1) \
+        .to_list(min(limit, 500))
+    rows = []
+    for sub in subs:
+        owner = await db.users.find_one({"id": sub["account_id"]},
+                                        {"_id": 0, "name": 1, "email": 1, "phone": 1}) or {}
+        if q:
+            hay = f"{owner.get('name','')} {owner.get('email','')} {sub['account_id']}".lower()
+            if q.lower() not in hay:
+                continue
+        state = SUBS.effective_status(sub)
+        if status and state["status"] != status:
+            continue
+        bal = await SUBS.get_balance(db, sub["account_id"])
+        usage = await SUBS.account_usage(db, sub["account_id"])
+        paid = await db.billing_payments.aggregate([
+            {"$match": {"account_id": sub["account_id"], "status": "paid"}},
+            {"$group": {"_id": None, "total": {"$sum": "$total_paise"}, "n": {"$sum": 1}}},
+        ]).to_list(1)
+        rows.append({
+            "account_id": sub["account_id"],
+            "name": owner.get("name"), "email": owner.get("email"), "phone": owner.get("phone"),
+            "plan_code": state["plan_code"],
+            "plan_name": PRICING.get_plan(state["plan_code"], cat)["name"],
+            "status": state["status"], "days_left": state["days_left"],
+            "current_period_end": state["current_period_end"],
+            "founding_member": state["founding_member"], "addons": state["addons"],
+            "credits": bal["total"], "usage": usage,
+            "revenue_paise": (paid[0]["total"] if paid else 0),
+            "payments": (paid[0]["n"] if paid else 0),
+        })
+    return {"rows": rows, "count": len(rows)}
+
+
+class GrantIn(BaseModel):
+    account_id: str
+    plan_code: Optional[str] = None
+    months: Optional[int] = Field(default=None, ge=1, le=36)
+    credits: Optional[int] = Field(default=None, ge=1, le=100000)
+    reason: str = Field(min_length=3, max_length=300)
+
+
+@api.post("/super/subscriptions/grant")
+async def super_grant(body: GrantIn, request: Request, user=Depends(get_current_user)):
+    """Give or extend a plan and/or credits by hand. Always logged with a reason."""
+    _require_super(user)
+    cat = await PRICING.load_catalogue(db)
+    out: Dict[str, Any] = {"account_id": body.account_id}
+    if body.plan_code:
+        code = PRICING.normalise_code(body.plan_code)
+        await SUBS.apply_plan(db, body.account_id, code, months=body.months,
+                              provider="manual", provider_ref=f"grant:{user['id']}",
+                              catalogue=cat)
+        await SUBS.sync_readonly_flags(db, body.account_id, cat)
+        out["plan_code"] = code
+    if body.credits:
+        bal = await SUBS.grant_credits(db, body.account_id, body.credits, source="pack",
+                                       reason=f"Granted by BillingsEasy: {body.reason}")
+        out["credits"] = bal["total"]
+    await db.admin_grants.insert_one({
+        "id": str(uuid.uuid4()), "account_id": body.account_id,
+        "plan_code": body.plan_code, "months": body.months, "credits": body.credits,
+        "reason": body.reason, "by_user_id": user["id"], "by_email": user.get("email"),
+        "created_at": now_iso(),
+    })
+    await audit_log(db, org_id="platform", user=user, action="billing.grant",
+                    entity_type="account", entity_id=body.account_id,
+                    metadata={"plan": body.plan_code, "credits": body.credits,
+                              "reason": body.reason}, request=request)
+    return out
+
+
+@api.get("/super/grants")
+async def super_grant_log(limit: int = 100, user=Depends(get_current_user)):
+    _require_super(user)
+    return await db.admin_grants.find({}, {"_id": 0}).sort("created_at", -1) \
+        .to_list(min(limit, 500))
+
+
+@api.get("/super/credit-ledger")
+async def super_credit_ledger(account_id: str = "", limit: int = 200,
+                              user=Depends(get_current_user)):
+    _require_super(user)
+    q = {"account_id": account_id} if account_id else {}
+    return await db.credit_ledger.find(q, {"_id": 0}).sort("created_at", -1) \
+        .to_list(min(limit, 1000))
+
+
+@api.get("/super/payments")
+async def super_payments(status: str = "paid", limit: int = 200,
+                         user=Depends(get_current_user)):
+    _require_super(user)
+    q = {"status": status} if status else {}
+    return await db.billing_payments.find(q, {"_id": 0}).sort("created_at", -1) \
+        .to_list(min(limit, 1000))
+
+
+# ── Coupons ──
+class CouponIn(BaseModel):
+    code: str = Field(min_length=3, max_length=24)
+    kind: str = "percent"
+    value: int = Field(ge=0)
+    max_discount_paise: Optional[int] = None
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+    usage_cap: Optional[int] = None
+    per_account_cap: int = 1
+    plan_codes: List[str] = []
+    applies_to: List[str] = ["plan"]
+    first_purchase_only: bool = False
+    active: bool = True
+    description: str = ""
+
+
+@api.get("/super/coupons")
+async def super_list_coupons(user=Depends(get_current_user)):
+    _require_super(user)
+    return await db.coupons.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+@api.post("/super/coupons")
+async def super_create_coupon(body: CouponIn, user=Depends(get_current_user)):
+    _require_super(user)
+    if body.kind not in ("percent", "flat"):
+        raise HTTPException(400, "Coupon kind must be 'percent' or 'flat'")
+    if body.kind == "percent" and not (0 < body.value <= 100):
+        raise HTTPException(400, "A percentage coupon must be between 1 and 100")
+    code = body.code.strip().upper()
+    if await db.coupons.find_one({"code": code}):
+        raise HTTPException(400, f"Coupon {code} already exists")
+    doc = OFFERS.blank_coupon(code, **body.model_dump(exclude={"code"}),
+                              created_by=user.get("email"))
+    await db.coupons.insert_one(dict(doc))
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/super/coupons/{code}")
+async def super_update_coupon(code: str, body: dict, user=Depends(get_current_user)):
+    _require_super(user)
+    allowed = {"active", "value", "kind", "valid_from", "valid_to", "usage_cap",
+               "per_account_cap", "plan_codes", "applies_to", "first_purchase_only",
+               "max_discount_paise", "description"}
+    patch = {k: v for k, v in body.items() if k in allowed}
+    if not patch:
+        raise HTTPException(400, "Nothing to update")
+    r = await db.coupons.update_one({"code": code.upper()}, {"$set": patch})
+    if not r.matched_count:
+        raise HTTPException(404, "Coupon not found")
+    return await db.coupons.find_one({"code": code.upper()}, {"_id": 0})
+
+
+@api.delete("/super/coupons/{code}")
+async def super_delete_coupon(code: str, user=Depends(get_current_user)):
+    """Deactivates rather than deletes, so past redemptions stay explainable."""
+    _require_super(user)
+    await db.coupons.update_one({"code": code.upper()}, {"$set": {"active": False}})
+    return {"ok": True, "deactivated": code.upper()}
+
+
+# ── Pricing overrides ──
+@api.get("/super/pricing")
+async def super_get_pricing(user=Depends(get_current_user)):
+    _require_super(user)
+    cat = await PRICING.load_catalogue(db)
+    override = await db.platform_settings.find_one({"id": "pricing_catalogue"}, {"_id": 0}) or {}
+    return {"catalogue": PRICING.public_pricing(cat, await _founding_spots_left(cat)),
+            "override": override,
+            "defaults": {k: {"monthly_paise": v["monthly_paise"],
+                             "yearly_paise": v["yearly_paise"],
+                             "credits_per_year": v["credits_per_year"],
+                             "limits": v["limits"]}
+                         for k, v in PRICING.PLAN_TIERS.items()}}
+
+
+@api.put("/super/pricing")
+async def super_set_pricing(body: dict, request: Request, user=Depends(get_current_user)):
+    """Change prices, limits, packs or the founding offer without a deploy."""
+    _require_super(user)
+    allowed = {"tiers", "addons", "packs", "founding", "multiyear"}
+    patch = {k: v for k, v in body.items() if k in allowed}
+    patch["updated_at"] = now_iso()
+    patch["updated_by"] = user.get("email")
+    await db.platform_settings.update_one({"id": "pricing_catalogue"},
+                                          {"$set": patch}, upsert=True)
+    await audit_log(db, org_id="platform", user=user, action="pricing.updated",
+                    entity_type="pricing", entity_id="catalogue",
+                    metadata={"keys": list(patch)}, request=request)
+    cat = await PRICING.load_catalogue(db)
+    return PRICING.public_pricing(cat, await _founding_spots_left(cat))
+
+
+@api.get("/super/revenue")
+async def super_revenue(user=Depends(get_current_user)):
+    """MRR/ARR, paid accounts by plan, conversion, churn and top referrers."""
+    _require_super(user)
+    cat = await PRICING.load_catalogue(db)
+    subs = await db.subscriptions.find({}, {"_id": 0}).to_list(10000)
+    by_plan: Dict[str, int] = {}
+    mrr = 0
+    paid_accounts = trialing = free = 0
+    for sub in subs:
+        st = SUBS.effective_status(sub)
+        plan = PRICING.get_plan(st["plan_code"], cat)
+        if st["status"] in ("active", "grace"):
+            paid_accounts += 1
+            by_plan[plan["name"]] = by_plan.get(plan["name"], 0) + 1
+            locked = sub.get("price_lock_paise")
+            amount = int(locked if locked is not None else plan["paise"])
+            mrr += round(amount / 12) if plan["interval"] == "year" else amount
+        elif st["status"] == "trialing":
+            trialing += 1
+        else:
+            free += 1
+
+    pack_rev = await db.billing_payments.aggregate([
+        {"$match": {"status": "paid", "kind": "pack"}},
+        {"$group": {"_id": None, "total": {"$sum": "$total_paise"}, "n": {"$sum": 1}}},
+    ]).to_list(1)
+    sub_rev = await db.billing_payments.aggregate([
+        {"$match": {"status": "paid", "kind": {"$in": ["plan", "addon"]}}},
+        {"$group": {"_id": None, "total": {"$sum": "$total_paise"}, "n": {"$sum": 1}}},
+    ]).to_list(1)
+
+    total_accounts = len(subs) or 1
+    churned = await db.subscriptions.count_documents({"cancel_at_period_end": True})
+    top_referrers = await db.referrals.find({"converted": {"$gt": 0}}, {"_id": 0}) \
+        .sort("converted", -1).to_list(10)
+    for r in top_referrers:
+        owner = await db.users.find_one({"id": r["account_id"]}, {"_id": 0, "name": 1, "email": 1}) or {}
+        r["name"], r["email"] = owner.get("name"), owner.get("email")
+
+    return {
+        "mrr_paise": mrr, "arr_paise": mrr * 12,
+        "mrr_label": PRICING.fmt_inr(mrr), "arr_label": PRICING.fmt_inr(mrr * 12),
+        "paid_accounts": paid_accounts, "trialing": trialing, "free": free,
+        "total_accounts": len(subs),
+        "by_plan": by_plan,
+        "conversion_pct": round(paid_accounts / total_accounts * 100, 1),
+        "churn_pending": churned,
+        "churn_pct": round(churned / max(1, paid_accounts) * 100, 1),
+        "pack_revenue_paise": (pack_rev[0]["total"] if pack_rev else 0),
+        "pack_revenue_label": PRICING.fmt_inr(pack_rev[0]["total"] if pack_rev else 0),
+        "subscription_revenue_paise": (sub_rev[0]["total"] if sub_rev else 0),
+        "subscription_revenue_label": PRICING.fmt_inr(sub_rev[0]["total"] if sub_rev else 0),
+        "founding_spots_left": await _founding_spots_left(cat),
+        "top_referrers": top_referrers,
+    }
+
+
+@api.post("/super/billing/run-renewals")
+async def super_run_renewals(user=Depends(get_current_user)):
+    """Apply scheduled downgrades, roll renewed periods and queue reminders.
+
+    Idempotent — safe to call from a cron as often as you like.
+    """
+    _require_super(user)
+    return await run_renewal_cycle()
+
+
+async def run_renewal_cycle() -> dict:
+    """One pass over every subscription: downgrades, expiry, renewal reminders."""
+    cat = await PRICING.load_catalogue(db)
+    now = SUBS.now_dt()
+    out = {"downgraded": 0, "expired": 0, "reminders": 0, "readonly": 0}
+    async for sub in db.subscriptions.find({}, {"_id": 0}):
+        account_id = sub["account_id"]
+        state = SUBS.effective_status(sub, now)
+        period_end = SUBS.parse_dt(sub.get("current_period_end"))
+
+        # A scheduled downgrade (or cancellation) lands at the period end.
+        if period_end and now > period_end:
+            target = sub.get("pending_plan_code")
+            if sub.get("cancel_at_period_end") and not target:
+                target = PRICING.FREE_CODE
+            if target and state["status"] in ("grace", "expired", "active"):
+                await SUBS.apply_plan(db, account_id, target, status=(
+                    "free" if target == PRICING.FREE_CODE else "active"), catalogue=cat)
+                locked = await SUBS.sync_readonly_flags(db, account_id, cat)
+                out["downgraded"] += 1
+                out["readonly"] += len(locked)
+                continue
+            if state["status"] == "expired":
+                await db.subscriptions.update_one(
+                    {"account_id": account_id},
+                    {"$set": {"status": "expired", "updated_at": SUBS.now_iso()}})
+                locked = await SUBS.sync_readonly_flags(db, account_id, cat)
+                out["expired"] += 1
+                out["readonly"] += len(locked)
+                continue
+
+        # Renewal reminders at 15 / 7 / 1 days.
+        if period_end and state["status"] in ("active", "trialing", "grace"):
+            days = (period_end - now).days
+            if days in PRICING.RENEWAL_REMINDER_DAYS:
+                key = f"renewal:{account_id}:{period_end.date()}:{days}"
+                if not await db.notifications.find_one({"id": key}):
+                    plan = PRICING.get_plan(state["plan_code"], cat)
+                    await db.notifications.insert_one({
+                        "id": key, "account_id": account_id, "kind": "renewal_reminder",
+                        "days_left": days, "plan_code": state["plan_code"],
+                        "title": f"Your {plan['name']} plan renews in {days} day"
+                                 f"{'s' if days != 1 else ''}",
+                        "body": f"{PRICING.fmt_inr(plan['paise'])} + GST on "
+                                f"{period_end.strftime('%d %b %Y')}.",
+                        "channels": ["in_app", "email", "whatsapp"],
+                        "sent": False, "created_at": SUBS.now_iso(),
+                    })
+                    out["reminders"] += 1
+    return out
+
+
+@api.get("/notifications/billing")
+async def my_billing_notifications(ctx=Depends(get_org_ctx)):
+    """Renewal banners for the signed-in account."""
+    account_id = await account_id_for_ctx(ctx)
+    rows = await db.notifications.find(
+        {"account_id": account_id, "kind": "renewal_reminder", "dismissed": {"$ne": True}},
+        {"_id": 0}).sort("created_at", -1).to_list(10)
+    return rows
+
+
+@api.post("/notifications/{nid}/dismiss")
+async def dismiss_notification(nid: str, ctx=Depends(get_org_ctx)):
+    account_id = await account_id_for_ctx(ctx)
+    await db.notifications.update_one({"id": nid, "account_id": account_id},
+                                      {"$set": {"dismissed": True}})
+    return {"ok": True}
+
+
+# ── Devices (the Free plan allows one signed-in device) ──────────────────────
+def _device_fingerprint(request: Request) -> str:
+    """Stable per-browser/app id. Sent by the apps; derived from the UA otherwise."""
+    explicit = request.headers.get("X-Device-Id")
+    if explicit:
+        return explicit[:64]
+    ua = request.headers.get("User-Agent", "")
+    return hashlib.sha256(f"{ua}|{client_ip(request)}".encode()).hexdigest()[:32]
+
+
+def _device_label(request: Request) -> str:
+    ua = request.headers.get("User-Agent", "")
+    for needle, label in (("iPhone", "iPhone"), ("iPad", "iPad"), ("Android", "Android phone"),
+                          ("Macintosh", "Mac"), ("Windows", "Windows PC"), ("Linux", "Linux PC")):
+        if needle in ua:
+            return label
+    return "Unknown device"
+
+
+async def register_device(user: dict, request: Request) -> dict:
+    """Record this device and enforce the plan's device cap.
+
+    On a one-device plan a second device is refused rather than silently
+    kicking the first one out — the person chooses which to keep.
+    """
+    account_id = user["id"]
+    org = await db.organizations.find_one({"owner_user_id": account_id},
+                                          {"_id": 0, "id": 1})
+    if not org:
+        m = await db.memberships.find_one({"user_id": user["id"]}, {"_id": 0, "org_id": 1})
+        if m:
+            account_id = await account_id_for_org(m["org_id"])
+    cat = await PRICING.load_catalogue(db)
+    info = await SUBS.account_plan(db, account_id, cat)
+    cap = info["limits"].get("devices", PRICING.UNLIMITED)
+
+    did = _device_fingerprint(request)
+    now = now_iso()
+    existing = await db.devices.find_one({"account_id": account_id, "device_id": did},
+                                         {"_id": 0})
+    if existing:
+        await db.devices.update_one({"account_id": account_id, "device_id": did},
+                                    {"$set": {"last_seen": now, "active": True,
+                                              "user_id": user["id"]}})
+        return {"device_id": did, "limit": cap, "new": False}
+
+    if cap != PRICING.UNLIMITED:
+        others = await db.devices.find({"account_id": account_id, "active": True},
+                                       {"_id": 0}).to_list(50)
+        if len(others) >= cap:
+            names = ", ".join(d.get("label", "a device") for d in others[:3])
+            nxt = PRICING.cheapest_plan_for_limit("devices", cap + 1, cat)
+            raise PlanError(
+                PRICING.ERR_DEVICES,
+                f"Your plan allows {cap} signed-in device"
+                f"{'s' if cap != 1 else ''} and you are already signed in on {names}. "
+                f"Log out of your other device, or upgrade"
+                + (f" to {nxt['name']} — {PRICING.fmt_inr(nxt['paise'])}/year." if nxt else "."),
+                devices=[{"device_id": d["device_id"], "label": d.get("label"),
+                          "last_seen": d.get("last_seen")} for d in others],
+                limit=cap, suggested_plan=(nxt or {}).get("code"),
+                suggested_plan_name=(nxt or {}).get("name"))
+
+    await db.devices.insert_one({
+        "id": str(uuid.uuid4()), "account_id": account_id, "user_id": user["id"],
+        "device_id": did, "label": _device_label(request),
+        "user_agent": request.headers.get("User-Agent", "")[:300],
+        "active": True, "first_seen": now, "last_seen": now,
+    })
+    return {"device_id": did, "limit": cap, "new": True}
+
+
+@api.get("/devices")
+async def list_devices(ctx=Depends(get_org_ctx)):
+    account_id = await account_id_for_ctx(ctx)
+    cat = await PRICING.load_catalogue(db)
+    info = await SUBS.account_plan(db, account_id, cat)
+    rows = await db.devices.find({"account_id": account_id, "active": True},
+                                 {"_id": 0}).sort("last_seen", -1).to_list(50)
+    return {"devices": rows, "limit": info["limits"].get("devices", PRICING.UNLIMITED)}
+
+
+@api.post("/devices/{device_id}/sign-out")
+async def sign_out_device(device_id: str, ctx=Depends(get_org_ctx)):
+    """Free up a device slot from another device."""
+    account_id = await account_id_for_ctx(ctx)
+    r = await db.devices.update_one(
+        {"account_id": account_id, "device_id": device_id},
+        {"$set": {"active": False, "signed_out_at": now_iso()}})
+    if not r.matched_count:
+        raise HTTPException(404, "Device not found")
+    return {"ok": True}
+
+
 # ---------------- ROLES & PERMISSIONS ----------------
 class RoleIn(BaseModel):
     name: str
@@ -3094,7 +4120,7 @@ async def convert_quotation(iid: str, ctx=Depends(get_org_ctx)):
 async def invoice_pdf(iid: str, ctx=Depends(get_org_ctx)):
     inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
     if not inv: raise HTTPException(404, "Not found")
-    biz = await get_org_doc(ctx["org_id"])
+    biz = await pdf_biz(ctx)
     tmpl = (biz.get("invoice_theme") or {}).get("template", "classic")
     try:
         pdf_bytes = generate_invoice_pdf(inv, biz, template=tmpl)
@@ -3117,6 +4143,11 @@ async def purchase_ai_scan(file: UploadFile = File(...), ctx=Depends(get_org_ctx
     raw = await file.read()
     if len(raw) > 10 * 1024 * 1024:
         raise HTTPException(400, "File too large — max 10 MB")
+
+    # One credit per scan, taken before the call and refunded if it fails.
+    scan_id = str(uuid.uuid4())
+    receipt = await spend_scan_credit(ctx, ref_id=scan_id,
+                                      reason=f"AI scan: {file.filename or 'upload'}")
 
     PROMPT = """You are an OCR assistant for Indian purchase invoices. Extract all visible details and return ONLY a valid JSON object (no markdown, no explanation):
 {"supplier_name":"","gstin":"","bill_no":"","date":"YYYY-MM-DD","eway_bill_no":"","vehicle_no":"","items":[{"name":"","hsn":"","qty":1,"unit":"pcs","rate":0,"gst_rate":0,"amount":0}],"subtotal":0,"gst_amount":0,"total":0,"notes":""}
@@ -3141,67 +4172,77 @@ Rules:
 - notes: HSN codes summary, terms, e-way bill details, or any other info
 If a field is not visible, leave it empty string or 0. Return ONLY the JSON."""
 
-    import anthropic
-    client = anthropic.AsyncAnthropic(api_key=key)
+    try:
+        import anthropic
+        client = anthropic.AsyncAnthropic(api_key=key)
 
-    media_type = (file.content_type or "").lower()
-    is_pdf = media_type == "application/pdf" or (file.filename or "").lower().endswith(".pdf")
+        media_type = (file.content_type or "").lower()
+        is_pdf = media_type == "application/pdf" or (file.filename or "").lower().endswith(".pdf")
 
-    if is_pdf:
-        # Convert PDF pages to images for reliable visual extraction
-        try:
-            from pdf2image import convert_from_bytes
-            images = convert_from_bytes(raw, dpi=200, fmt="jpeg")
-        except Exception as e:
-            # pdf2image not available or poppler missing — fall back to document API
-            images = None
+        if is_pdf:
+            # Convert PDF pages to images for reliable visual extraction
+            try:
+                from pdf2image import convert_from_bytes
+                images = convert_from_bytes(raw, dpi=200, fmt="jpeg")
+            except Exception as e:
+                # pdf2image not available or poppler missing — fall back to document API
+                images = None
 
-        if images:
-            # Build content with all page images (max 4 pages to stay within limits)
-            content = []
-            for img in images[:4]:
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=85)
-                b64img = base64.standard_b64encode(buf.getvalue()).decode()
-                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64img}})
-            content.append({"type": "text", "text": PROMPT})
-            msg = await client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1500,
-                messages=[{"role": "user", "content": content}],
-            )
+            if images:
+                # Build content with all page images (max 4 pages to stay within limits)
+                content = []
+                for img in images[:4]:
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=85)
+                    b64img = base64.standard_b64encode(buf.getvalue()).decode()
+                    content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64img}})
+                content.append({"type": "text", "text": PROMPT})
+                msg = await client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1500,
+                    messages=[{"role": "user", "content": content}],
+                )
+            else:
+                # Fallback: send PDF as document
+                b64 = base64.standard_b64encode(raw).decode("utf-8")
+                msg = await client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1500,
+                    messages=[{"role": "user", "content": [
+                        {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
+                        {"type": "text", "text": PROMPT},
+                    ]}],
+                )
         else:
-            # Fallback: send PDF as document
+            # Image file — send directly
+            if media_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+                media_type = "image/jpeg"
             b64 = base64.standard_b64encode(raw).decode("utf-8")
             msg = await client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1500,
                 messages=[{"role": "user", "content": [
-                    {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
                     {"type": "text", "text": PROMPT},
                 ]}],
             )
-    else:
-        # Image file — send directly
-        if media_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
-            media_type = "image/jpeg"
-        b64 = base64.standard_b64encode(raw).decode("utf-8")
-        msg = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1500,
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
-                {"type": "text", "text": PROMPT},
-            ]}],
-        )
+    except HTTPException:
+        await SUBS.refund_credit(db, receipt, reason="AI scan failed")
+        raise
+    except Exception as exc:
+        await SUBS.refund_credit(db, receipt, reason="AI scan failed")
+        logger.exception("AI scan failed")
+        raise HTTPException(502, f"The AI scan could not be completed: {exc}")
 
     raw_text = msg.content[0].text.strip()
     m = _re.search(r"\{.*\}", raw_text, _re.DOTALL)
     try:
         result = _json.loads(m.group() if m else raw_text)
     except Exception:
+        await SUBS.refund_credit(db, receipt, reason="AI scan could not be read")
         raise HTTPException(422, "AI could not parse the invoice — please fill manually")
-    return result
+    return {**result, "_credits": {"spent": receipt["spent"], "balance": receipt["balance"],
+                                   "low": receipt["low"], "scan_id": scan_id}}
 
 
 # ── Quick upload via mobile link ──────────────────────────────────────────────
@@ -3708,7 +4749,7 @@ async def purchase_pdf(pid: str, ctx=Depends(get_org_ctx)):
     p = await db.purchases.find_one(org_filter(ctx, {"id": pid}), {"_id": 0})
     if not p:
         raise HTTPException(404, "Not found")
-    biz = await get_org_doc(ctx["org_id"])
+    biz = await pdf_biz(ctx)
     # Adapt purchase shape to the generator (uses invoice_no/invoice_date keys).
     adapted = {**p, "invoice_no": p["bill_no"], "invoice_date": p["purchase_date"]}
     tmpl = (biz.get("invoice_theme") or {}).get("template", "classic")
@@ -4838,7 +5879,7 @@ async def dashboard_pos(ctx=Depends(get_org_ctx)):
 # ---------------- GST ----------------
 @api.get("/gst/gstr1")
 async def gstr1(month: Optional[str] = Query(None, description="YYYY-MM; defaults to current month"),
-                ctx=Depends(get_org_ctx)):
+                ctx=Depends(require_feature("gst_returns"))):
     if not month:
         month = now_dt().strftime("%Y-%m")
     b2b, b2c, hsn_summary = [], [], {}
@@ -4862,7 +5903,7 @@ async def gstr1(month: Optional[str] = Query(None, description="YYYY-MM; default
 
 @api.get("/gst/gstr3b")
 async def gstr3b(month: Optional[str] = Query(None, description="YYYY-MM; defaults to current month"),
-                 ctx=Depends(get_org_ctx)):
+                 ctx=Depends(require_feature("gst_returns"))):
     if not month:
         month = now_dt().strftime("%Y-%m")
     out_cgst = out_sgst = out_igst = in_cgst = in_sgst = in_igst = 0
@@ -5048,15 +6089,40 @@ class BusinessCreateIn(BaseModel):
     gstin: str = ""
 
 
+async def business_cap_for(user_id: str) -> dict:
+    """How many businesses this login may run: the plan's cap, raised (never
+    lowered) by any per-account override the BillingsEasy super admin has set."""
+    cat = await PRICING.load_catalogue(db)
+    info = await SUBS.account_plan(db, user_id, cat)
+    lim = await owner_business_limits(user_id)
+    plan_cap = info["limits"].get("businesses", 1)
+    admin_cap = int(lim.get("max_businesses") or 0)
+    cap = PRICING.UNLIMITED if plan_cap == PRICING.UNLIMITED else max(plan_cap, admin_cap)
+    return {"cap": cap, "plan": info, "admin_limits": lim,
+            "unlimited": cap == PRICING.UNLIMITED,
+            "from_admin": cap != PRICING.UNLIMITED and admin_cap > plan_cap}
+
+
 async def _business_account(user: dict) -> dict:
     owned = await owned_businesses(user["id"])
     lim = await owner_business_limits(user["id"])
+    capinfo = await business_cap_for(user["id"])
+    cap, info = capinfo["cap"], capinfo["plan"]
     extra = max(0, len(owned) - lim["included_businesses"])
+    nxt = PRICING.cheapest_plan_for_limit("businesses", len(owned) + 1)
     return {
         "limits": lim, "owned_count": len(owned),
-        "can_add": len(owned) < lim["max_businesses"],
+        "can_add": capinfo["unlimited"] or len(owned) < cap,
+        "max_businesses": cap, "unlimited": capinfo["unlimited"],
+        "cap_from_admin": capinfo["from_admin"],
         "extra_businesses": extra,
         "addon_monthly_total": extra * lim["addon_price_monthly"],
+        "plan": {"code": info["plan_code"], "name": info["plan"]["name"],
+                 "tier": info["tier"], "status": info["status"]},
+        "next_plan": ({"code": nxt["code"], "name": nxt["name"],
+                       "paise": nxt["paise"], "label": PRICING.fmt_inr(nxt["paise"])}
+                      if nxt and nxt["tier"] != "FREE" else None),
+        "extra_business_addon": PRICING.ADDONS["EXTRA_BUSINESS"],
         "types": [{"value": k, "label": v, "allowed": k in lim["allowed_types"]} for k, v in BUSINESS_TYPES.items()],
     }
 
@@ -5084,9 +6150,18 @@ async def create_business(body: BusinessCreateIn, request: Request, user=Depends
     if btype not in lim["allowed_types"]:
         raise HTTPException(403, f"{BUSINESS_TYPES[btype]} isn't enabled for your account — contact BillingsEasy support")
     if not acct["can_add"]:
-        raise HTTPException(402, f"Your account allows {lim['max_businesses']} business"
-                                 f"{'es' if lim['max_businesses'] != 1 else ''}. Contact BillingsEasy to add more "
-                                 f"(₹{lim['addon_price_monthly']}/month per extra business).")
+        cap = acct["max_businesses"]
+        nxt = acct.get("next_plan")
+        addon = acct["extra_business_addon"]
+        msg = f"Your plan covers {cap} business{'es' if cap != 1 else ''}."
+        if nxt:
+            msg += f" Add another with {nxt['name']} — {nxt['label']}/year,"
+            msg += f" or buy one extra business for {PRICING.fmt_inr(addon['yearly_paise'])}/year."
+        raise PlanError(PRICING.ERR_BUSINESSES, msg, used=acct["owned_count"], limit=cap,
+                        suggested_plan=(nxt or {}).get("code"),
+                        suggested_plan_name=(nxt or {}).get("name"),
+                        suggested_plan_paise=(nxt or {}).get("paise"),
+                        addon=addon)
     owned = await owned_businesses(user["id"])
     billing_root = (await billing_org_for(owned[0]))["id"] if owned else None
     org = await _create_org_internal(body.name.strip(), user["id"], body.state, body.state_code)
@@ -5413,8 +6488,12 @@ async def public_invoice_pdf(token: str):
     inv = await db.invoices.find_one({"share_token": token}, {"_id": 0})
     if not inv:
         raise HTTPException(404, "Invoice not found")
-    biz = await db.organizations.find_one({"id": inv["org_id"]}, {"_id": 0})
-    pdf = generate_invoice_pdf(inv, biz or {})
+    biz = await db.organizations.find_one({"id": inv["org_id"]}, {"_id": 0}) or {}
+    show = False
+    if biz.get("owner_user_id"):
+        info = await SUBS.account_plan(db, biz["owner_user_id"], await PRICING.load_catalogue(db))
+        show = not PRICING.has_feature(info["plan_code"], "remove_branding")
+    pdf = generate_invoice_pdf(inv, {**biz, "_show_branding": show})
     return StreamingResponse(BytesIO(pdf), media_type="application/pdf",
                              headers={"Content-Disposition": f'inline; filename="{inv["invoice_no"]}.pdf"'})
 
@@ -7644,7 +8723,8 @@ async def _gsp_post(cfg: dict, path: str, payload: dict) -> dict:
 
 
 @api.get("/gst/gstr1/portal-json")
-async def gstr1_portal_json(month: Optional[str] = Query(None, description="YYYY-MM"), ctx=Depends(get_org_ctx)):
+async def gstr1_portal_json(month: Optional[str] = Query(None, description="YYYY-MM"),
+                            ctx=Depends(require_feature("gst_returns"))):
     """GSTR-1 in the JSON shape the GST offline utility / portal accepts (schema v2.1).
     Needs no credentials — download it and upload on gst.gov.in."""
     month = month or now_dt().strftime("%Y-%m")
@@ -7811,6 +8891,7 @@ async def _generate_irn(ctx: dict, inv: dict, org: dict) -> dict:
 @api.post("/invoices/{iid}/einvoice/generate")
 async def invoice_generate_irn(iid: str, request: Request, ctx=Depends(require_permission("invoice.create"))):
     """Register the invoice on the IRP through your GSP and store the IRN + signed QR."""
+    await guard_feature(ctx, "einvoicing")
     inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
     if not inv:
         raise HTTPException(404, "Invoice not found")
@@ -7849,6 +8930,7 @@ async def invoice_cancel_irn(iid: str, body: IrnCancelIn, request: Request,
 async def invoice_generate_ewb(iid: str, body: dict, request: Request,
                                ctx=Depends(require_permission("invoice.create"))):
     """File the e-way bill through your GSP and store the EWB number."""
+    await guard_feature(ctx, "eway_bills")
     inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
     if not inv:
         raise HTTPException(404, "Invoice not found")
