@@ -287,3 +287,63 @@ STATE_LABELS = {
     "ready": "Ready to serve",
     "bill": "Bill requested",
 }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Delays — the floor manager's whole job is spotting these before the guest does.
+# ─────────────────────────────────────────────────────────────────────────────
+WARN_MINUTES = 12          # amber: worth a glance
+LATE_MINUTES = 20          # red: go and say something
+
+
+def minutes_waiting(order: dict, now=None) -> int:
+    """How long the guest has been waiting on this round, in minutes.
+
+    The clock starts when they sent it and stops when it reaches the table —
+    not when the kitchen accepted it, because the guest does not care about that.
+    """
+    from datetime import datetime, timezone
+    started = order.get("placed_at")
+    if not started:
+        return 0
+    ended = order.get("served_at") if order.get("status") == "served" else None
+    try:
+        t0 = datetime.fromisoformat(started)
+        t1 = datetime.fromisoformat(ended) if ended else (now or datetime.now(timezone.utc))
+    except (TypeError, ValueError):
+        return 0
+    if t0.tzinfo is None:
+        t0 = t0.replace(tzinfo=timezone.utc)
+    if t1.tzinfo is None:
+        t1 = t1.replace(tzinfo=timezone.utc)
+    return max(0, int((t1 - t0).total_seconds() // 60))
+
+
+def delay_level(order: dict, now=None) -> str:
+    """"ok" | "warn" | "late" — a round already served is never late."""
+    if order.get("status") in ("served", "cancelled", "rejected"):
+        return "ok"
+    if order.get("status") == "needs_guest":
+        return "ok"              # the clock is on the guest, not the kitchen
+    mins = minutes_waiting(order, now)
+    if mins >= LATE_MINUTES:
+        return "late"
+    if mins >= WARN_MINUTES:
+        return "warn"
+    return "ok"
+
+
+def delay_summary(orders: List[dict], now=None) -> Dict[str, Any]:
+    live = [o for o in orders if o.get("status") in OPEN_ORDER_STATES]
+    levels = [(o, delay_level(o, now)) for o in live]
+    late = [o for o, lv in levels if lv == "late"]
+    warn = [o for o, lv in levels if lv == "warn"]
+    waits = [minutes_waiting(o, now) for o in live]
+    return {
+        "late": len(late),
+        "warning": len(warn),
+        "longest_wait": max(waits) if waits else 0,
+        "late_tables": sorted({o.get("table_name", "") for o in late}),
+        "warn_minutes": WARN_MINUTES,
+        "late_minutes": LATE_MINUTES,
+    }

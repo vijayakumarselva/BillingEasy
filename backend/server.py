@@ -44,7 +44,7 @@ from pdf_invoice import generate_invoice_pdf
 from seed_data import seed_demo_data
 from rbac import (
     PERMISSIONS, SYSTEM_ROLES, resolve_permissions, resolve_allowed_modes, ensure_system_roles,
-    audit_log, limiter, client_ip,
+    audit_log, limiter, client_ip, role_home,
 )
 from plans import (
     PLANS as PLAN_CATALOG, get_plan_limits, org_usage, check_limit,
@@ -1164,7 +1164,9 @@ async def list_my_orgs(user=Depends(get_current_user)):
             allowed_modes = await resolve_allowed_modes(db, m["role"], m["org_id"])
             if org.get("deleted"):
                 continue
+            perms = await resolve_permissions(db, m["role"], m["org_id"])
             out.append({**org, "role": m["role"], "allowed_modes": allowed_modes,
+                        "permissions": sorted(perms), "home": role_home(m["role"]),
                         "subscription": await effective_subscription(org)})
     return out
 
@@ -2262,8 +2264,12 @@ async def get_public_pricing():
 
 
 @api.get("/subscription")
-async def my_subscription(ctx=Depends(get_org_ctx)):
-    """Current plan, usage, credits and billing history for the active login."""
+async def my_subscription(ctx=Depends(require_permission("billing.view"))):
+    """Current plan, usage, credits and billing history for the active login.
+
+    Needs billing.view: a kitchen or floor login has no business seeing what the
+    owner pays or what has been invoiced to them.
+    """
     cat = await PRICING.load_catalogue(db)
     account_id = await account_id_for_ctx(ctx)
     await ensure_subscription(account_id)
@@ -2311,7 +2317,7 @@ async def my_subscription(ctx=Depends(get_org_ctx)):
 
 
 @api.get("/subscription/credits")
-async def my_credit_ledger(limit: int = 100, ctx=Depends(get_org_ctx)):
+async def my_credit_ledger(limit: int = 100, ctx=Depends(require_permission("billing.view"))):
     account_id = await account_id_for_ctx(ctx)
     bal = await SUBS.get_balance(db, account_id)
     rows = await db.credit_ledger.find({"account_id": account_id}, {"_id": 0}) \
@@ -2692,7 +2698,7 @@ async def billing_cancel_subscription(ctx=Depends(require_permission("billing.ma
 
 
 @api.get("/billing/invoices")
-async def billing_invoice_list(ctx=Depends(get_org_ctx)):
+async def billing_invoice_list(ctx=Depends(require_permission("billing.view"))):
     account_id = await account_id_for_ctx(ctx)
     rows = await db.billing_invoices.find({"account_id": account_id}, {"_id": 0}) \
         .sort("created_at", -1).to_list(200)
@@ -2700,7 +2706,7 @@ async def billing_invoice_list(ctx=Depends(get_org_ctx)):
 
 
 @api.get("/billing/invoices/{iid}/pdf")
-async def billing_invoice_pdf(iid: str, ctx=Depends(get_org_ctx)):
+async def billing_invoice_pdf(iid: str, ctx=Depends(require_permission("billing.view"))):
     account_id = await account_id_for_ctx(ctx)
     inv = await db.billing_invoices.find_one({"id": iid, "account_id": account_id}, {"_id": 0})
     if not inv:
@@ -3402,11 +3408,13 @@ async def dine_live(token: str, since: int = 0):
 
 # ── Kitchen display ─────────────────────────────────────────────────────────
 @api.get("/dining/kitchen")
-async def kitchen_board(ctx=Depends(get_org_ctx)):
+async def kitchen_board(ctx=Depends(require_permission("dining.kitchen"))):
     """Every order the kitchen still has to do something about."""
     orders = await db.dining_orders.find(
         {"org_id": ctx["org_id"], "status": {"$in": DINING.OPEN_ORDER_STATES}}, {"_id": 0}
     ).sort("placed_at", 1).to_list(200)
+    orders = [{**o, "waiting_minutes": DINING.minutes_waiting(o),
+               "delay": DINING.delay_level(o)} for o in orders]
     return {"orders": orders, "seq": await DINING.current_seq(db, ctx["org_id"]),
             "settings": await _dining_settings(ctx["org_id"])}
 
@@ -3418,7 +3426,7 @@ class KitchenActionIn(BaseModel):
 
 @api.post("/dining/orders/{order_id}/{action}")
 async def kitchen_action(order_id: str, action: str, body: KitchenActionIn = Body(default=None),
-                         ctx=Depends(get_org_ctx)):
+                         ctx=Depends(require_permission("dining.kitchen"))):
     """accept · unavailable · preparing · ready · served · reject · cancel"""
     body = body or KitchenActionIn()
     org_id = ctx["org_id"]
@@ -3472,7 +3480,7 @@ async def kitchen_action(order_id: str, action: str, body: KitchenActionIn = Bod
 
 # ── Floor view (owner / cashier) ────────────────────────────────────────────
 @api.get("/dining/floor")
-async def dining_floor(ctx=Depends(get_org_ctx)):
+async def dining_floor(ctx=Depends(require_permission("dining.floor"))):
     """Every table, what state it is in, and what it is worth right now."""
     org_id = ctx["org_id"]
     tables = await db.dining_tables.find({"org_id": org_id}, {"_id": 0}) \
@@ -3496,10 +3504,15 @@ async def dining_floor(ctx=Depends(get_org_ctx)):
         if totals:
             live_total += totals["grand_total"]
         state = DINING.table_state(sess, t_orders)
+        delays = [DINING.delay_level(o) for o in t_orders]
         rows.append({
             "table": t, "state": state, "state_label": DINING.STATE_LABELS[state],
             "session": sess, "totals": totals,
-            "orders": t_orders,
+            "orders": [{**o, "waiting_minutes": DINING.minutes_waiting(o),
+                        "delay": DINING.delay_level(o)} for o in t_orders],
+            "delay": "late" if "late" in delays else ("warn" if "warn" in delays else "ok"),
+            "longest_wait": max([DINING.minutes_waiting(o) for o in t_orders
+                                 if o["status"] in DINING.OPEN_ORDER_STATES] or [0]),
             "waiting_orders": len([o for o in t_orders if o["status"] in ("placed", "needs_guest")]),
             "ready_orders": len([o for o in t_orders if o["status"] == "ready"]),
             "waiter_calls": (sess or {}).get("waiter_calls", 0),
@@ -3520,12 +3533,13 @@ async def dining_floor(ctx=Depends(get_org_ctx)):
             "covers": sum(s.get("guests", 0) for s in sessions),
             "settled_today": len(settled),
             "sales_today": round(sum(s.get("settled_total", 0) for s in settled), 2),
+            **DINING.delay_summary(orders),
         },
     }
 
 
 @api.get("/dining/live")
-async def dining_live(since: int = 0, ctx=Depends(get_org_ctx)):
+async def dining_live(since: int = 0, ctx=Depends(require_permission("dining.kitchen"))):
     """Shared poll target for the kitchen and floor screens."""
     return {"seq": await DINING.current_seq(db, ctx["org_id"]),
             "events": await DINING.events_since(db, ctx["org_id"], since)}
@@ -3538,7 +3552,7 @@ class OpenSessionIn(BaseModel):
 
 
 @api.post("/dining/sessions/open")
-async def dining_open_session(body: OpenSessionIn, ctx=Depends(get_org_ctx)):
+async def dining_open_session(body: OpenSessionIn, ctx=Depends(require_permission("dining.floor"))):
     """Seat a walk-in from the floor screen, without the guest scanning."""
     table = await db.dining_tables.find_one(
         {"org_id": ctx["org_id"], "id": body.table_id}, {"_id": 0})
@@ -3559,7 +3573,7 @@ class StaffOrderIn(BaseModel):
 
 
 @api.post("/dining/orders")
-async def dining_staff_order(body: StaffOrderIn, ctx=Depends(get_org_ctx)):
+async def dining_staff_order(body: StaffOrderIn, ctx=Depends(require_permission("dining.floor"))):
     """A waiter takes the order at the table on their own phone."""
     org_id = ctx["org_id"]
     session = await db.dining_sessions.find_one(
@@ -3593,7 +3607,7 @@ class SettleIn(BaseModel):
 
 @api.post("/dining/sessions/{session_id}/settle")
 async def dining_settle(session_id: str, body: SettleIn, request: Request,
-                        ctx=Depends(require_permission("invoice.create"))):
+                        ctx=Depends(require_permission("dining.settle"))):
     """Close the table: raise the GST bill and record the payment.
 
     Payment is taken at the counter today; when a gateway is connected the
@@ -3691,7 +3705,7 @@ async def dining_settle(session_id: str, body: SettleIn, request: Request,
 
 
 @api.post("/dining/sessions/{session_id}/reopen")
-async def dining_reopen(session_id: str, ctx=Depends(get_org_ctx)):
+async def dining_reopen(session_id: str, ctx=Depends(require_permission("dining.floor"))):
     """Guest asked for the bill then changed their mind — let them order again."""
     sess = await db.dining_sessions.find_one({"org_id": ctx["org_id"], "id": session_id}, {"_id": 0})
     if not sess:
@@ -3706,7 +3720,7 @@ async def dining_reopen(session_id: str, ctx=Depends(get_org_ctx)):
 
 
 @api.post("/dining/sessions/{session_id}/cancel")
-async def dining_cancel_session(session_id: str, ctx=Depends(get_org_ctx)):
+async def dining_cancel_session(session_id: str, ctx=Depends(require_permission("dining.floor"))):
     """Free a table nobody ever ordered at (a mis-scan, or guests who left)."""
     sess = await db.dining_sessions.find_one({"org_id": ctx["org_id"], "id": session_id}, {"_id": 0})
     if not sess:
@@ -3732,14 +3746,14 @@ class TableIn(BaseModel):
 
 
 @api.get("/dining/tables")
-async def list_dining_tables(ctx=Depends(get_org_ctx)):
+async def list_dining_tables(ctx=Depends(require_permission("dining.floor"))):
     rows = await db.dining_tables.find({"org_id": ctx["org_id"]}, {"_id": 0}) \
         .sort("name", 1).to_list(300)
     return rows
 
 
 @api.post("/dining/tables")
-async def create_dining_table(body: TableIn, ctx=Depends(get_org_ctx)):
+async def create_dining_table(body: TableIn, ctx=Depends(require_permission("dining.manage"))):
     org_id = ctx["org_id"]
     if await db.dining_tables.find_one({"org_id": org_id, "name": body.name.strip()}):
         raise HTTPException(400, f"Table {body.name} already exists")
@@ -3760,7 +3774,7 @@ class BulkTablesIn(BaseModel):
 
 
 @api.post("/dining/tables/bulk")
-async def create_dining_tables_bulk(body: BulkTablesIn, ctx=Depends(get_org_ctx)):
+async def create_dining_tables_bulk(body: BulkTablesIn, ctx=Depends(require_permission("dining.manage"))):
     """Set the whole floor up in one go — T1…T20 with their QR codes.
 
     `count` is how many tables the place has, not how many to add, so running
@@ -3785,7 +3799,7 @@ async def create_dining_tables_bulk(body: BulkTablesIn, ctx=Depends(get_org_ctx)
 
 
 @api.put("/dining/tables/{table_id}")
-async def update_dining_table(table_id: str, body: dict, ctx=Depends(get_org_ctx)):
+async def update_dining_table(table_id: str, body: dict, ctx=Depends(require_permission("dining.manage"))):
     patch = {k: v for k, v in body.items() if k in ("name", "seats", "zone", "active")}
     if not patch:
         raise HTTPException(400, "Nothing to update")
@@ -3796,7 +3810,7 @@ async def update_dining_table(table_id: str, body: dict, ctx=Depends(get_org_ctx
 
 
 @api.delete("/dining/tables/{table_id}")
-async def delete_dining_table(table_id: str, ctx=Depends(get_org_ctx)):
+async def delete_dining_table(table_id: str, ctx=Depends(require_permission("dining.manage"))):
     open_sess = await db.dining_sessions.find_one(
         {"org_id": ctx["org_id"], "table_id": table_id,
          "status": {"$in": [DINING.SESSION_OPEN, DINING.SESSION_BILL_REQUESTED]}})
@@ -3807,7 +3821,7 @@ async def delete_dining_table(table_id: str, ctx=Depends(get_org_ctx)):
 
 
 @api.post("/dining/tables/{table_id}/new-qr")
-async def regenerate_table_qr(table_id: str, ctx=Depends(get_org_ctx)):
+async def regenerate_table_qr(table_id: str, ctx=Depends(require_permission("dining.manage"))):
     """Print a fresh QR — the old sticker stops working immediately."""
     token = DINING.new_token()
     r = await db.dining_tables.update_one({"org_id": ctx["org_id"], "id": table_id},
@@ -3818,12 +3832,12 @@ async def regenerate_table_qr(table_id: str, ctx=Depends(get_org_ctx)):
 
 
 @api.get("/dining/settings")
-async def get_dining_settings(ctx=Depends(get_org_ctx)):
+async def get_dining_settings(ctx=Depends(require_permission("dining.kitchen"))):
     return await _dining_settings(ctx["org_id"])
 
 
 @api.put("/dining/settings")
-async def set_dining_settings(body: dict, ctx=Depends(get_org_ctx)):
+async def set_dining_settings(body: dict, ctx=Depends(require_permission("dining.manage"))):
     allowed = {"accept_orders", "require_kitchen_accept", "gst_rate", "service_charge_pct",
                "prices_include_gst", "welcome_note", "pay_at_counter_note"}
     patch = {k: v for k, v in body.items() if k in allowed}
@@ -3835,7 +3849,7 @@ async def set_dining_settings(body: dict, ctx=Depends(get_org_ctx)):
 
 
 @api.get("/dining/menu")
-async def dining_menu(ctx=Depends(get_org_ctx)):
+async def dining_menu(ctx=Depends(require_permission("dining.floor"))):
     return await _menu_for(ctx["org_id"])
 
 
@@ -3848,7 +3862,7 @@ class MenuFlagsIn(BaseModel):
 
 
 @api.put("/dining/menu")
-async def update_menu_item(body: MenuFlagsIn, ctx=Depends(get_org_ctx)):
+async def update_menu_item(body: MenuFlagsIn, ctx=Depends(require_permission("dining.manage"))):
     """86 a dish, hide it, or tag it veg — straight from the floor screen."""
     patch = {k: v for k, v in body.model_dump(exclude={"product_id"}).items() if v is not None}
     if not patch:
@@ -3863,7 +3877,7 @@ async def update_menu_item(body: MenuFlagsIn, ctx=Depends(get_org_ctx)):
 
 
 @api.get("/dining/sessions")
-async def dining_session_history(limit: int = 50, ctx=Depends(get_org_ctx)):
+async def dining_session_history(limit: int = 50, ctx=Depends(require_permission("dining.floor"))):
     """Settled tables, newest first — the day's covers and what they spent."""
     rows = await db.dining_sessions.find(
         {"org_id": ctx["org_id"], "status": {"$in": [DINING.SESSION_SETTLED,
@@ -4346,7 +4360,8 @@ async def customer_ytd(party_id: str, ctx=Depends(get_org_ctx)):
 
 @api.get("/invoices")
 async def list_invoices(status: Optional[str] = None, type: Optional[str] = None,
-                        party_id: Optional[str] = None, ctx=Depends(get_org_ctx)):
+                        party_id: Optional[str] = None,
+                        ctx=Depends(require_permission("invoice.view"))):
     q = biz_filter(ctx)
     if status: q["status"] = status
     if type: q["type"] = type
@@ -4895,7 +4910,7 @@ async def vendor_ytd(party_id: str, ctx=Depends(get_org_ctx)):
 
 
 @api.get("/purchases")
-async def list_purchases(ctx=Depends(get_org_ctx)):
+async def list_purchases(ctx=Depends(require_permission("purchase.view"))):
     items = await db.purchases.find(biz_filter(ctx), {"_id": 0}).sort("purchase_date", -1).to_list(500)
     if not items: return items
     party_ids = list({i["party_id"] for i in items})

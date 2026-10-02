@@ -27,6 +27,7 @@ import Pricing from "@/pages/Pricing";
 import DineIn from "@/pages/DineIn";
 import KitchenDisplay from "@/pages/KitchenDisplay";
 import DiningFloor from "@/pages/DiningFloor";
+import KitchenShell from "@/pages/KitchenShell";
 import Billing from "@/pages/Billing";
 import UpgradeModal from "@/components/UpgradeModal";
 import ForgotPassword from "@/pages/ForgotPassword";
@@ -72,6 +73,46 @@ function POSOnlyRoute({ children }) {
   return children;
 }
 
+// A role with its own home (kitchen, floor) must not be dropped on the
+// dashboard — it either cannot read it or does not need it.
+function RoleHome() {
+  const { home, loading } = useAuth();
+  if (loading) return <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading…</div>;
+  return <Navigate to={home || "/dashboard"} replace />;
+}
+
+// Guards a route behind a permission, and sends anyone without it somewhere
+// they can actually use.
+function Allowed({ perm, children }) {
+  const { user, loading, can, home } = useAuth();
+  const location = useLocation();
+  if (loading) return <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading…</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  if (perm && !can(perm)) return <Navigate to={home || "/dashboard"} replace />;
+  return children;
+}
+
+// Roles whose home is a screen of their own never load the main app shell —
+// a kitchen login has one job and one screen.
+const STANDALONE_HOMES = ["/kitchen-screen", "/pos-screen"];
+
+function AppShell() {
+  const { home, loading } = useAuth();
+  if (loading) return <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading…</div>;
+  if (STANDALONE_HOMES.includes(home)) return <Navigate to={home} replace />;
+  return <AppLayout />;
+}
+
+// The kitchen screen stands alone: no sidebar, no menus, nothing to wander off
+// into. A kitchen login sees this and only this.
+function KitchenOnly() {
+  const { user, loading, can, home } = useAuth();
+  if (loading) return <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading…</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  if (!can("dining.kitchen")) return <Navigate to={home || "/dashboard"} replace />;
+  return <KitchenShell />;
+}
+
 function SuperOnly({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading…</div>;
@@ -83,15 +124,16 @@ function SuperOnly({ children }) {
 function Public({ children }) {
   const { user, loading } = useAuth();
   if (loading) return null;
-  if (user) return <Navigate to="/dashboard" replace />;
+  if (user) return <RoleHome />;
   return children;
 }
 
 function LandingOrDashboard() {
-  // Logged-out users see the marketing landing page; logged-in users go to dashboard.
+  // Logged-out users see the marketing landing page; everyone else goes to
+  // wherever their role belongs.
   const { user, loading } = useAuth();
   if (loading) return null;
-  if (user) return <Navigate to="/dashboard" replace />;
+  if (user) return <RoleHome />;
   return <Landing />;
 }
 
@@ -151,7 +193,9 @@ export default function App() {
             <Route path="/billing/mock-checkout" element={<Protected><MockCheckout /></Protected>} />
             {/* Fullscreen POS for pos-staff — no sidebar */}
             <Route path="/pos-screen" element={<POSOnlyRoute><RetailPOS /></POSOnlyRoute>} />
-            <Route element={<Protected><AppLayout /></Protected>}>
+            {/* Standalone kitchen screen — the whole app for a kitchen login */}
+            <Route path="/kitchen-screen" element={<KitchenOnly />} />
+            <Route element={<Protected><AppShell /></Protected>}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/ask-ai" element={<AskAi />} />
               <Route path="/tools" element={<Tools />} />
@@ -177,14 +221,14 @@ export default function App() {
               <Route path="/reports" element={<Reports />} />
               <Route path="/tds" element={<TDS />} />
               <Route path="/settings" element={<Settings />} />
-              <Route path="/billing" element={<Billing />} />
+              <Route path="/billing" element={<Allowed perm="billing.view"><Billing /></Allowed>} />
               <Route path="/entities" element={<Entities />} />
               <Route path="/pos" element={<RetailPOS />} />
               <Route path="/pos/admin" element={<POSAdmin />} />
               <Route path="/stay" element={<Stay />} />
               <Route path="/restaurant" element={<Restaurant />} />
-              <Route path="/dining" element={<DiningFloor />} />
-              <Route path="/kitchen" element={<KitchenDisplay />} />
+              <Route path="/dining" element={<Allowed perm="dining.floor"><DiningFloor /></Allowed>} />
+              <Route path="/kitchen" element={<Allowed perm="dining.kitchen"><KitchenDisplay /></Allowed>} />
               <Route path="/restaurant/admin" element={<RestaurantAdmin />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

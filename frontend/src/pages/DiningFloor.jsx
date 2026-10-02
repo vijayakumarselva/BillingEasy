@@ -172,12 +172,29 @@ export default function DiningFloor() {
         </div>
       </div>
 
+      {s.late > 0 && (
+        <Card className="p-4 border-rose-300 bg-rose-50 flex items-start gap-3">
+          <Clock className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+          <div>
+            <p className="font-semibold text-rose-900 text-sm">
+              {s.late} order{s.late === 1 ? " is" : "s are"} running late
+              {s.late_tables?.length ? ` — ${s.late_tables.join(", ")}` : ""}
+            </p>
+            <p className="text-xs text-rose-700 mt-0.5">
+              Longest wait is {s.longest_wait} minutes. Anything past {s.late_minutes} minutes
+              shows up here before the guest has to ask.
+            </p>
+          </div>
+        </Card>
+      )}
+
       {/* Summary */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
         {[
           { label: "Tables busy", value: `${s.occupied} of ${s.tables_total}`, icon: Users },
           { label: "Guests seated", value: s.covers, icon: Users },
           { label: "On the tables now", value: inr(s.live_total), icon: Clock },
+          { label: "Running late", value: s.late || 0, icon: Clock, warn: s.late > 0 },
           { label: "Bills asked for", value: s.bill_requested, icon: Receipt,
             warn: s.bill_requested > 0 },
           { label: "Settled today", value: `${s.settled_today} · ${inr(s.sales_today)}`,
@@ -211,7 +228,9 @@ export default function DiningFloor() {
               key={row.table.id}
               onClick={() => setActive(row)}
               className={`text-left rounded-xl border-2 p-3 transition-all hover:shadow-md ${
-                STATE_STYLE[row.state]
+                row.delay === "late"
+                  ? "border-rose-500 bg-rose-50 ring-2 ring-rose-200"
+                  : STATE_STYLE[row.state]
               }`}
             >
               <div className="flex items-center justify-between">
@@ -219,6 +238,15 @@ export default function DiningFloor() {
                 <span className={`h-2.5 w-2.5 rounded-full ${STATE_DOT[row.state]}`} />
               </div>
               <p className="text-[11px] font-medium text-slate-600 mt-0.5">{row.state_label}</p>
+              {row.longest_wait > 0 && row.delay !== "ok" && (
+                <p
+                  className={`text-[11px] font-bold mt-0.5 ${
+                    row.delay === "late" ? "text-rose-700" : "text-amber-700"
+                  }`}
+                >
+                  waiting {row.longest_wait} min
+                </p>
+              )}
               {row.session && (
                 <>
                   <p className="text-sm font-bold mt-2">{inr(row.totals.grand_total)}</p>
@@ -296,9 +324,20 @@ export default function DiningFloor() {
                     <Card key={o.id} className="p-3">
                       <div className="flex items-center justify-between mb-1.5">
                         <span className="text-xs text-muted-foreground">Round {o.round}</span>
-                        <Badge variant="outline" className="capitalize text-[10px]">
-                          {o.status.replace("_", " ")}
-                        </Badge>
+                        <div className="flex items-center gap-1.5">
+                          {o.waiting_minutes > 0 && o.delay !== "ok" && (
+                            <Badge
+                              className={`text-[10px] ${
+                                o.delay === "late" ? "bg-rose-600" : "bg-amber-500"
+                              } text-white`}
+                            >
+                              {o.waiting_minutes} min
+                            </Badge>
+                          )}
+                          <Badge variant="outline" className="capitalize text-[10px]">
+                            {o.status.replace("_", " ")}
+                          </Badge>
+                        </div>
                       </div>
                       {o.items.map((i) => (
                         <div

@@ -75,11 +75,19 @@ export function AuthProvider({ children }) {
   const currentRole = currentOrg?.role;
   // allowed_modes: empty = unrestricted (owner/accountant); non-empty = locked to those modes
   const allowedModes = currentOrg?.allowed_modes || [];
+  // The server is the authority on permissions; this only decides what to draw.
+  // The owner carries "*", so every check passes without listing them all.
+  const permissions = currentOrg?.permissions || [];
+  const can = (perm) =>
+    !perm || permissions.includes("*") || permissions.includes(perm) || currentRole === "owner";
+  // Where this role belongs when it signs in — a kitchen login opens on the
+  // kitchen, not on a dashboard full of invoices it cannot read.
+  const home = currentOrg?.home || "/dashboard";
 
   return (
     <AuthCtx.Provider value={{
       user, loading, login, register, logout,
-      orgs, orgId, currentOrg, currentRole, allowedModes,
+      orgs, orgId, currentOrg, currentRole, allowedModes, permissions, can, home,
       switchOrg, refreshOrgs: loadOrgs, setUser,
     }}>
       {children}

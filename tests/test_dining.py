@@ -19,7 +19,9 @@ async def _noop(*a, **k): return None
 server.audit_log = _noop
 server.app.router.on_startup.clear()
 OWNER = {"id": "o1", "email": "owner@kada.in", "name": "Vijay", "is_super_admin": True}
-server.app.dependency_overrides[server.get_current_user] = lambda: OWNER
+# Lets a test sign in as a different role without rebuilding the app.
+CURRENT = {"u": OWNER}
+server.app.dependency_overrides[server.get_current_user] = lambda: CURRENT["u"]
 ORG = "rest1"
 
 MENU = [
@@ -281,6 +283,103 @@ def test_staff_side(table):
           any(o["id"] == r.json()["id"] for o in board["orders"]))
 
 
+def test_roles():
+    """Each role reaches its own screen and nothing else."""
+    print("\nroles")
+    from rbac import SYSTEM_ROLES, role_home
+
+    async def add(uid, email, role):
+        await mdb.users.insert_one({"id": uid, "email": email, "name": role})
+        await mdb.memberships.insert_one({"id": f"m-{uid}", "user_id": uid,
+                                          "org_id": ORG, "role": role})
+    asyncio.run(add("k1", "cook@kada.in", "kitchen"))
+    asyncio.run(add("f1", "floor@kada.in", "floor-manager"))
+
+    check("the kitchen lands on the kitchen screen", role_home("kitchen") == "/kitchen-screen")
+    check("the floor manager lands on the floor", role_home("floor-manager") == "/dining")
+    check("the owner still lands on the dashboard", role_home("owner") == "/dashboard")
+
+    KITCHEN = {"id": "k1", "email": "cook@kada.in", "name": "Cook"}
+    FLOOR = {"id": "f1", "email": "floor@kada.in", "name": "Floor"}
+
+    # ── kitchen login ──
+    CURRENT["u"] = KITCHEN
+    check("the kitchen can see its board", c.get("/api/dining/kitchen", headers=H).status_code == 200)
+    board = c.get("/api/dining/kitchen", headers=H).json()
+    check("tickets carry how long the guest has waited",
+          all("waiting_minutes" in o for o in board["orders"]), str(board["orders"])[:120])
+    check("the kitchen cannot open the floor",
+          c.get("/api/dining/floor", headers=H).status_code == 403)
+    check("the kitchen cannot settle a bill",
+          c.post("/api/dining/sessions/x/settle", headers=H,
+                 json={"payment_mode": "cash"}).status_code == 403)
+    check("the kitchen cannot read invoices",
+          c.get("/api/invoices", headers=H).status_code == 403)
+    check("the kitchen cannot touch the menu",
+          c.put("/api/dining/menu", headers=H,
+                json={"product_id": "p1", "menu_out_of_stock": True}).status_code == 403)
+    check("the kitchen cannot make tables",
+          c.post("/api/dining/tables/bulk", headers=H, json={"count": 2}).status_code == 403)
+    check("the kitchen cannot see the subscription",
+          c.get("/api/subscription", headers=H).status_code in (403, 402),
+          str(c.get("/api/subscription", headers=H).status_code))
+
+    # ── floor manager ──
+    CURRENT["u"] = FLOOR
+    check("the floor manager sees the floor",
+          c.get("/api/dining/floor", headers=H).status_code == 200)
+    floor = c.get("/api/dining/floor", headers=H).json()
+    check("the floor reports what is running late",
+          set(floor["summary"]) >= {"late", "warning", "longest_wait", "late_tables"})
+    check("the floor manager can also watch the kitchen",
+          c.get("/api/dining/kitchen", headers=H).status_code == 200)
+    check("the floor manager cannot see purchases",
+          c.get("/api/purchases", headers=H).status_code == 403)
+    check("the floor manager cannot change prices or tables",
+          c.post("/api/dining/tables/bulk", headers=H, json={"count": 2}).status_code == 403)
+    check("the floor manager cannot invite staff",
+          c.post("/api/orgs/current/members", headers=H,
+                 json={"email": "x@y.in", "name": "X", "password": "secret1",
+                       "role": "kitchen"}).status_code == 403)
+
+    # ── owner ──
+    CURRENT["u"] = OWNER
+    check("the owner can do all of it",
+          c.get("/api/dining/floor", headers=H).status_code == 200
+          and c.get("/api/dining/kitchen", headers=H).status_code == 200
+          and c.post("/api/dining/tables/bulk", headers=H, json={"count": 8}).status_code == 200)
+
+    perms = SYSTEM_ROLES["kitchen"]["permissions"]
+    check("the kitchen role carries only what it needs",
+          set(perms) == {"dining.kitchen", "product.view"}, str(perms))
+
+
+def test_delays():
+    print("\ndelays")
+    import dining as D
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    fresh = {"status": "placed", "placed_at": (now - timedelta(minutes=3)).isoformat()}
+    warm = {"status": "preparing", "placed_at": (now - timedelta(minutes=14)).isoformat()}
+    late = {"status": "preparing", "placed_at": (now - timedelta(minutes=25)).isoformat()}
+    done = {"status": "served", "placed_at": (now - timedelta(minutes=40)).isoformat(),
+            "served_at": (now - timedelta(minutes=30)).isoformat()}
+    waiting = {"status": "needs_guest", "placed_at": (now - timedelta(minutes=30)).isoformat()}
+
+    check("a new order is not late", D.delay_level(fresh, now) == "ok")
+    check("twelve minutes is worth a glance", D.delay_level(warm, now) == "warn")
+    check("twenty minutes needs someone to go over", D.delay_level(late, now) == "late")
+    check("a served round stops the clock", D.delay_level(done, now) == "ok")
+    check("and its wait is measured to when it landed",
+          D.minutes_waiting(done, now) == 10)
+    check("waiting on the guest is not the kitchen being slow",
+          D.delay_level(waiting, now) == "ok")
+
+    summary = D.delay_summary([fresh, warm, late, done, waiting], now)
+    check("the floor counts the late ones", summary["late"] == 1 and summary["warning"] == 1)
+    check("and knows the longest wait", summary["longest_wait"] >= 25)
+
+
 def main():
     table = test_tables()
     test_guest_opens_menu(table)
@@ -293,6 +392,8 @@ def main():
     test_86_a_dish(table)
     test_stop_taking_orders(table)
     test_staff_side(table)
+    test_delays()
+    test_roles()
     failed = [n for n, ok in OK if not ok]
     print(f"\n{len(OK) - len(failed)}/{len(OK)} checks passed")
     if failed:

@@ -22,31 +22,31 @@ import SupportChat from "@/components/SupportChat";
 import BusinessSwitcher, { BUSINESS_MODES } from "@/components/BusinessSwitcher";
 
 const ALL_NAV = [
-  { to: "/parties",  label: "Parties",           icon: Users,           tid: "nav-parties",   shortcut: "Alt+P", group: "Masters",      modes: ["b2b","b2c","restaurant","pos","stay"] },
-  { to: "/products", label: "Products & Stock",   icon: Package,         tid: "nav-products",  shortcut: "Alt+I", group: "Masters",      modes: ["b2b","b2c","restaurant","pos"] },
-  { to: "/sales",      label: "Sales / Invoices", icon: FileText,        tid: "nav-sales",     shortcut: "Alt+S", group: "Transactions", modes: ["b2b","b2c","stay"] },
-  { to: "/purchases",       label: "Purchases",        icon: ShoppingCart,  tid: "nav-purchases",    shortcut: "Alt+B", group: "Transactions", modes: ["b2b","b2c","restaurant","pos","stay"] },
-  { to: "/grn",             label: "GRN",              icon: PackageCheck,  tid: "nav-grn",                         group: "Transactions", modes: ["b2b","b2c"] },
-  { to: "/inventory",       label: "Inventory",        icon: ArrowLeftRight,tid: "nav-inventory",                   group: "Transactions", modes: ["b2b","b2c"] },
-  { to: "/delivery-orders", label: "Delivery Orders",  icon: Truck,         tid: "nav-delivery",                    group: "Transactions", modes: ["b2b","b2c"] },
-  { to: "/payments",        label: "Payments",         icon: Wallet,        tid: "nav-payments",  shortcut: "Alt+M", group: "Transactions", modes: ["b2b","b2c","stay"] },
-  { to: "/expenses",   label: "Expenses",          icon: Receipt,        tid: "nav-expenses",  shortcut: "Alt+E", group: "Transactions", modes: ["b2b","b2c","restaurant","stay"] },
-  { to: "/pos",              label: "Retail POS",          icon: Scan,             tid: "nav-pos",           badge: "New", group: "Modules", modes: ["pos","b2c"] },
-  { to: "/pos/admin",        label: "POS Settings",        icon: SlidersHorizontal,tid: "nav-pos-admin",                   group: "Modules", modes: ["pos"] },
-  { to: "/stay",             label: "Stay & Bookings",     icon: BedDouble,        tid: "nav-stay",          badge: "New", group: "Modules", modes: ["stay"] },
-  { to: "/dining",           label: "Floor & QR dining",   icon: UtensilsCrossed,  tid: "nav-dining",        badge: "New", group: "Modules", modes: ["restaurant"] },
-  { to: "/kitchen",          label: "Kitchen display",     icon: ChefHat,          tid: "nav-kitchen",       group: "Modules", modes: ["restaurant"] },
-  { to: "/restaurant",       label: "Counter billing",     icon: Receipt,          tid: "nav-restaurant",    group: "Modules", modes: ["restaurant"] },
-  { to: "/restaurant/admin", label: "Restaurant Settings", icon: SlidersHorizontal,tid: "nav-restaurant-admin",            group: "Modules", modes: ["restaurant"] },
-  { to: "/bank-statement", label: "Bank Statement",  icon: FileSpreadsheet, tid: "nav-bank-statement", group: "Accounting", modes: ["b2b","b2c","stay"] },
-  { to: "/gst",            label: "GST Returns",     icon: FileBarChart,    tid: "nav-gst",  shortcut: "Alt+G", group: "Accounting", modes: ["b2b","b2c","stay"] },
-  { to: "/tds",            label: "TDS",             icon: Landmark,        tid: "nav-tds",               group: "Accounting", modes: ["b2b"] },
-  { to: "/reports",        label: "Reports & Books", icon: BookOpen,        tid: "nav-accounting", shortcut: "Alt+R", group: "Accounting", modes: ["b2b","b2c","restaurant","stay"] },
+  { to: "/parties",  label: "Parties",           icon: Users,           tid: "nav-parties",   shortcut: "Alt+P", group: "Masters",      modes: ["b2b","b2c","restaurant","pos","stay"] , perm: "party.view" },
+  { to: "/products", label: "Products & Stock",   icon: Package,         tid: "nav-products",  shortcut: "Alt+I", group: "Masters",      modes: ["b2b","b2c","restaurant","pos"] , perm: "product.view" },
+  { to: "/sales",      label: "Sales / Invoices", icon: FileText,        tid: "nav-sales",     shortcut: "Alt+S", group: "Transactions", modes: ["b2b","b2c","stay"] , perm: "invoice.view" },
+  { to: "/purchases",       label: "Purchases",        icon: ShoppingCart,  tid: "nav-purchases",    shortcut: "Alt+B", group: "Transactions", modes: ["b2b","b2c","restaurant","pos","stay"] , perm: "purchase.view" },
+  { to: "/grn",             label: "GRN",              icon: PackageCheck,  tid: "nav-grn",                         group: "Transactions", modes: ["b2b","b2c"] , perm: "purchase.view" },
+  { to: "/inventory",       label: "Inventory",        icon: ArrowLeftRight,tid: "nav-inventory",                   group: "Transactions", modes: ["b2b","b2c"] , perm: "product.view" },
+  { to: "/delivery-orders", label: "Delivery Orders",  icon: Truck,         tid: "nav-delivery",                    group: "Transactions", modes: ["b2b","b2c"] , perm: "invoice.view" },
+  { to: "/payments",        label: "Payments",         icon: Wallet,        tid: "nav-payments",  shortcut: "Alt+M", group: "Transactions", modes: ["b2b","b2c","stay"] , perm: "payment.view" },
+  { to: "/expenses",   label: "Expenses",          icon: Receipt,        tid: "nav-expenses",  shortcut: "Alt+E", group: "Transactions", modes: ["b2b","b2c","restaurant","stay"] , perm: "expense.view" },
+  { to: "/pos",              label: "Retail POS",          icon: Scan,             tid: "nav-pos",           badge: "New", group: "Modules", modes: ["pos","b2c"] , perm: "invoice.create" },
+  { to: "/pos/admin",        label: "POS Settings",        icon: SlidersHorizontal,tid: "nav-pos-admin",                   group: "Modules", modes: ["pos"] , perm: "settings.edit" },
+  { to: "/stay",             label: "Stay & Bookings",     icon: BedDouble,        tid: "nav-stay",          badge: "New", group: "Modules", modes: ["stay"] , perm: "invoice.view" },
+  { to: "/dining",           label: "Floor & QR dining",   icon: UtensilsCrossed,  tid: "nav-dining",        badge: "New", group: "Modules", modes: ["restaurant"] , perm: "dining.floor" },
+  { to: "/kitchen",          label: "Kitchen display",     icon: ChefHat,          tid: "nav-kitchen",       group: "Modules", modes: ["restaurant"] , perm: "dining.kitchen" },
+  { to: "/restaurant",       label: "Counter billing",     icon: Receipt,          tid: "nav-restaurant",    group: "Modules", modes: ["restaurant"] , perm: "invoice.create" },
+  { to: "/restaurant/admin", label: "Restaurant Settings", icon: SlidersHorizontal,tid: "nav-restaurant-admin",            group: "Modules", modes: ["restaurant"] , perm: "dining.manage" },
+  { to: "/bank-statement", label: "Bank Statement",  icon: FileSpreadsheet, tid: "nav-bank-statement", group: "Accounting", modes: ["b2b","b2c","stay"] , perm: "payment.view" },
+  { to: "/gst",            label: "GST Returns",     icon: FileBarChart,    tid: "nav-gst",  shortcut: "Alt+G", group: "Accounting", modes: ["b2b","b2c","stay"] , perm: "gst.view" },
+  { to: "/tds",            label: "TDS",             icon: Landmark,        tid: "nav-tds",               group: "Accounting", modes: ["b2b"] , perm: "tds.view" },
+  { to: "/reports",        label: "Reports & Books", icon: BookOpen,        tid: "nav-accounting", shortcut: "Alt+R", group: "Accounting", modes: ["b2b","b2c","restaurant","stay"] , perm: "report.view" },
   { to: "/ask-ai", label: "Ask AI",    icon: Bot,    tid: "nav-ai",    badge: "AI",   group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos","stay"] },
   { to: "/tools",  label: "Tax Toolkit", icon: Wrench, tid: "nav-tools", badge: "Free", group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos","stay"] },
-  { to: "/billing",  label: "Plan & Billing",   icon: Coins,    tid: "nav-billing", group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
-  { to: "/entities", label: "Entities",          icon: Store,    tid: "nav-entities",               group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
-  { to: "/settings", label: "Settings",         icon: Settings, tid: "nav-settings", shortcut: "Alt+,", group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
+  { to: "/billing",  label: "Plan & Billing",   icon: Coins,    tid: "nav-billing", group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] , perm: "billing.view" },
+  { to: "/entities", label: "Entities",          icon: Store,    tid: "nav-entities",               group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] , perm: "settings.edit" },
+  { to: "/settings", label: "Settings",         icon: Settings, tid: "nav-settings", shortcut: "Alt+,", group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] , perm: "settings.view" },
 ];
 
 const FKEYS = [
@@ -58,7 +58,7 @@ const FKEYS = [
 ];
 
 export default function AppLayout() {
-  const { user, logout, orgs, orgId, currentOrg, switchOrg, refreshOrgs, allowedModes } = useAuth();
+  const { user, logout, orgs, orgId, currentOrg, switchOrg, refreshOrgs, allowedModes, can } = useAuth();
   const { theme, toggle } = useTheme();
   const nav = useNavigate();
   const loc = useLocation();
@@ -153,9 +153,12 @@ export default function AppLayout() {
   };
 
   const effectiveMode = businessMode || "b2b";
-  const visibleNav = allowedModes.length > 0
+  const byMode = allowedModes.length > 0
     ? ALL_NAV.filter(n => n.modes.some(m => allowedModes.includes(m)))
     : ALL_NAV;
+  // Never draw a link the role cannot open — the server would refuse it anyway,
+  // and a sidebar full of locked doors is worse than a short one.
+  const visibleNav = byMode.filter(n => can(n.perm));
   const primaryNav = visibleNav.filter(n => n.modes.includes(effectiveMode));
   const groupedPrimary = primaryNav.reduce((acc, n) => {
     if (!acc[n.group]) acc[n.group] = [];

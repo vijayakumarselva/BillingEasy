@@ -270,11 +270,17 @@ def test_super_admin():
 
 def test_staff_and_credits():
     print("\nstaff + credit ledger")
+    # What the owner pays, and every subscription invoice, is the owner's
+    # business — a staff login must not be able to read it.
     CURRENT["u"] = STAFF
-    d = c.get("/api/subscription", headers=H).json()
-    check("staff see the owner's plan", d["plan"]["tier"] == "BUSINESS")
-    check("and the owner's credit pool", d["credits"]["plan"] == 1000)
+    check("staff cannot read the subscription",
+          c.get("/api/subscription", headers=H).status_code == 403)
+    check("nor the billing history",
+          c.get("/api/billing/invoices", headers=H).status_code == 403)
     CURRENT["u"] = OWNER
+    d = c.get("/api/subscription", headers=H).json()
+    check("the owner still sees the plan and its credit pool",
+          d["plan"]["tier"] == "BUSINESS" and d["credits"]["plan"] == 1000)
 
     led = c.get("/api/subscription/credits", headers=H).json()
     check("the ledger is visible", len(led["ledger"]) > 0)

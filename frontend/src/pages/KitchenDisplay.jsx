@@ -39,7 +39,7 @@ function beep() {
   }
 }
 
-export default function KitchenDisplay() {
+export default function KitchenDisplay({ embedded = false }) {
   const [orders, setOrders] = useState([]);
   const [busy, setBusy] = useState("");
   const [sound, setSound] = useState(true);
@@ -276,9 +276,11 @@ export default function KitchenDisplay() {
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <ChefHat className="h-6 w-6" /> Kitchen
-          </h1>
+          {!embedded && (
+            <h1 className="text-2xl font-bold flex items-center gap-2">
+              <ChefHat className="h-6 w-6" /> Kitchen
+            </h1>
+          )}
           <p className="text-sm text-muted-foreground">
             Orders arrive here the moment a guest sends them.
           </p>

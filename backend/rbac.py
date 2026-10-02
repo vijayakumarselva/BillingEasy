@@ -32,6 +32,11 @@ PERMISSIONS: List[str] = [
     "billing.view", "billing.manage",
     # Audit logs
     "audit.view",
+    # QR dining — deliberately split so a kitchen login sees only the kitchen
+    "dining.kitchen",   # the kitchen display: accept, cook, mark ready
+    "dining.floor",     # the floor view: tables, delays, who is waiting
+    "dining.settle",    # take payment and close a table
+    "dining.manage",    # tables, QR codes, menu availability, dining settings
 ]
 
 # System roles (cannot be deleted; can be referenced by slug)
@@ -80,6 +85,29 @@ SYSTEM_ROLES: Dict[str, Dict[str, Any]] = {
         "allowed_modes": ["pos", "b2c"],  # locked to POS/B2C only
         "is_system": True,
     },
+    "kitchen": {
+        "name": "Kitchen",
+        "description": "The kitchen display and nothing else. No prices, no billing, no settings.",
+        "permissions": ["dining.kitchen", "product.view"],
+        "allowed_modes": ["restaurant"],
+        "home": "/kitchen-screen",
+        "is_system": True,
+    },
+    "floor-manager": {
+        "name": "Floor Manager",
+        "description": "Watches the floor, chases late orders and settles bills. "
+                       "No purchases, accounting, team or subscription.",
+        "permissions": [
+            "dining.floor", "dining.kitchen", "dining.settle",
+            "invoice.view", "invoice.create",
+            "party.view", "party.create",
+            "payment.view", "payment.create",
+            "product.view",
+        ],
+        "allowed_modes": ["restaurant"],
+        "home": "/dining",
+        "is_system": True,
+    },
     "restaurant-staff": {
         "name": "Restaurant Staff",
         "description": "Restaurant orders and KOT only. Cannot access B2B invoices, accounting or settings.",
@@ -88,6 +116,7 @@ SYSTEM_ROLES: Dict[str, Dict[str, Any]] = {
             "product.view",
             "party.view",
             "expense.view", "expense.create",
+            "dining.floor", "dining.kitchen", "dining.settle",
         ],
         "allowed_modes": ["restaurant"],  # locked to restaurant only
         "is_system": True,
@@ -226,3 +255,12 @@ def client_ip(request) -> str:
         return "unknown"
     return (request.headers.get("x-forwarded-for")
             or (request.client.host if request.client else "unknown")).split(",")[0].strip()
+
+
+def role_home(role_slug: str) -> str:
+    """Where this role should land after signing in.
+
+    A kitchen login has no business on a dashboard full of invoices; it should
+    open straight onto the orders it has to cook.
+    """
+    return (SYSTEM_ROLES.get(role_slug) or {}).get("home", "/dashboard")
