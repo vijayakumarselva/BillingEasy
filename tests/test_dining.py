@@ -354,6 +354,38 @@ def test_roles():
           set(perms) == {"dining.kitchen", "product.view"}, str(perms))
 
 
+def test_menu_fields():
+    """A dish is not a stock line: course, veg and description must survive."""
+    print("\nmenu")
+    r = c.post("/api/products", headers=H, json={
+        "name": "Chettinad Chicken", "sale_price": 280, "gst_rate": 5,
+        "hsn": "996331", "category": "Main Course", "menu_course": "Main Course",
+        "menu_veg": False, "menu_description": "Peppery Chettinad masala",
+        "modes": ["restaurant"]})
+    check("a dish can be added", r.status_code == 200, r.text[:200])
+    d = r.json()
+    check("it is not veg", d["menu_veg"] is False)
+    check("its course is kept", d["menu_course"] == "Main Course")
+    check("its description is kept", d["menu_description"].startswith("Peppery"))
+    check("it bills as restaurant service", d["hsn"] == "996331" and d["gst_rate"] == 5)
+    check("and it is tagged restaurant only", d["modes"] == ["restaurant"])
+
+    tables = c.get("/api/dining/tables", headers=H).json()
+    menu = c.get(f"/api/public/dine/{tables[0]['token']}").json()["menu"]
+    dish = next(m for m in menu if m["name"] == "Chettinad Chicken")
+    check("the guest sees it on their phone", dish["price"] == 280)
+    check("grouped under its course", dish["category"] == "Main Course")
+    check("with the veg marker", dish["veg"] is False)
+    check("and the description", dish["description"].startswith("Peppery"))
+
+    r = c.put("/api/dining/menu", headers=H,
+              json={"product_id": d["id"], "menu_out_of_stock": True})
+    check("86-ing it works from the menu screen", r.status_code == 200)
+    menu = c.get(f"/api/public/dine/{tables[0]['token']}").json()["menu"]
+    check("and the guest sees it greyed out",
+          next(m for m in menu if m["id"] == d["id"])["available"] is False)
+
+
 def test_delays():
     print("\ndelays")
     import dining as D
@@ -392,6 +424,7 @@ def main():
     test_86_a_dish(table)
     test_stop_taking_orders(table)
     test_staff_side(table)
+    test_menu_fields()
     test_delays()
     test_roles()
     failed = [n for n, ok in OK if not ok]

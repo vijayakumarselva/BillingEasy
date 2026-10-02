@@ -16,6 +16,9 @@ import { inr } from "@/lib/format";
 import HsnSuggestButton from "@/components/HsnSuggestButton";
 import JsBarcode from "jsbarcode";
 import { openPrintWindow, downloadOrShowPng } from "@/lib/mobile";
+import { catalogueProfile } from "@/lib/catalogue";
+import MenuManager from "@/pages/MenuManager";
+import { Link } from "react-router-dom";
 
 const ALL_MODES = [
   { value: "b2b", label: "B2B", color: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" },
@@ -32,7 +35,45 @@ const empty = {
   barcode: "", modes: ["b2b", "b2c", "restaurant", "pos"], image_b64: "",
 };
 
+// What a catalogue *is* depends on the business, so the page forks before it
+// renders: a restaurant gets a menu, a stay gets nothing at all, and a trader
+// gets the full stock list.
 export default function Products() {
+  const { allowedModes = [] } = useAuth();
+  const mode = useActiveBusinessMode(allowedModes);
+  const profile = catalogueProfile(mode);
+
+  if (profile.kind === "menu") return <MenuManager profile={profile} />;
+  if (profile.kind === "none") return <NoCatalogue profile={profile} />;
+  return <StockCatalogue />;
+}
+
+// The business mode currently being worked in — the sidebar sets this when the
+// owner switches profile, and a restricted role is simply locked to its own.
+function useActiveBusinessMode(allowedModes) {
+  const orgId = localStorage.getItem("be_org_id");
+  const saved = orgId ? localStorage.getItem(`biz_mode_${orgId}`) : null;
+  if (saved) return saved;
+  if (allowedModes.length === 1) return allowedModes[0];
+  return "b2b";
+}
+
+function NoCatalogue({ profile }) {
+  return (
+    <div className="max-w-xl mx-auto py-16 text-center">
+      <Package className="h-10 w-10 text-muted-foreground/40 mx-auto mb-3" />
+      <h1 className="text-xl font-semibold">{profile.emptyTitle}</h1>
+      <p className="text-sm text-muted-foreground mt-2">{profile.emptyBody}</p>
+      {profile.emptyCta && (
+        <Button className="mt-5" asChild>
+          <Link to={profile.emptyCta.to}>{profile.emptyCta.label}</Link>
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function StockCatalogue() {
   const { currentRole, allowedModes = [] } = useAuth();
   // Restricted roles (e.g. B2B Staff) see only their profiles; owner/unrestricted see All + every profile
   const restricted = allowedModes.length > 0;

@@ -23,7 +23,8 @@ import BusinessSwitcher, { BUSINESS_MODES } from "@/components/BusinessSwitcher"
 
 const ALL_NAV = [
   { to: "/parties",  label: "Parties",           icon: Users,           tid: "nav-parties",   shortcut: "Alt+P", group: "Masters",      modes: ["b2b","b2c","restaurant","pos","stay"] , perm: "party.view" },
-  { to: "/products", label: "Products & Stock",   icon: Package,         tid: "nav-products",  shortcut: "Alt+I", group: "Masters",      modes: ["b2b","b2c","restaurant","pos"] , perm: "product.view" },
+  { to: "/products", label: "Products & Stock",   icon: Package,         tid: "nav-products",  shortcut: "Alt+I", group: "Masters",      modes: ["b2b","b2c","restaurant","pos"] , perm: "product.view",
+    labelByMode: { restaurant: "Menu" }, iconByMode: { restaurant: UtensilsCrossed } },
   { to: "/sales",      label: "Sales / Invoices", icon: FileText,        tid: "nav-sales",     shortcut: "Alt+S", group: "Transactions", modes: ["b2b","b2c","stay"] , perm: "invoice.view" },
   { to: "/purchases",       label: "Purchases",        icon: ShoppingCart,  tid: "nav-purchases",    shortcut: "Alt+B", group: "Transactions", modes: ["b2b","b2c","restaurant","pos","stay"] , perm: "purchase.view" },
   { to: "/grn",             label: "GRN",              icon: PackageCheck,  tid: "nav-grn",                         group: "Transactions", modes: ["b2b","b2c"] , perm: "purchase.view" },
@@ -159,13 +160,19 @@ export default function AppLayout() {
   // Never draw a link the role cannot open — the server would refuse it anyway,
   // and a sidebar full of locked doors is worse than a short one.
   const visibleNav = byMode.filter(n => can(n.perm));
-  const primaryNav = visibleNav.filter(n => n.modes.includes(effectiveMode));
+  // A few entries read differently depending on the business being worked in.
+  const forMode = (n) => ({
+    ...n,
+    label: n.labelByMode?.[effectiveMode] || n.label,
+    icon: n.iconByMode?.[effectiveMode] || n.icon,
+  });
+  const primaryNav = visibleNav.filter(n => n.modes.includes(effectiveMode)).map(forMode);
   const groupedPrimary = primaryNav.reduce((acc, n) => {
     if (!acc[n.group]) acc[n.group] = [];
     acc[n.group].push(n);
     return acc;
   }, {});
-  const moreNav = visibleNav.filter(n => !n.modes.includes(effectiveMode));
+  const moreNav = visibleNav.filter(n => !n.modes.includes(effectiveMode)).map(forMode);
 
   useEffect(() => {
     const handler = (e) => {

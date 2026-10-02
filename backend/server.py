@@ -545,6 +545,14 @@ class ProductIn(BaseModel):
     unit_qty: str = ""  # size/weight value e.g. "500" (paired with unit "ML" → 500 ML)
     modes: List[str] = ["b2b", "b2c", "restaurant", "pos"]  # which business modes use this product
     image_b64: str = ""  # base64 data-URI of product image
+    # Menu fields — a restaurant sells dishes, not stock lines. Kept on the same
+    # record so one item can be both (a bottled drink sold at the counter and
+    # listed on the menu) without duplicating it.
+    menu_veg: Optional[bool] = None          # None = not stated
+    menu_description: str = ""
+    menu_out_of_stock: bool = False          # "86" — off the menu today
+    menu_hidden: bool = False                # never show on the guest's phone
+    menu_course: str = ""                    # Starters, Main Course, Desserts…
 
 
 class LineItem(BaseModel):
@@ -3223,11 +3231,11 @@ async def _menu_for(org_id: str) -> List[dict]:
          "menu_hidden": {"$ne": True}},
         {"_id": 0, "id": 1, "name": 1, "category": 1, "sale_price": 1, "gst_rate": 1,
          "image_b64": 1, "unit": 1, "menu_veg": 1, "menu_description": 1,
-         "menu_out_of_stock": 1}
+         "menu_out_of_stock": 1, "menu_course": 1}
     ).sort("name", 1).to_list(500)
     return [{
         "id": r["id"], "name": r["name"],
-        "category": r.get("category") or "Others",
+        "category": r.get("menu_course") or r.get("category") or "Others",
         "price": round(float(r.get("sale_price") or 0), 2),
         "veg": r.get("menu_veg"),
         "description": r.get("menu_description", ""),
