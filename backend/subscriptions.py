@@ -307,7 +307,7 @@ async def grant_credits(db, account_id: str, credits: int, *, source: str,
 
 
 async def reset_plan_credits(db, account_id: str, credits: int, period_key: str,
-                             reason: str = "Plan renewal") -> Dict[str, Any]:
+                             reason: str = "Plan renewal — AI scans") -> Dict[str, Any]:
     """Plan credits do not roll over — the new allowance replaces the old one."""
     bal = await get_balance(db, account_id)
     if bal.get("period_key") == period_key:
@@ -334,7 +334,7 @@ async def consume_credit(db, account_id: str, *, credits: int = P.CREDITS_PER_SC
         packs = ", ".join(f"{p['credits']} for {P.fmt_inr(p['paise'])}" for p in P.CREDIT_PACKS)
         raise PlanError(
             P.ERR_CREDITS,
-            f"You need {credits} AI credit{'' if credits == 1 else 's'} and have {bal['total']}. "
+            f"You have {bal['total']} AI scan{'' if bal['total'] == 1 else 's'} left. "
             f"Top up: {packs}.",
             needed=credits, balance=bal["total"], packs=P.CREDIT_PACKS)
     from_plan = min(bal.get("plan_credits", 0), credits)
@@ -455,7 +455,7 @@ async def apply_plan(db, account_id: str, new_code: str, *, interval: Optional[s
         allowance = round(allowance * months / 12)
     if allowance:
         await reset_plan_credits(db, account_id, allowance, period_key(sub),
-                                 reason=f"{plan['name']} plan credits")
+                                 reason=f"{plan['name']} plan — AI scans")
     return sub
 
 

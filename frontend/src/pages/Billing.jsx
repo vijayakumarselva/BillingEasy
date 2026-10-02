@@ -1,4 +1,4 @@
-// Plan & Billing — current plan, what it covers, AI credits, invoices,
+// Plan & Billing — current plan, what it covers, AI scans, invoices,
 // referrals. Everything here is driven by /subscription and /pricing, so it
 // follows whatever the super admin has priced.
 import { useEffect, useMemo, useState } from "react";
@@ -253,11 +253,11 @@ export default function Billing() {
             </p>
           </div>
           <div className="text-right">
-            <div className="text-xs text-muted-foreground">AI credits</div>
+            <div className="text-xs text-muted-foreground">AI invoice scans left</div>
             <div className="text-2xl font-bold">{credits.total.toLocaleString("en-IN")}</div>
             <div className="text-[11px] text-muted-foreground">
-              {credits.plan.toLocaleString("en-IN")} from plan ·{" "}
-              {credits.pack.toLocaleString("en-IN")} purchased
+              {credits.plan.toLocaleString("en-IN")} from your plan ·{" "}
+              {credits.pack.toLocaleString("en-IN")} topped up
             </div>
           </div>
         </div>
@@ -270,7 +270,7 @@ export default function Billing() {
                 cap={sub.limits.devices} />
           <Card className="p-4">
             <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1.5">
-              <Sparkles className="h-3.5 w-3.5" /> AI credits
+              <Sparkles className="h-3.5 w-3.5" /> AI scans left
             </div>
             <div className="text-xl font-bold">{credits.total.toLocaleString("en-IN")}</div>
             {credits.low && (
@@ -284,7 +284,7 @@ export default function Billing() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b">
-        {[["plan", "Plans"], ["credits", "AI credits"], ["invoices", "Billing history"],
+        {[["plan", "Plans"], ["credits", "AI scans"], ["invoices", "Billing history"],
           ["referral", "Refer & earn"]].map(([id, label]) => (
           <button
             key={id}
@@ -383,8 +383,8 @@ export default function Billing() {
                     <li className="flex gap-1.5">
                       <Sparkles className="h-3.5 w-3.5 text-violet-500 mt-0.5 shrink-0" />
                       {t.credits_per_year
-                        ? `${t.credits_per_year.toLocaleString("en-IN")} credits/yr`
-                        : `${t.signup_credits} credits once`}
+                        ? `${t.credits_per_year.toLocaleString("en-IN")} AI scans/yr`
+                        : `${t.signup_credits} AI scans to try`}
                     </li>
                     {t.feature_labels.slice(3).map((f) => (
                       <li key={f} className="flex gap-1.5 text-muted-foreground">
@@ -473,10 +473,10 @@ export default function Billing() {
                 <div className="text-3xl font-extrabold">
                   {p.credits.toLocaleString("en-IN")}
                 </div>
-                <div className="text-xs text-muted-foreground">credits · never expire</div>
+                <div className="text-xs text-muted-foreground">AI scans · never expire</div>
                 <div className="text-lg font-bold text-blue-600 mt-2">{inr(p.paise)}</div>
                 <div className="text-[11px] text-muted-foreground">
-                  ₹{(p.paise / 100 / p.credits).toFixed(2)} per scan
+                  ₹{(p.paise / 100 / p.credits).toFixed(2)} a scan
                 </div>
                 <Button
                   className="w-full mt-3"
@@ -489,7 +489,7 @@ export default function Billing() {
             ))}
           </div>
           <Card className="p-0 overflow-hidden">
-            <div className="px-4 py-3 border-b font-semibold text-sm">Credit history</div>
+            <div className="px-4 py-3 border-b font-semibold text-sm">Scan history</div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 text-xs text-muted-foreground uppercase">
@@ -497,7 +497,7 @@ export default function Billing() {
                     <th className="px-4 py-2 text-left">When</th>
                     <th className="px-4 py-2 text-left">What</th>
                     <th className="px-4 py-2 text-left">From</th>
-                    <th className="px-4 py-2 text-right">Credits</th>
+                    <th className="px-4 py-2 text-right">Scans</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -591,10 +591,10 @@ export default function Billing() {
       {tab === "referral" && (
         <Card className="p-6 text-center">
           <Gift className="h-8 w-8 text-violet-500 mx-auto mb-3" />
-          <h3 className="font-bold text-lg">Give 200 credits, get 200 credits</h3>
+          <h3 className="font-bold text-lg">Give 200 scans, get 200 scans</h3>
           <p className="text-sm text-muted-foreground mt-1.5 max-w-md mx-auto">
-            Share your code. When someone signs up with it and makes their first payment, you
-            both get 200 AI credits that never expire.
+            Share your code. When someone signs up with it and pays for the first time, you
+            both get 200 AI scans that never expire.
           </p>
           <div className="mt-5 inline-flex items-center gap-2 bg-muted rounded-lg px-4 py-2.5">
             <code className="font-mono font-bold tracking-wider">{sub.referral_code}</code>

@@ -42,8 +42,7 @@ const ALL_NAV = [
   { to: "/reports",        label: "Reports & Books", icon: BookOpen,        tid: "nav-accounting", shortcut: "Alt+R", group: "Accounting", modes: ["b2b","b2c","restaurant","stay"] },
   { to: "/ask-ai", label: "Ask AI",    icon: Bot,    tid: "nav-ai",    badge: "AI",   group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos","stay"] },
   { to: "/tools",  label: "Tax Toolkit", icon: Wrench, tid: "nav-tools", badge: "Free", group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos","stay"] },
-  { to: "/wallet",   label: "Wallet & Credits", icon: Coins,    tid: "nav-wallet",  group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
-  { to: "/credits",  label: "Buy Credits",      icon: Zap,      tid: "nav-credits", badge: "New", group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
+  { to: "/billing",  label: "Plan & Billing",   icon: Coins,    tid: "nav-billing", group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
   { to: "/entities", label: "Entities",          icon: Store,    tid: "nav-entities",               group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
   { to: "/settings", label: "Settings",         icon: Settings, tid: "nav-settings", shortcut: "Alt+,", group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] },
 ];
@@ -73,7 +72,10 @@ export default function AppLayout() {
   const [entityOpen, setEntityOpen] = useState(false);
 
   useEffect(() => {
-    if (orgId) api.get("/wallet").then(r => setWallet(r.data)).catch(() => {});
+    if (orgId)
+      api.get("/subscription")
+        .then(r => setWallet({ balance: r.data.credits?.total ?? 0, low: r.data.credits?.low }))
+        .catch(() => {});
   }, [orgId, loc.pathname]);
 
   // Load entities
@@ -219,7 +221,7 @@ export default function AppLayout() {
         <div className="text-xs font-semibold tracking-widest uppercase opacity-60">{currentPageLabel}</div>
         <div className="flex items-center gap-2">
           {wallet && (
-            <button onClick={() => nav("/wallet")}
+            <button onClick={() => nav("/billing?tab=credits")}
               className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded"
               style={{ background: "hsl(158 50% 20%)", color: "hsl(158 70% 80%)" }}>
               <Coins className="h-3 w-3" />

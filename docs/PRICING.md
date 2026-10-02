@@ -72,7 +72,12 @@ curl -X POST .../api/super/subscriptions/grant -H "Authorization: Bearer $TOKEN"
 A reason is required and goes into `admin_grants` and the audit log. Granted
 credits land in the **pack** bucket, so they never expire.
 
-## How credits work
+## How AI scans work
+
+Credits buy **AI invoice scans and nothing else** — invoices, reports, payments
+and everything else in the app are unlimited on every plan, including Free. The
+old per-action pricing (3 credits an invoice, 10 an AI query) is gone, along
+with the per-org wallet and the five credit packs.
 
 - One credit = one AI invoice scan. Taken before the call, refunded
   automatically if the scan fails or cannot be read.

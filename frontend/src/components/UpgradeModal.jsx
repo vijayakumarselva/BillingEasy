@@ -22,7 +22,7 @@ const TITLES = {
   PLAN_LIMIT_USERS: "Add another teammate",
   PLAN_LIMIT_DEVICES: "Already signed in elsewhere",
   FEATURE_NOT_IN_PLAN: "That is on a higher plan",
-  INSUFFICIENT_CREDITS: "You are out of AI credits",
+  INSUFFICIENT_CREDITS: "You are out of AI scans",
 };
 
 export default function UpgradeModal() {
@@ -69,7 +69,7 @@ export default function UpgradeModal() {
                 className="rounded-lg border p-3 text-center hover:border-blue-400 transition-colors"
               >
                 <div className="font-bold">{p.credits.toLocaleString("en-IN")}</div>
-                <div className="text-[11px] text-muted-foreground">credits</div>
+                <div className="text-[11px] text-muted-foreground">AI scans</div>
                 <div className="text-sm font-semibold text-blue-600 mt-1">{inr(p.paise)}</div>
               </button>
             ))}
@@ -105,7 +105,7 @@ export default function UpgradeModal() {
           )}
           {credits && (
             <Button className="flex-1" onClick={() => go("/billing?tab=credits")}>
-              Buy credits
+              Top up scans
             </Button>
           )}
         </div>

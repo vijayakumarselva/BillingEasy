@@ -81,17 +81,17 @@ async def migrate_account(db, account_id: str, *, dry_run: bool = False) -> Opti
         carried += max(0, int(w.get("balance") or 0))
     if carried:
         await S.grant_credits(db, account_id, carried, source="pack",
-                              reason="Carried over from your old credit wallet")
+                              reason="Carried over from your old credit balance")
     else:
         await S.grant_credits(db, account_id, P.PLAN_TIERS["FREE"]["signup_credits"],
-                              source="pack", reason="Signup credits")
+                              source="pack", reason="Free AI scans to get started")
 
     if sub["status"] in ("active", "trialing"):
         plan = P.get_plan(sub["plan_code"])
         if plan.get("credits_per_period"):
             await S.reset_plan_credits(db, account_id, plan["credits_per_period"],
                                        S.period_key(sub),
-                                       reason=f"{plan['name']} plan credits")
+                                       reason=f"{plan['name']} plan — AI scans")
     await S.sync_readonly_flags(db, account_id)
     return {"account_id": account_id, "kind": kind, "plan_code": sub["plan_code"],
             "carried_credits": carried}

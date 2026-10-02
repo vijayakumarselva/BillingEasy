@@ -1,6 +1,8 @@
 // Public marketing landing page — AI-powered GST billing SaaS for India
 import { useNavigate, Link } from "react-router-dom";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import axios from "axios";
+import { API_BASE } from "@/lib/api";
 import {
   ChevronDown,
   ChevronUp,
@@ -25,6 +27,14 @@ import {
 export default function Landing() {
   const nav = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
+  // Plans come from the live catalogue so a price change needs no deploy.
+  const [plans, setPlans] = useState([]);
+  useEffect(() => {
+    axios
+      .get(`${API_BASE}/pricing`)
+      .then((r) => setPlans(r.data.tiers || []))
+      .catch(() => setPlans([]));
+  }, []);
   const [openFaq, setOpenFaq] = useState(null);
 
   const scrollTo = (id) =>
@@ -105,14 +115,6 @@ export default function Landing() {
       q: "Can I have multiple GSTINs?",
       a: "Yes. Add branches for each state, each with their own GSTIN. Manage all from a single login.",
     },
-  ];
-
-  const creditCosts = [
-    { action: "Create Invoice", credits: "3 cr" },
-    { action: "Record Purchase", credits: "2 cr" },
-    { action: "Log Expense", credits: "1 cr" },
-    { action: "Ask AI", credits: "10 cr" },
-    { action: "Export Report", credits: "5 cr" },
   ];
 
   return (
@@ -589,130 +591,94 @@ export default function Landing() {
       </section>
 
       {/* ── PRICING ── */}
+      {/* ── PRICING ── simple plan summary; the full table lives at /pricing ── */}
       <section id="pricing" className="py-20 bg-slate-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center mb-4">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-center mb-10">
             <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900">
-              Pay only for what you use
+              One login. All your businesses.
             </h2>
             <p className="mt-3 text-gray-500 text-lg">
-              Credits-based pricing. No monthly subscription. No lock-in.
+              Simple yearly plans. Start free, upgrade when you grow.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-10">
-            {/* Try It */}
-            <div className="bg-white border border-gray-200 rounded-2xl p-7 flex flex-col">
-              <h3 className="text-lg font-bold text-gray-900">Try It</h3>
-              <p className="text-sm text-gray-400 mt-1">~33 invoices</p>
-              <div className="my-5">
-                <span className="text-4xl font-extrabold text-gray-900">₹149</span>
-                <span className="text-gray-400 text-sm ml-2">/ 100 credits</span>
-              </div>
-              <ul className="space-y-2 flex-1 mb-6">
-                {["100 credits", "All features", "Email support", "Credits never expire"].map(
-                  (f) => (
-                    <li key={f} className="flex items-center gap-2 text-sm text-gray-600">
-                      <Check className="h-4 w-4 text-green-500" />
-                      {f}
-                    </li>
-                  )
-                )}
-              </ul>
-              <button
-                onClick={goSignup}
-                className="w-full border border-gray-300 text-gray-700 font-semibold py-2.5 rounded-xl hover:border-blue-400 hover:text-blue-600 transition-colors text-sm"
-              >
-                Get Started
-              </button>
-            </div>
-
-            {/* Starter — Popular */}
-            <div className="bg-blue-600 border-2 border-blue-600 rounded-2xl p-7 flex flex-col transform scale-105 shadow-2xl shadow-blue-200">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold text-white">Starter</h3>
-                <span className="bg-yellow-400 text-yellow-900 text-xs font-bold px-2.5 py-1 rounded-full flex items-center gap-1">
-                  <Star className="h-3 w-3" /> Most Popular
-                </span>
-              </div>
-              <p className="text-sm text-blue-200 mt-1">~166 invoices</p>
-              <div className="my-5">
-                <span className="text-4xl font-extrabold text-white">₹649</span>
-                <span className="text-blue-200 text-sm ml-2">/ 500 credits</span>
-              </div>
-              <ul className="space-y-2 flex-1 mb-6">
-                {[
-                  "500 credits",
-                  "All features",
-                  "Priority support",
-                  "Credits never expire",
-                ].map((f) => (
-                  <li key={f} className="flex items-center gap-2 text-sm text-blue-100">
-                    <Check className="h-4 w-4 text-blue-200" />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <button
-                onClick={goSignup}
-                className="w-full bg-white text-blue-600 font-bold py-2.5 rounded-xl hover:bg-blue-50 transition-colors text-sm"
-              >
-                Buy Starter
-              </button>
-            </div>
-
-            {/* Growth */}
-            <div className="bg-white border border-gray-200 rounded-2xl p-7 flex flex-col">
-              <h3 className="text-lg font-bold text-gray-900">Growth</h3>
-              <p className="text-sm text-violet-500 font-semibold mt-1">
-                ~666 invoices · Save 46%
-              </p>
-              <div className="my-5">
-                <span className="text-4xl font-extrabold text-gray-900">₹2,299</span>
-                <span className="text-gray-400 text-sm ml-2">/ 2000 credits</span>
-              </div>
-              <ul className="space-y-2 flex-1 mb-6">
-                {[
-                  "2000 credits",
-                  "All features",
-                  "Dedicated support",
-                  "Credits never expire",
-                ].map((f) => (
-                  <li key={f} className="flex items-center gap-2 text-sm text-gray-600">
-                    <Check className="h-4 w-4 text-green-500" />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <button
-                onClick={goSignup}
-                className="w-full border border-violet-300 text-violet-700 font-semibold py-2.5 rounded-xl hover:bg-violet-50 transition-colors text-sm"
-              >
-                Buy Growth
-              </button>
-            </div>
-          </div>
-
-          {/* Credit cost table */}
-          <div className="mt-10 max-w-lg mx-auto">
-            <h4 className="text-center text-sm font-bold text-gray-700 mb-3">
-              Credit Cost Breakdown
-            </h4>
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              {creditCosts.map((row, i) => (
+          {plans.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 items-stretch">
+              {plans.map((t) => (
                 <div
-                  key={row.action}
-                  className={`flex justify-between px-5 py-3 text-sm ${
-                    i % 2 === 0 ? "bg-white" : "bg-gray-50"
+                  key={t.tier}
+                  className={`relative bg-white rounded-2xl p-6 flex flex-col border ${
+                    t.highlight
+                      ? "border-blue-600 shadow-xl shadow-blue-100"
+                      : "border-gray-200"
                   }`}
                 >
-                  <span className="text-gray-600">{row.action}</span>
-                  <span className="font-semibold text-blue-600">{row.credits}</span>
+                  {t.badge && (
+                    <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-[11px] font-bold px-3 py-1 rounded-full whitespace-nowrap">
+                      {t.badge}
+                    </span>
+                  )}
+                  <h3 className="text-lg font-bold text-gray-900">{t.name}</h3>
+                  <div className="mt-3 mb-1">
+                    <span className="text-3xl font-extrabold text-gray-900">
+                      {t.yearly_label}
+                    </span>
+                    {t.tier !== "FREE" && (
+                      <span className="text-gray-400 text-sm"> / year</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 mb-5">
+                    {t.tier === "FREE" ? "Free forever" : "+ 18% GST"}
+                  </p>
+                  <ul className="space-y-2 text-sm text-gray-600 flex-1">
+                    <li className="flex items-center gap-2">
+                      <Check className="h-4 w-4 text-green-500 shrink-0" />
+                      {t.limits.businesses === -1
+                        ? "Unlimited businesses"
+                        : `${t.limits.businesses} business${t.limits.businesses > 1 ? "es" : ""}`}
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="h-4 w-4 text-green-500 shrink-0" />
+                      {t.limits.users} user{t.limits.users > 1 ? "s" : ""}
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="h-4 w-4 text-green-500 shrink-0" />
+                      Unlimited GST invoices
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="h-4 w-4 text-green-500 shrink-0" />
+                      {t.credits_per_year
+                        ? `${t.credits_per_year.toLocaleString("en-IN")} AI invoice scans / year`
+                        : `${t.signup_credits} AI invoice scans`}
+                    </li>
+                  </ul>
+                  <button
+                    onClick={goSignup}
+                    className={`w-full font-semibold py-2.5 rounded-xl text-sm mt-6 transition-colors ${
+                      t.highlight
+                        ? "bg-blue-600 text-white hover:bg-blue-700"
+                        : "border border-gray-300 text-gray-700 hover:border-blue-400 hover:text-blue-600"
+                    }`}
+                  >
+                    {t.tier === "FREE" ? "Start free" : `Choose ${t.name}`}
+                  </button>
                 </div>
               ))}
             </div>
-            <p className="text-center text-xs text-gray-400 mt-3">
-              50 free credits on every new account · Credits never expire
+          ) : (
+            <p className="text-center text-gray-400">Loading plans…</p>
+          )}
+
+          <div className="text-center mt-8">
+            <Link
+              to="/pricing"
+              className="text-blue-600 font-semibold text-sm hover:underline"
+            >
+              See everything each plan includes →
+            </Link>
+            <p className="text-xs text-gray-400 mt-3">
+              14-day free trial of Business on every new account · no card needed
             </p>
           </div>
         </div>

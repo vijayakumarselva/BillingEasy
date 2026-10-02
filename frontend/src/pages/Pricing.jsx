@@ -15,31 +15,23 @@ const inr = (paise) =>
 const FAQS = [
   {
     q: "Can I run more than one business on one login?",
-    a: "Yes — that is the whole idea. Starter covers 2 businesses, Business covers 5 and Pro is unlimited. They share one login, one bill and one pool of AI credits, but their books stay completely separate.",
+    a: "Yes — that is the whole idea. Starter covers 2 businesses, Business covers 5 and Pro is unlimited. One login, one bill, separate books.",
   },
   {
-    q: "What is an AI credit?",
-    a: "One credit scans one invoice. Point your camera at a supplier bill or drop in a PDF and we read the supplier, the bill number, every line item and the GST for you. Plan credits refresh each billing cycle; credits you buy in a pack never expire.",
-  },
-  {
-    q: "What happens when my plan expires?",
-    a: "You get a 7-day grace period with everything still working, then the account drops to Free. Nothing is ever deleted — if you have more businesses than Free allows, the extra ones become read-only until you choose which to keep active or upgrade again.",
-  },
-  {
-    q: "Can I switch plans later?",
-    a: "Upgrade whenever you like — you pay only the difference for the days left in your period and your AI credits are topped up straight away. Downgrades take effect at your next renewal, so you keep what you paid for.",
-  },
-  {
-    q: "Do I get a GST invoice?",
-    a: "Yes. Every payment produces a proper tax invoice with our GSTIN and yours, so you can claim input tax credit. Add your GSTIN at checkout and download the invoice any time from Plan & Billing.",
+    q: "What is an AI scan?",
+    a: "Point your camera at a supplier bill, or drop in a PDF, and we read the supplier, bill number, every line item and the GST for you. Each plan includes a number of scans per year. Everything else — invoices, reports, payments — is unlimited and costs nothing extra.",
   },
   {
     q: "Is there a free trial?",
-    a: "Every new signup gets 14 days of the Business plan, no card needed. After that you stay on Free unless you choose to pay.",
+    a: "Every new signup gets 14 days of the Business plan, no card needed. After that you stay on Free unless you choose to pay. Nothing is ever deleted.",
   },
   {
-    q: "Which payment methods do you accept?",
-    a: "UPI (including autopay), credit and debit cards, net banking and wallets, through Cashfree. Prices exclude 18% GST, which is added at checkout.",
+    q: "Can I switch plans later?",
+    a: "Upgrade whenever you like and pay only the difference for the days left. Downgrades start at your next renewal, so you keep what you paid for.",
+  },
+  {
+    q: "Do I get a GST invoice?",
+    a: "Yes — with our GSTIN and yours, so you can claim input tax credit. Add your GSTIN at checkout and download it any time.",
   },
 ];
 
@@ -133,8 +125,8 @@ function PlanCard({ tier, yearly, founding, onPick }) {
         <li className="flex items-start gap-2 text-[13px] text-slate-700 font-medium">
           <Sparkles className="h-4 w-4 text-violet-500 mt-0.5 shrink-0" />
           {tier.credits_per_year
-            ? `${tier.credits_per_year.toLocaleString("en-IN")} AI credits / year`
-            : `${tier.signup_credits} AI credits on signup`}
+            ? `${tier.credits_per_year.toLocaleString("en-IN")} AI invoice scans / year`
+            : `${tier.signup_credits} AI invoice scans to try`}
         </li>
         {tier.feature_labels.map((f) => (
           <li key={f} className="flex items-start gap-2 text-[13px] text-slate-600">
@@ -260,8 +252,12 @@ export default function Pricing() {
           ))}
         </div>
 
-        {/* Add-ons */}
-        <div className="mt-10 grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Add-ons — a side note, not part of the main choice */}
+        <div className="mt-12">
+          <p className="text-center text-xs uppercase tracking-wide text-slate-400 mb-3">
+            Need just a bit more? Add it to any plan
+          </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-3xl mx-auto">
           {data.addons.map((a) => (
             <div
               key={a.code}
@@ -277,6 +273,7 @@ export default function Pricing() {
               </div>
             </div>
           ))}
+        </div>
         </div>
       </section>
 
@@ -317,10 +314,10 @@ export default function Pricing() {
                 ["Signed-in devices", data.tiers.map((t) =>
                   t.limits.devices === -1 ? "Unlimited" : t.limits.devices)],
                 ["GST invoices", data.tiers.map(() => "Unlimited")],
-                ["AI credits", data.tiers.map((t) =>
+                ["AI invoice scans", data.tiers.map((t) =>
                   t.credits_per_year
-                    ? `${t.credits_per_year.toLocaleString("en-IN")}/yr`
-                    : `${t.signup_credits} once`)],
+                    ? `${t.credits_per_year.toLocaleString("en-IN")} / year`
+                    : `${t.signup_credits} to try`)],
                 ["Support", data.tiers.map((t) => t.support)],
               ].map(([label, values]) => (
                 <tr key={label} className="border-b border-slate-100">
@@ -364,9 +361,9 @@ export default function Pricing() {
       {/* Credit packs */}
       <section className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
         <div className="text-center mb-8">
-          <h2 className="text-2xl font-extrabold text-slate-900">Need more AI scans?</h2>
+          <h2 className="text-2xl font-extrabold text-slate-900">Need more scans?</h2>
           <p className="text-slate-500 mt-2 text-[15px]">
-            One credit reads one invoice. Buy a pack on any plan — purchased credits never expire.
+            Run out of scans? Top up on any plan. Scans you buy never expire.
           </p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -385,12 +382,12 @@ export default function Pricing() {
               <div className="text-3xl font-extrabold text-slate-900">
                 {p.credits.toLocaleString("en-IN")}
               </div>
-              <div className="text-xs text-slate-400 mb-3">credits</div>
+              <div className="text-xs text-slate-400 mb-3">AI scans</div>
               <div className="text-xl font-bold" style={{ color: BRAND }}>
                 {inr(p.paise)}
               </div>
               <div className="text-[11px] text-slate-400 mt-1">
-                ₹{(p.paise / 100 / p.credits).toFixed(2)} per scan
+₹{(p.paise / 100 / p.credits).toFixed(2)} a scan
               </div>
             </div>
           ))}

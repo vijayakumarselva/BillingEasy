@@ -39,8 +39,6 @@ import Security from "@/pages/Security";
 import Contact from "@/pages/Contact";
 import AskAi from "@/pages/AskAi";
 import BankStatement from "@/pages/BankStatement";
-import Wallet from "@/pages/Wallet";
-import Credits from "@/pages/Credits";
 import RetailPOS from "@/pages/RetailPOS";
 import Restaurant from "@/pages/Restaurant";
 import Stay from "@/pages/Stay";
@@ -166,8 +164,10 @@ export default function App() {
               <Route path="/delivery-orders" element={<DeliveryOrders />} />
               <Route path="/payments" element={<Payments />} />
               <Route path="/bank-statement" element={<BankStatement />} />
-              <Route path="/wallet" element={<Wallet />} />
-              <Route path="/credits" element={<Credits />} />
+              {/* The old credit-pack pages sold a different pricing model.
+                  Everything about money now lives in Plan & Billing. */}
+              <Route path="/wallet" element={<Navigate to="/billing?tab=credits" replace />} />
+              <Route path="/credits" element={<Navigate to="/billing?tab=credits" replace />} />
               <Route path="/expenses" element={<Expenses />} />
               <Route path="/gst" element={<GST />} />
               <Route path="/reports" element={<Reports />} />
