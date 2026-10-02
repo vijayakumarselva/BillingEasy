@@ -248,7 +248,8 @@ def test_super_admin():
     check("revenue dashboard loads", r.status_code == 200, r.text[:200])
     rev = r.json()
     check("MRR is computed", rev["mrr_paise"] > 0)
-    check("ARR is 12× MRR", rev["arr_paise"] == rev["mrr_paise"] * 12)
+    check("ARR is the real annual value, not 12× a rounded MRR",
+          rev["arr_paise"] == 199900)
     check("pack revenue is tracked separately", rev["pack_revenue_paise"] > 0)
     check("one founding seat is taken", rev["founding_spots_left"] == 499)
 

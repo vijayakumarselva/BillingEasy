@@ -3222,7 +3222,7 @@ async def super_revenue(user=Depends(get_current_user)):
     cat = await PRICING.load_catalogue(db)
     subs = await db.subscriptions.find({}, {"_id": 0}).to_list(10000)
     by_plan: Dict[str, int] = {}
-    mrr = 0
+    mrr = arr = 0          # ARR is summed from real annual prices, not 12× a rounded MRR
     paid_accounts = trialing = free = 0
     for sub in subs:
         st = SUBS.effective_status(sub)
@@ -3232,7 +3232,12 @@ async def super_revenue(user=Depends(get_current_user)):
             by_plan[plan["name"]] = by_plan.get(plan["name"], 0) + 1
             locked = sub.get("price_lock_paise")
             amount = int(locked if locked is not None else plan["paise"])
-            mrr += round(amount / 12) if plan["interval"] == "year" else amount
+            if plan["interval"] == "year":
+                mrr += round(amount / 12)
+                arr += amount
+            else:
+                mrr += amount
+                arr += amount * 12
         elif st["status"] == "trialing":
             trialing += 1
         else:
@@ -3256,8 +3261,8 @@ async def super_revenue(user=Depends(get_current_user)):
         r["name"], r["email"] = owner.get("name"), owner.get("email")
 
     return {
-        "mrr_paise": mrr, "arr_paise": mrr * 12,
-        "mrr_label": PRICING.fmt_inr(mrr), "arr_label": PRICING.fmt_inr(mrr * 12),
+        "mrr_paise": mrr, "arr_paise": arr,
+        "mrr_label": PRICING.fmt_inr(mrr), "arr_label": PRICING.fmt_inr(arr),
         "paid_accounts": paid_accounts, "trialing": trialing, "free": free,
         "total_accounts": len(subs),
         "by_plan": by_plan,

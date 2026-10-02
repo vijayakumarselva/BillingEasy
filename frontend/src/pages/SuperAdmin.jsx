@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { RevenueDashboard, SubscriptionList, CouponAdmin } from "@/components/SubscriptionAdmin";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { ShieldAlert, Building2, Users as UsersIcon, Activity, Ban, CheckCircle2, Trash2, UserCog, LogOut, CreditCard, Eye, EyeOff, AlertTriangle, Save, Plug, Sparkles, MessageCircle, Send, Loader2 } from "lucide-react";
@@ -106,10 +107,17 @@ export default function SuperAdmin() {
             <TabsTrigger value="offer" data-testid="super-tab-offer">
               <Sparkles className="h-3.5 w-3.5 mr-1.5" /> Launch Offer
             </TabsTrigger>
+            <TabsTrigger value="revenue" data-testid="super-tab-revenue">Revenue</TabsTrigger>
+            <TabsTrigger value="subs" data-testid="super-tab-subs">Subscriptions</TabsTrigger>
+            <TabsTrigger value="coupons" data-testid="super-tab-coupons">Coupons</TabsTrigger>
             <TabsTrigger value="chat" data-testid="super-tab-chat">
               <MessageCircle className="h-3.5 w-3.5 mr-1.5" /> Support Chat
             </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="revenue"><RevenueDashboard /></TabsContent>
+          <TabsContent value="subs"><SubscriptionList /></TabsContent>
+          <TabsContent value="coupons"><CouponAdmin /></TabsContent>
 
           <TabsContent value="orgs">
             <Card className="mt-3"><div className="overflow-x-auto"><table className="app-table">

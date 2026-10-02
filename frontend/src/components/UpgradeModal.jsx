@@ -3,7 +3,7 @@
 // gated action gets the same friendly modal naming the exact plan that helps.
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Sparkles, Lock, Smartphone, Building2, Users, ArrowRight } from "lucide-react";
 
@@ -51,8 +51,12 @@ export default function UpgradeModal() {
             <Icon className="h-5 w-5" />
           </div>
           <div className="min-w-0">
-            <h3 className="font-semibold text-base">{TITLES[info.code] || "Upgrade needed"}</h3>
-            <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{info.message}</p>
+            <DialogTitle className="text-base">
+              {TITLES[info.code] || "Upgrade needed"}
+            </DialogTitle>
+            <DialogDescription className="text-sm mt-1.5 leading-relaxed">
+              {info.message}
+            </DialogDescription>
           </div>
         </div>
 
