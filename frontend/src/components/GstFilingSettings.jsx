@@ -90,7 +90,65 @@ export default function GstFilingSettings({ canEdit }) {
         </div>
         {f.auto_einvoice && (
           <div className="space-y-1.5"><Label className="text-xs">Only for invoices at or above (₹)</Label>
-            <Input type="number" className="max-w-[200px]" value={f.einvoice_threshold} onChange={e => set("einvoice_threshold", +e.target.value || 0)} /></div>
+            <Input type="number" className="max-w-[200px]" value={f.einvoice_threshold} onChange={e => set("einvoice_threshold", +e.target.value || 0)} />
+            <p className="text-[11px] text-muted-foreground">Leave 0 to file every B2B invoice. B2C sales never need an IRN.</p></div>
+        )}
+
+        <div className="flex items-center justify-between border-t pt-3">
+          <div>
+            <p className="text-sm font-medium">Raise the e-way bill automatically</p>
+            <p className="text-xs text-muted-foreground">
+              For goods above the limit, right after the IRN. Services never need one.
+            </p>
+          </div>
+          <Switch checked={!!f.auto_eway} onCheckedChange={v => set("auto_eway", v)} />
+        </div>
+        {f.auto_eway && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Only for goods at or above (₹)</Label>
+                <Input type="number" value={f.eway_threshold ?? 50000}
+                       onChange={e => set("eway_threshold", +e.target.value || 0)} />
+                <p className="text-[11px] text-muted-foreground">The legal limit is ₹50,000.</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">How the goods usually travel</Label>
+                <Select value={String(f.eway_default_mode || "1")}
+                        onValueChange={v => set("eway_default_mode", v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">Road</SelectItem>
+                    <SelectItem value="2">Rail</SelectItem>
+                    <SelectItem value="3">Air</SelectItem>
+                    <SelectItem value="4">Ship</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Usual distance (km)</Label>
+                <Input type="number" value={f.eway_default_distance ?? 0}
+                       onChange={e => set("eway_default_distance", +e.target.value || 0)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Your vehicle number</Label>
+                <Input placeholder="TN34AB1234" value={f.eway_default_vehicle || ""}
+                       onChange={e => set("eway_default_vehicle", e.target.value.toUpperCase())} />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">or Transporter ID</Label>
+                <Input placeholder="GSTIN / TRANSIN" value={f.eway_transporter_id || ""}
+                       onChange={e => set("eway_transporter_id", e.target.value.toUpperCase())} />
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              These are the fallbacks. Anything entered on the invoice itself wins. Without a
+              distance and either a vehicle or a transporter, the bill waits for you in
+              GST → Compliance instead of failing.
+            </p>
+          </div>
         )}
       </div>
 

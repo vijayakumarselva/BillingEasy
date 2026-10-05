@@ -14,6 +14,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 import os
 import re
+import asyncio
 import ssl
 import certifi
 import uuid
@@ -65,6 +66,7 @@ import offers as OFFERS
 import payment_provider as PAYPROVIDER
 import billing_invoice as BILLINV
 import dining as DINING
+import gst_auto as GSTAUTO
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
@@ -2278,7 +2280,7 @@ async def invoice_eway_bill(iid: str, body: dict, ctx=Depends(get_org_ctx)):
         "transMode": body.get("transMode", "1"),
         "transDistance": str(body.get("distance", "")),
         "transporterName": body.get("transName", ""),
-        "transporterId": "",
+        "transporterId": body.get("transporterId", ""),
         "transDocNo": body.get("transDocNo", ""),
         "transDocDate": _fmt(trans_doc_date),
         "vehicleNo": body.get("vehNo", ""),
@@ -4725,7 +4727,17 @@ async def create_invoice(body: InvoiceIn, request: Request, ctx=Depends(require_
                     entity_type="invoice", entity_id=doc["id"],
                     metadata={"invoice_no": doc["invoice_no"], "total": doc["totals"]["grand_total"]},
                     request=request)
-    return strip_id(doc)
+
+    # File with the government in the background. The invoice already exists, so
+    # a slow or broken GSP can never stop someone billing a customer — whatever
+    # happens is recorded on the invoice and shown in GST → Compliance.
+    filing = None
+    if body.type == "sale" and body.status == "finalized":
+        cfg = await _gst_settings(ctx["org_id"])
+        if cfg.get("enabled") and (cfg.get("auto_einvoice") or cfg.get("auto_eway")):
+            asyncio.create_task(_auto_file_invoice(ctx["org_id"], doc["id"], ctx["user"]))
+            filing = "queued"
+    return {**strip_id(doc), "auto_filing": filing}
 
 
 @api.get("/invoices/{iid}")
@@ -9355,6 +9367,13 @@ class GstFilingSettingsIn(BaseModel):
     extra_headers: Dict[str, str] = {}
     auto_einvoice: bool = False          # raise the IRN as soon as an invoice is finalized
     einvoice_threshold: float = 0        # only for invoices at/above this value (0 = all)
+    auto_eway: bool = False              # raise the e-way bill in the same breath
+    eway_threshold: float = 50000        # the legal limit for goods on the move
+    eway_default_distance: float = 0     # km, when the invoice does not say
+    eway_default_vehicle: str = ""       # your own lorry, if you always use it
+    eway_transporter_id: str = ""        # the transporter's GSTIN / TRANSIN
+    eway_transporter_name: str = ""
+    eway_default_mode: str = "1"         # 1 road · 2 rail · 3 air · 4 ship
     enabled: bool = False
 
 
@@ -9375,6 +9394,9 @@ async def _gst_settings(org_id: str) -> dict:
     return {**{k: "" for k in ("base_url", "einvoice_path", "ewaybill_path", "client_id", "client_secret",
                                "username", "password", "gstin")},
             "provider": "custom", "extra_headers": {}, "auto_einvoice": False, "einvoice_threshold": 0,
+            "auto_eway": False, "eway_threshold": 50000, "eway_default_distance": 0,
+            "eway_default_vehicle": "", "eway_transporter_id": "", "eway_transporter_name": "",
+            "eway_default_mode": "1",
             "enabled": False, **row,
             "base_url": (row.get("base_url") or preset.get("base_url", "")).rstrip("/"),
             "einvoice_path": row.get("einvoice_path") or preset.get("einvoice_path", ""),
@@ -9668,6 +9690,182 @@ async def invoice_generate_ewb(iid: str, body: dict, request: Request,
                     entity_type="invoice", entity_id=iid,
                     metadata={"invoice_no": inv["invoice_no"], "ewb_no": ewb}, request=request)
     return {"ok": True, "duplicate": False, **patch}
+
+
+# ── Filing automatically, the moment an invoice is raised ────────────────────
+async def _auto_file_invoice(org_id: str, invoice_id: str, user: Optional[dict] = None) -> dict:
+    """Register the IRN and raise the e-way bill for one invoice.
+
+    Runs after the invoice is already saved, so a slow or broken GSP can never
+    stop someone billing a customer. Every outcome — done, skipped, failed, or
+    waiting on transport details — is written onto the invoice so the owner can
+    see it and retry.
+    """
+    inv = await db.invoices.find_one({"org_id": org_id, "id": invoice_id}, {"_id": 0})
+    if not inv:
+        return {"ok": False, "reason": "Invoice not found"}
+    org = await db.organizations.find_one({"id": org_id}, {"_id": 0})
+    cfg = await _gst_settings(org_id)
+    ctx = {"org_id": org_id, "user": user or {"id": "system", "email": "auto"}}
+    out: Dict[str, Any] = {"invoice_no": inv.get("invoice_no")}
+
+    # 1. The IRN comes first: the IRP often returns the e-way bill with it.
+    decision = GSTAUTO.einvoice_decision(inv, cfg)
+    out["einvoice"] = {**decision}
+    if decision["run"]:
+        try:
+            res = await _generate_irn(ctx, inv, org)
+            await db.invoices.update_one(
+                {"org_id": org_id, "id": invoice_id},
+                {"$set": {"einvoice_status": GSTAUTO.DONE, "einvoice_error": "",
+                          "einvoice_auto": True}})
+            out["einvoice"].update({"status": GSTAUTO.DONE, "irn": res.get("irn")})
+            inv = await db.invoices.find_one({"org_id": org_id, "id": invoice_id}, {"_id": 0})
+        except HTTPException as e:
+            msg = e.detail if isinstance(e.detail, str) else str(e.detail)
+            await db.invoices.update_one(
+                {"org_id": org_id, "id": invoice_id},
+                {"$set": {"einvoice_status": GSTAUTO.FAILED, "einvoice_error": msg[:300],
+                          "einvoice_tried_at": now_iso()}})
+            out["einvoice"].update({"status": GSTAUTO.FAILED, "error": msg})
+        except Exception as e:
+            logger.exception("Auto e-invoice failed for %s", invoice_id)
+            await db.invoices.update_one(
+                {"org_id": org_id, "id": invoice_id},
+                {"$set": {"einvoice_status": GSTAUTO.FAILED, "einvoice_error": str(e)[:300],
+                          "einvoice_tried_at": now_iso()}})
+            out["einvoice"].update({"status": GSTAUTO.FAILED, "error": str(e)})
+    else:
+        await db.invoices.update_one({"org_id": org_id, "id": invoice_id},
+                                     {"$set": {"einvoice_status": decision["status"],
+                                               "einvoice_note": decision["reason"]}})
+
+    # 2. The e-way bill, unless the IRP already returned one.
+    decision = GSTAUTO.eway_decision(inv, cfg)
+    out["eway"] = {**decision}
+    if inv.get("ewb_no"):
+        await db.invoices.update_one({"org_id": org_id, "id": invoice_id},
+                                     {"$set": {"ewb_status": GSTAUTO.DONE}})
+        out["eway"].update({"status": GSTAUTO.DONE, "ewb_no": inv["ewb_no"],
+                            "reason": "Returned with the IRN"})
+    elif decision["run"]:
+        t = decision["transport"]
+        try:
+            res = await invoice_generate_ewb(
+                invoice_id,
+                {"distance": t["distance"], "vehNo": t["vehicle_no"],
+                 "transporterId": t["transporter_id"], "transName": t["transporter_name"],
+                 "transMode": t["mode"], "vehType": t["vehicle_type"],
+                 "subSupplyType": t["sub_type"]},
+                _SystemRequest(), ctx)
+            await db.invoices.update_one({"org_id": org_id, "id": invoice_id},
+                                         {"$set": {"ewb_status": GSTAUTO.DONE, "ewb_error": "",
+                                                   "ewb_auto": True}})
+            out["eway"].update({"status": GSTAUTO.DONE, "ewb_no": res.get("ewb_no")})
+        except HTTPException as e:
+            msg = e.detail if isinstance(e.detail, str) else str(e.detail)
+            await db.invoices.update_one(
+                {"org_id": org_id, "id": invoice_id},
+                {"$set": {"ewb_status": GSTAUTO.FAILED, "ewb_error": msg[:300],
+                          "ewb_tried_at": now_iso()}})
+            out["eway"].update({"status": GSTAUTO.FAILED, "error": msg})
+        except Exception as e:
+            logger.exception("Auto e-way bill failed for %s", invoice_id)
+            await db.invoices.update_one(
+                {"org_id": org_id, "id": invoice_id},
+                {"$set": {"ewb_status": GSTAUTO.FAILED, "ewb_error": str(e)[:300],
+                          "ewb_tried_at": now_iso()}})
+            out["eway"].update({"status": GSTAUTO.FAILED, "error": str(e)})
+    else:
+        await db.invoices.update_one({"org_id": org_id, "id": invoice_id},
+                                     {"$set": {"ewb_status": decision["status"],
+                                               "ewb_note": decision["reason"]}})
+    return out
+
+
+class _SystemRequest:
+    """A stand-in Request for calls the system makes on nobody's behalf."""
+    headers: Dict[str, str] = {}
+    client = None
+
+
+@api.get("/gst/compliance/preview/{iid}")
+async def gst_compliance_preview(iid: str, ctx=Depends(require_permission("invoice.view"))):
+    """What would be filed for this invoice, and why — before anything is sent."""
+    inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    cfg = await _gst_settings(ctx["org_id"])
+    return {**GSTAUTO.plan(inv, cfg), "current": GSTAUTO.summarise(inv)}
+
+
+@api.post("/gst/compliance/file/{iid}")
+async def gst_compliance_file(iid: str, ctx=Depends(require_permission("invoice.create"))):
+    """File (or re-try) this one invoice now."""
+    inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    return await _auto_file_invoice(ctx["org_id"], iid, ctx["user"])
+
+
+@api.get("/gst/compliance")
+async def gst_compliance_queue(status: str = "attention", limit: int = 100,
+                               ctx=Depends(require_permission("invoice.view"))):
+    """Everything waiting on the government, newest first.
+
+    status: attention (default) · failed · pending · done · all
+    """
+    q = org_filter(ctx, {"type": "sale"})
+    if status == "failed":
+        q["$or"] = [{"einvoice_status": GSTAUTO.FAILED}, {"ewb_status": GSTAUTO.FAILED}]
+    elif status == "pending":
+        q["$or"] = [{"einvoice_status": GSTAUTO.PENDING}, {"ewb_status": GSTAUTO.PENDING},
+                    {"ewb_status": GSTAUTO.NEEDS_INPUT}]
+    elif status == "attention":
+        q["$or"] = [{"einvoice_status": {"$in": [GSTAUTO.FAILED, GSTAUTO.PENDING]}},
+                    {"ewb_status": {"$in": [GSTAUTO.FAILED, GSTAUTO.PENDING,
+                                            GSTAUTO.NEEDS_INPUT]}}]
+    elif status == "done":
+        q["$or"] = [{"irn": {"$nin": ["", None]}}, {"ewb_no": {"$nin": ["", None]}}]
+
+    rows = await db.invoices.find(q, {"_id": 0}).sort("invoice_date", -1).to_list(min(limit, 500))
+    cfg = await _gst_settings(ctx["org_id"])
+    return {
+        "rows": [GSTAUTO.summarise(r) for r in rows],
+        "counts": {
+            "irn_generated": await db.invoices.count_documents(
+                org_filter(ctx, {"irn": {"$nin": ["", None]}})),
+            "eway_generated": await db.invoices.count_documents(
+                org_filter(ctx, {"ewb_no": {"$nin": ["", None]}})),
+            "failed": await db.invoices.count_documents(org_filter(ctx, {"$or": [
+                {"einvoice_status": GSTAUTO.FAILED}, {"ewb_status": GSTAUTO.FAILED}]})),
+            "needs_details": await db.invoices.count_documents(
+                org_filter(ctx, {"ewb_status": GSTAUTO.NEEDS_INPUT})),
+        },
+        "automation": {
+            "enabled": bool(cfg.get("enabled")),
+            "auto_einvoice": bool(cfg.get("auto_einvoice")),
+            "auto_eway": bool(cfg.get("auto_eway")),
+            "eway_threshold": cfg.get("eway_threshold") or GSTAUTO.EWAY_DEFAULT_THRESHOLD,
+            "einvoice_threshold": cfg.get("einvoice_threshold") or 0,
+        },
+    }
+
+
+@api.post("/gst/compliance/retry-all")
+async def gst_compliance_retry_all(ctx=Depends(require_permission("invoice.create"))):
+    """Re-try everything that failed — after fixing a GSTIN, a key, or an HSN."""
+    rows = await db.invoices.find(
+        org_filter(ctx, {"$or": [{"einvoice_status": GSTAUTO.FAILED},
+                                 {"ewb_status": GSTAUTO.FAILED}]}),
+        {"_id": 0, "id": 1}).to_list(200)
+    results = []
+    for r in rows:
+        results.append(await _auto_file_invoice(ctx["org_id"], r["id"], ctx["user"]))
+    done = sum(1 for x in results
+               if x.get("einvoice", {}).get("status") == GSTAUTO.DONE
+               or x.get("eway", {}).get("status") == GSTAUTO.DONE)
+    return {"tried": len(results), "succeeded": done, "results": results}
 
 
 @api.post("/gst/filing-settings/test")

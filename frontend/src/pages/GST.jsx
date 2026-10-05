@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import GstCompliance from "@/components/GstCompliance";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -86,10 +87,14 @@ export default function GST() {
               <TabsTrigger value="b2b" data-testid="gst-tab-b2b">B2B ({gstr1.b2b.length})</TabsTrigger>
               <TabsTrigger value="b2c" data-testid="gst-tab-b2c">B2C ({gstr1.b2c.length})</TabsTrigger>
               <TabsTrigger value="hsn" data-testid="gst-tab-hsn">HSN ({gstr1.hsn.length})</TabsTrigger>
+              <TabsTrigger value="compliance" data-testid="gst-tab-compliance">
+                E-invoice &amp; e-way bill
+              </TabsTrigger>
             </TabsList>
             <TabsContent value="b2b"><InvTable rows={gstr1.b2b} /></TabsContent>
             <TabsContent value="b2c"><InvTable rows={gstr1.b2c} /></TabsContent>
             <TabsContent value="hsn"><HsnTable rows={gstr1.hsn} /></TabsContent>
+            <TabsContent value="compliance"><GstCompliance /></TabsContent>
           </Tabs>
         </>
       )}
