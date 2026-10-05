@@ -99,6 +99,36 @@ def hint_for(text: str) -> Optional[Dict[str, str]]:
     return None
 
 
+# Words almost every Indian business name contains. Matching a party on these
+# alone pairs "Karthikeyan Traders" with "Vrishabh Traders", which is worse
+# than offering no guess at all.
+GENERIC_NAME_WORDS = {
+    "TRADERS", "TRADING", "ENTERPRISE", "ENTERPRISES", "AGENCIES", "AGENCY",
+    "COMPANY", "COMPANIES", "PRIVATE", "LIMITED", "PVT", "LTD", "LLP", "INC",
+    "CORP", "CORPORATION", "INDUSTRIES", "INDUSTRY", "SONS", "BROTHERS", "BROS",
+    "AND", "THE", "STORE", "STORES", "SHOP", "MART", "SUPER", "GENERAL",
+    "SERVICES", "SERVICE", "SOLUTIONS", "SOLUTION", "SYSTEMS", "SUPPLIERS",
+    "DISTRIBUTORS", "DISTRIBUTOR", "MERCHANTS", "ASSOCIATES", "GROUP",
+    "INDIA", "INDIAN", "NEW", "SREE", "SRI", "SHREE", "SHRI",
+}
+
+
+def distinctive_words(name: str) -> List[str]:
+    """The parts of a name that actually identify a business."""
+    return [w for w in re.findall(r"[A-Z0-9&]{3,}", (name or "").upper())
+            if w not in GENERIC_NAME_WORDS]
+
+
+def same_party(narration_guess: str, party_name: str) -> bool:
+    """Is this narration really about this party?
+
+    At least one distinctive word must match — a shared "Traders" is not a match.
+    """
+    a = set(distinctive_words(narration_guess))
+    b = set(distinctive_words(party_name))
+    return bool(a & b)
+
+
 def rule_key(text: str) -> str:
     """A stable key for 'lines like this one', so a decision can be reused.
 

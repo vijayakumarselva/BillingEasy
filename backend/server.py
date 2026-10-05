@@ -4186,19 +4186,20 @@ async def _recon_party_for(org_id: str, description: str) -> Optional[dict]:
     guess = RECON.name_guess(description)
     if len(guess) < 4:
         return None
-    words = [w for w in guess.split() if len(w) > 3][:3]
+    # Search only on words that identify a business — never on "Traders" alone.
+    words = RECON.distinctive_words(guess)[:3]
     if not words:
         return None
     rows = await db.parties.find(
         {"org_id": org_id, "$or": [{"name": {"$regex": re.escape(w), "$options": "i"}}
                                    for w in words]},
-        {"_id": 0, "id": 1, "name": 1, "role": 1, "gstin": 1}).to_list(5)
+        {"_id": 0, "id": 1, "name": 1, "role": 1, "gstin": 1}).to_list(10)
+    # And keep only the ones that really are the same business.
+    rows = [p for p in rows if RECON.same_party(guess, p["name"])]
     if not rows:
         return None
-    # Prefer the longest name overlap — "JK India Eagritech" over "India".
-    guess_up = guess.upper()
-    rows.sort(key=lambda p: len(set(p["name"].upper().split()) & set(guess_up.split())),
-              reverse=True)
+    rows.sort(key=lambda p: len(set(RECON.distinctive_words(guess))
+                                & set(RECON.distinctive_words(p["name"]))), reverse=True)
     return rows[0]
 
 
@@ -4542,6 +4543,174 @@ async def reconcile_rules(ctx=Depends(require_permission("payment.view"))):
 async def delete_reconcile_rule(key: str, ctx=Depends(require_permission("payment.create"))):
     await db.bank_rules.delete_one({"org_id": ctx["org_id"], "rule_key": key})
     return {"ok": True}
+
+
+# ── Where the money went ────────────────────────────────────────────────────
+# Everything recorded — from the statement, from an invoice, or typed by hand —
+# gathered into one picture, with the individual entries behind every slice.
+MONEY_IN_SOURCES = {
+    "sale": "Sales invoices",
+    "receipt": "Payments received",
+    "other": "Other income",
+}
+
+
+def _period(from_date: str, to_date: str) -> tuple:
+    today = now_dt().date()
+    start = from_date or (today - timedelta(days=90)).isoformat()
+    end = to_date or today.isoformat()
+    return start, end
+
+
+@api.get("/money/overview")
+async def money_overview(from_date: str = "", to_date: str = "",
+                         ctx=Depends(require_permission("payment.view"))):
+    """Money in and out for a period, grouped so it can be drawn as a pie."""
+    start, end = _period(from_date, to_date)
+    org = {"org_id": ctx["org_id"]}
+    window = {"$gte": start, "$lte": end}
+
+    # ── Money out ──
+    out_groups: Dict[str, Dict[str, Any]] = {}
+
+    async for e in db.expenses.find({**org, "date": window}, {"_id": 0}):
+        g = out_groups.setdefault(e.get("category") or "General",
+                                  {"label": e.get("category") or "General",
+                                   "total": 0.0, "count": 0, "kind": "expense"})
+        g["total"] += float(e.get("amount") or 0)
+        g["count"] += 1
+
+    purchases_total = 0.0
+    purchases_count = 0
+    async for p in db.purchases.find({**org, "purchase_date": window}, {"_id": 0}):
+        purchases_total += float((p.get("totals") or {}).get("grand_total") or 0)
+        purchases_count += 1
+    if purchases_count:
+        out_groups["Purchases"] = {"label": "Purchases", "total": purchases_total,
+                                   "count": purchases_count, "kind": "purchase"}
+
+    # ── Money in ──
+    in_groups: Dict[str, Dict[str, Any]] = {}
+    async for inv in db.invoices.find(
+            {**org, "type": "sale", "invoice_date": window}, {"_id": 0}):
+        received = float(inv.get("amount_received") or 0)
+        if received <= 0:
+            continue
+        party = (inv.get("party_snapshot") or {}).get("name") or "Walk-in"
+        g = in_groups.setdefault(party, {"label": party, "total": 0.0, "count": 0,
+                                         "kind": "sale"})
+        g["total"] += received
+        g["count"] += 1
+
+    out_rows = sorted(out_groups.values(), key=lambda g: g["total"], reverse=True)
+    in_rows = sorted(in_groups.values(), key=lambda g: g["total"], reverse=True)
+    total_out = round(sum(g["total"] for g in out_rows), 2)
+    total_in = round(sum(g["total"] for g in in_rows), 2)
+
+    def shaped(rows, total):
+        return [{**g, "total": round(g["total"], 2),
+                 "pct": round(g["total"] / total * 100, 1) if total else 0}
+                for g in rows]
+
+    # How much of this came straight off the bank statement rather than paperwork.
+    from_bank = await db.expenses.count_documents({**org, "source": "bank_statement"}) \
+        + await db.purchases.count_documents({**org, "source": "bank_statement"}) \
+        + await db.invoices.count_documents({**org, "source": "bank_statement"})
+
+    return {
+        "from": start, "to": end,
+        "total_in": total_in, "total_out": total_out,
+        "net": round(total_in - total_out, 2),
+        "out_by_category": shaped(out_rows, total_out),
+        "in_by_party": shaped(in_rows[:12], total_in),
+        "recorded_from_statement": from_bank,
+    }
+
+
+@api.get("/money/entries")
+async def money_entries(direction: str = "out", label: str = "",
+                        from_date: str = "", to_date: str = "", limit: int = 200,
+                        ctx=Depends(require_permission("payment.view"))):
+    """The individual entries behind one slice of the pie."""
+    start, end = _period(from_date, to_date)
+    org = {"org_id": ctx["org_id"]}
+    window = {"$gte": start, "$lte": end}
+    rows: List[dict] = []
+
+    if direction == "out":
+        if label == "Purchases":
+            async for p in db.purchases.find({**org, "purchase_date": window}, {"_id": 0}):
+                rows.append({
+                    "id": p["id"], "date": p.get("purchase_date"),
+                    "title": p.get("party_name") or "Supplier",
+                    "detail": p.get("bill_no") or "",
+                    "amount": (p.get("totals") or {}).get("grand_total", 0),
+                    "from_statement": p.get("source") == "bank_statement",
+                    "link": "/purchases",
+                })
+        else:
+            q = {**org, "date": window}
+            if label:
+                q["category"] = label
+            async for e in db.expenses.find(q, {"_id": 0}):
+                rows.append({
+                    "id": e["id"], "date": e.get("date"),
+                    "title": e.get("party_name") or e.get("category") or "Expense",
+                    "detail": e.get("description", "")[:120],
+                    "amount": e.get("amount", 0),
+                    "from_statement": e.get("source") == "bank_statement",
+                    "link": "/expenses",
+                })
+    else:
+        q = {**org, "type": "sale", "invoice_date": window}
+        if label:
+            q["party_snapshot.name"] = label
+        async for inv in db.invoices.find(q, {"_id": 0}):
+            if float(inv.get("amount_received") or 0) <= 0:
+                continue
+            rows.append({
+                "id": inv["id"], "date": inv.get("invoice_date"),
+                "title": (inv.get("party_snapshot") or {}).get("name") or "Walk-in",
+                "detail": inv.get("invoice_no", ""),
+                "amount": float(inv.get("amount_received") or 0),
+                "from_statement": inv.get("source") == "bank_statement",
+                "link": "/sales",
+            })
+
+    rows.sort(key=lambda r: (r.get("date") or "", r.get("amount") or 0), reverse=True)
+    return {"label": label, "direction": direction, "count": len(rows),
+            "total": round(sum(r["amount"] for r in rows), 2),
+            "entries": rows[:min(limit, 500)]}
+
+
+@api.get("/money/trend")
+async def money_trend(months: int = 6, ctx=Depends(require_permission("payment.view"))):
+    """Month by month, so the pie has a story behind it."""
+    today = now_dt().date()
+    out = []
+    for i in range(months - 1, -1, -1):
+        y, m = today.year, today.month - i
+        while m <= 0:
+            m += 12
+            y -= 1
+        prefix = f"{y:04d}-{m:02d}"
+        exp = await db.expenses.aggregate([
+            {"$match": {"org_id": ctx["org_id"], "date": {"$regex": f"^{prefix}"}}},
+            {"$group": {"_id": None, "t": {"$sum": "$amount"}}}]).to_list(1)
+        pur = await db.purchases.aggregate([
+            {"$match": {"org_id": ctx["org_id"], "purchase_date": {"$regex": f"^{prefix}"}}},
+            {"$group": {"_id": None, "t": {"$sum": "$totals.grand_total"}}}]).to_list(1)
+        inc = await db.invoices.aggregate([
+            {"$match": {"org_id": ctx["org_id"], "type": "sale",
+                        "invoice_date": {"$regex": f"^{prefix}"}}},
+            {"$group": {"_id": None, "t": {"$sum": "$amount_received"}}}]).to_list(1)
+        money_out = round((exp[0]["t"] if exp else 0) + (pur[0]["t"] if pur else 0), 2)
+        money_in = round(inc[0]["t"] if inc else 0, 2)
+        out.append({"month": prefix,
+                    "label": datetime(y, m, 1).strftime("%b"),
+                    "money_in": money_in, "money_out": money_out,
+                    "net": round(money_in - money_out, 2)})
+    return {"months": out}
 
 
 # ---------------- ROLES & PERMISSIONS ----------------

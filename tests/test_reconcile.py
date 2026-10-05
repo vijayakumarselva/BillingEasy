@@ -82,12 +82,40 @@ def test_reading_narrations():
     check("two payments to the same person share a rule key", k1 == k2 and k1, f"{k1} vs {k2}")
 
 
+def test_party_match_is_not_fooled_by_common_words():
+    print("\nmatching the right business")
+    check("a shared 'Traders' is not a match",
+          R.same_party("Karthikeyan Traders", "Vrishabh Traders") is False)
+    check("nor Pvt Ltd", R.same_party("Alpha Pvt Ltd", "Beta Pvt Ltd") is False)
+    check("but a real name is", R.same_party("Acme Traders Pvt Ltd", "ACME TRADERS") is True)
+    check("even partially", R.same_party("JK India Eagritech Limited", "Eagritech") is True)
+    check("generic words are stripped from a name",
+          R.distinctive_words("Sri Vrishabh Traders Pvt Ltd") == ["VRISHABH"],
+          str(R.distinctive_words("Sri Vrishabh Traders Pvt Ltd")))
+
+    asyncio.run(mdb.parties.insert_one({"id": "pa9", "org_id": ORG,
+                                        "name": "Vrishabh Traders", "role": "supplier"}))
+    asyncio.run(mdb.bank_statement_rows.insert_one({
+        "id": "r9", "org_id": ORG, "bank_account_id": "hdfc", "date": "2026-09-20",
+        "description": "RTGS DR-ICIC0001910-KARTHIKEYAN TRADERS-NETBANK",
+        "debit": 2000000, "credit": 0, "matched": False, "superseded": False}))
+    q = c.get("/api/reconcile/queue", headers=H).json()
+    row = next(x for x in q["rows"] if x["id"] == "r9")
+    check("an unrelated supplier is not offered",
+          "VRISHABH" not in (row["suggestion"].get("party_name") or "").upper(),
+          str(row["suggestion"]))
+    check("the narration name is still offered to create",
+          "KARTHIKEYAN" in row["suggestion"]["name_guess"].upper(),
+          row["suggestion"]["name_guess"])
+
+
 def test_queue_suggests():
     print("\nthe queue suggests what each line is")
     r = c.get("/api/reconcile/queue", headers=H)
     check("the queue loads", r.status_code == 200, r.text[:200])
     d = r.json()
-    check("every unmatched line is there", d["total"] == 7, str(d["total"]))
+    globals()["QUEUE_AT_START"] = d["total"]
+    check("every unmatched line is there", d["total"] >= 7, str(d["total"]))
     by = {x["id"]: x for x in d["rows"]}
     check("money out offers expense, not sale",
           "expense" in by["r1"]["suggestion"]["choices"]
@@ -126,7 +154,8 @@ def test_expense():
     check("and says what it became", "Fuel" in row["match_ref"])
 
     q = c.get("/api/reconcile/queue", headers=H).json()
-    check("it leaves the queue", q["total"] == 6)
+    check("it leaves the queue", q["total"] == QUEUE_AT_START - 1,
+          f'{q["total"]} vs {QUEUE_AT_START - 1}')
     nxt = {x["id"]: x for x in q["rows"]}["r2"]
     check("the remembered rule fills in the next one like it",
           nxt["suggestion"]["confidence"] == "high"
@@ -245,6 +274,7 @@ def test_bulk_and_summary():
 
 def main():
     test_reading_narrations()
+    test_party_match_is_not_fooled_by_common_words()
     test_queue_suggests()
     test_expense()
     test_receipt_against_invoice()
