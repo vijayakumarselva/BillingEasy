@@ -15,7 +15,10 @@ import {
 } from "recharts";
 import {
   ArrowDownLeft, ArrowUpRight, ChevronRight, Landmark, Loader2, TrendingUp, Wallet,
+  AlertTriangle, Undo2,
 } from "lucide-react";
+import { toast } from "sonner";
+import { useNavigate } from "react-router-dom";
 
 // Distinct enough to tell apart at a glance, and readable in both themes.
 const COLORS = [
@@ -60,10 +63,32 @@ function Slice({ data, onPick, activeLabel }) {
   );
 }
 
-function Breakdown({ rows, direction, period, colorOffset = 0 }) {
+function Breakdown({ rows, direction, period, colorOffset = 0, onChanged, group = "party" }) {
   const [open, setOpen] = useState(null);
   const [entries, setEntries] = useState({});
   const [busy, setBusy] = useState("");
+  const nav = useNavigate();
+
+  // Put a wrongly recorded line back in the queue and delete what it made.
+  const redo = async (entry) => {
+    if (!entry.bank_row_id) return;
+    if (!window.confirm(
+      `Undo this and put the bank line back to be explained?\n\n${entry.title} · ` +
+      `${entry.amount}\n\nThe entry it created will be deleted.`)) return;
+    setBusy(entry.id);
+    try {
+      await api.post(`/reconcile/${entry.bank_row_id}/undo`);
+      toast.success("Undone — the line is back in Explain statement");
+      setEntries({});
+      setOpen(null);
+      onChanged?.();
+      nav("/reconcile");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not undo that");
+    } finally {
+      setBusy("");
+    }
+  };
 
   const toggle = async (label) => {
     if (open === label) return setOpen(null);
@@ -72,7 +97,7 @@ function Breakdown({ rows, direction, period, colorOffset = 0 }) {
     setBusy(label);
     try {
       const { data } = await api.get("/money/entries", {
-        params: { direction, label, from_date: period.from, to_date: period.to },
+        params: { direction, label, group, from_date: period.from, to_date: period.to },
       });
       setEntries((e) => ({ ...e, [label]: data }));
     } finally {
@@ -131,6 +156,12 @@ function Breakdown({ rows, direction, period, colorOffset = 0 }) {
                                 {e.detail}
                               </div>
                             )}
+                            {e.name_mismatch && (
+                              <div className="text-[11px] text-amber-700 mt-0.5 inline-flex items-center gap-1">
+                                <AlertTriangle className="h-3 w-3 shrink-0" />
+                                The bank says {e.narration_name || "someone else"} — check this
+                              </div>
+                            )}
                           </td>
                           <td className="px-3 py-2">
                             {e.from_statement && (
@@ -142,11 +173,22 @@ function Breakdown({ rows, direction, period, colorOffset = 0 }) {
                           <td className="px-3 py-2 text-right font-medium whitespace-nowrap">
                             {inr(e.amount)}
                           </td>
+                          <td className="px-3 py-2 text-right">
+                            {e.bank_row_id && (
+                              <Button size="sm" variant="ghost" className="h-7 text-xs gap-1"
+                                      disabled={busy === e.id} onClick={() => redo(e)}
+                                      title="Undo and explain this line again">
+                                {busy === e.id ? <Loader2 className="h-3 w-3 animate-spin" />
+                                               : <Undo2 className="h-3 w-3" />}
+                                Redo
+                              </Button>
+                            )}
+                          </td>
                         </tr>
                       ))}
                       {(entries[g.label]?.entries || []).length === 0 && (
                         <tr>
-                          <td className="px-3 py-4 text-center text-muted-foreground" colSpan={4}>
+                          <td className="px-3 py-4 text-center text-muted-foreground" colSpan={5}>
                             No entries.
                           </td>
                         </tr>
@@ -176,20 +218,26 @@ export default function Money() {
   const [trend, setTrend] = useState([]);
   const [tab, setTab] = useState("out");
   const [picked, setPicked] = useState(null);
+  const [suspicious, setSuspicious] = useState(null);
+  // Money in reads two ways: who paid, or what it was for.
+  const [inGroup, setInGroup] = useState("type");
 
   const load = async () => {
-    const [o, t] = await Promise.all([
+    const [o, t, s] = await Promise.all([
       api.get("/money/overview", { params: { from_date: period.from, to_date: period.to } }),
       api.get("/money/trend", { params: { months: 6 } }),
+      api.get("/money/suspicious").catch(() => ({ data: { count: 0, entries: [] } })),
     ]);
     setData(o.data);
     setTrend(t.data.months);
+    setSuspicious(s.data);
   };
   useEffect(() => { load(); }, [period.from, period.to]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const rows = useMemo(
-    () => (tab === "out" ? data?.out_by_category : data?.in_by_party) || [],
-    [data, tab]);
+  const rows = useMemo(() => {
+    if (tab === "out") return data?.out_by_category || [];
+    return (inGroup === "type" ? data?.in_by_type : data?.in_by_party) || [];
+  }, [data, tab, inGroup]);
 
   if (!data) return <div className="p-8 text-center text-muted-foreground">Loading…</div>;
 
@@ -240,6 +288,33 @@ export default function Money() {
         </Card>
       </div>
 
+      {suspicious?.count > 0 && (
+        <Card className="p-4 border-amber-300 bg-amber-50">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-amber-900">
+                {suspicious.count} {suspicious.count === 1 ? "entry does" : "entries do"} not
+                match the bank narration
+              </p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                The name recorded is not the name the bank printed. Open the category below and
+                use Redo to put the line back and record it correctly.
+              </p>
+              <ul className="mt-2 space-y-0.5">
+                {suspicious.entries.slice(0, 4).map((e) => (
+                  <li key={e.id} className="text-xs text-amber-900">
+                    <span className="font-medium">{inr(e.amount)}</span> recorded as{" "}
+                    <span className="font-medium">{e.title}</span>, bank says{" "}
+                    <span className="font-medium">{e.narration_name}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {data.recorded_from_statement > 0 && (
         <p className="text-xs text-muted-foreground">
           {data.recorded_from_statement.toLocaleString("en-IN")} of these were recorded
@@ -267,9 +342,24 @@ export default function Money() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card className="p-4">
-          <h3 className="font-semibold text-sm mb-1">
-            {tab === "out" ? "What you spent on" : "Who paid you"}
-          </h3>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <h3 className="font-semibold text-sm">
+              {tab === "out" ? "What you spent on"
+                             : inGroup === "type" ? "What you earned from" : "Who paid you"}
+            </h3>
+            {tab === "in" && (
+              <div className="inline-flex bg-muted rounded-md p-0.5">
+                {[["type", "By type"], ["party", "By customer"]].map(([v, l]) => (
+                  <button key={v}
+                          onClick={() => { setInGroup(v); setPicked(null); }}
+                          className={`px-2 py-1 rounded text-[11px] font-medium ${
+                            inGroup === v ? "bg-background shadow-sm" : "text-muted-foreground"}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <p className="text-[11px] text-muted-foreground mb-2">
             {picked ? `Showing ${picked}` : "Click a slice to pick one out"}
           </p>
@@ -290,6 +380,8 @@ export default function Money() {
               rows={picked ? rows.filter((r) => r.label === picked) : rows}
               direction={tab}
               period={period}
+              group={tab === "in" ? inGroup : "party"}
+              onChanged={load}
             />
           </div>
         </Card>

@@ -240,6 +240,43 @@ def test_wrong_direction_refused():
     check("naming what is missing", "invoice" in r.json()["detail"].lower())
 
 
+def test_suspicious_sweep():
+    print("\nspotting a wrong match after the fact")
+    # Record a line against a party the bank never mentions.
+    asyncio.run(mdb.bank_statement_rows.insert_one({
+        "id": "r20", "org_id": ORG, "bank_account_id": "hdfc", "date": "2026-09-19",
+        "description": "RTGS DR-ICIC0001910-KARTHIKEYAN TRADERS-NETBANK",
+        "debit": 2000000, "credit": 0, "matched": False, "superseded": False}))
+    c.post("/api/reconcile/r20", headers=H,
+           json={"kind": "expense", "category": "Loan repayment",
+                 "party_name": "Vrishabh Traders"})
+    # And one with no party at all — a category is not a name and must not flag.
+    asyncio.run(mdb.bank_statement_rows.insert_one({
+        "id": "r21", "org_id": ORG, "bank_account_id": "hdfc", "date": "2026-09-18",
+        "description": "UPI-OLA CABS-OLACABS@YBL", "debit": 380, "credit": 0,
+        "matched": False, "superseded": False}))
+    c.post("/api/reconcile/r21", headers=H, json={"kind": "expense", "category": "Travel"})
+
+    d = c.get("/api/money/suspicious", headers=H).json()
+    titles = [e["title"] for e in d["entries"]]
+    check("the wrong party is caught", "Vrishabh Traders" in titles, str(titles))
+    check("with the name the bank actually printed",
+          any("KARTHIKEYAN" in (e["narration_name"] or "").upper() for e in d["entries"]),
+          str(d["entries"])[:200])
+    check("an expense with no party is not flagged", "Travel" not in titles, str(titles))
+    check("and the bank line is offered so it can be redone",
+          all(e["bank_row_id"] for e in d["entries"]), str(d["entries"])[:150])
+
+    bad = next(e for e in d["entries"] if e["title"] == "Vrishabh Traders")
+    c.post(f"/api/reconcile/{bad['bank_row_id']}/undo", headers=H)
+    after = c.get("/api/money/suspicious", headers=H).json()
+    check("redoing it clears the warning",
+          "Vrishabh Traders" not in [e["title"] for e in after["entries"]])
+    q = c.get("/api/reconcile/queue", headers=H).json()
+    check("and the line is back to be explained",
+          any(x["id"] == "r20" for x in q["rows"]))
+
+
 def test_undo():
     print("\nundo")
     r = c.post("/api/reconcile/r1/undo", headers=H)
@@ -281,6 +318,7 @@ def main():
     test_purchase_creates_supplier()
     test_sale_and_transfer_and_ignore()
     test_wrong_direction_refused()
+    test_suspicious_sweep()
     test_undo()
     test_bulk_and_summary()
     failed = [n for n, ok in OK if not ok]

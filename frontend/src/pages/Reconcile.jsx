@@ -19,10 +19,19 @@ import {
 } from "lucide-react";
 
 const CATEGORIES = [
-  "Fuel", "Travel", "Food & refreshments", "Rent", "Salaries & wages",
+  "Fuel", "Transport", "Travel", "Food & refreshments", "Rent", "Salaries & wages",
   "Electricity", "Phone & internet", "Bank charges", "Interest", "Insurance",
   "Freight & courier", "Office supplies", "Repairs & maintenance", "Marketing",
   "Professional fees", "Taxes & statutory", "Loan repayment", "General",
+];
+
+// Money coming in is not all one thing either — a transport charge, scrap sold,
+// rent received. Typed freely, but suggested so the same words get reused and
+// the Money page can group by them.
+const INCOME_CATEGORIES = [
+  "Sales", "Transport", "Freight", "Service charges", "Labour charges",
+  "Commission", "Rent received", "Interest received", "Scrap sales",
+  "Advance received", "Other income",
 ];
 
 const KIND_HELP = {
@@ -282,8 +291,17 @@ export default function Reconcile() {
                               </SelectContent>
                             </Select>
                           ) : (
-                            <Input value={d.category || ""} placeholder="Goods / services"
-                                   onChange={(e) => set(row.id, { category: e.target.value })} />
+                            <>
+                              <Input
+                                list={`cats-${row.id}`}
+                                value={d.category || ""}
+                                placeholder={d.kind === "sale" ? "Sales" : "Goods / services"}
+                                onChange={(e) => set(row.id, { category: e.target.value })} />
+                              <datalist id={`cats-${row.id}`}>
+                                {(d.kind === "sale" ? INCOME_CATEGORIES : CATEGORIES)
+                                  .map((cName) => <option key={cName} value={cName} />)}
+                              </datalist>
+                            </>
                           )}
                         </div>
                       )}

@@ -4591,6 +4591,7 @@ async def money_overview(from_date: str = "", to_date: str = "",
 
     # ── Money in ──
     in_groups: Dict[str, Dict[str, Any]] = {}
+    in_by_type: Dict[str, Dict[str, Any]] = {}
     async for inv in db.invoices.find(
             {**org, "type": "sale", "invoice_date": window}, {"_id": 0}):
         received = float(inv.get("amount_received") or 0)
@@ -4601,6 +4602,14 @@ async def money_overview(from_date: str = "", to_date: str = "",
                                          "kind": "sale"})
         g["total"] += received
         g["count"] += 1
+        # What it was for: the line description on a one-line invoice, else "Sales".
+        items = inv.get("items") or []
+        kind_label = (items[0].get("name") if len(items) == 1 and items[0].get("name")
+                      else "Sales")
+        t = in_by_type.setdefault(kind_label, {"label": kind_label, "total": 0.0,
+                                               "count": 0, "kind": "sale_type"})
+        t["total"] += received
+        t["count"] += 1
 
     out_rows = sorted(out_groups.values(), key=lambda g: g["total"], reverse=True)
     in_rows = sorted(in_groups.values(), key=lambda g: g["total"], reverse=True)
@@ -4623,12 +4632,60 @@ async def money_overview(from_date: str = "", to_date: str = "",
         "net": round(total_in - total_out, 2),
         "out_by_category": shaped(out_rows, total_out),
         "in_by_party": shaped(in_rows[:12], total_in),
+        "in_by_type": shaped(sorted(in_by_type.values(), key=lambda g: g["total"],
+                                    reverse=True)[:12], total_in),
         "recorded_from_statement": from_bank,
     }
 
 
+def _money_entry(eid: str, date: str, title: str, detail: str, amount: float,
+                 doc: dict, link: str) -> dict:
+    """One line in the breakdown, flagged when the party does not fit the bank
+    narration — that is how a wrong match gets spotted after the fact."""
+    from_bank = doc.get("source") == "bank_statement"
+    narration = doc.get("description") or doc.get("notes") or ""
+    # Only a real party can be wrong. An expense with no party shows its
+    # category as the title, and a category never matches a payee's name.
+    party = (doc.get("party_name")
+             or (doc.get("party_snapshot") or {}).get("name") or "").strip()
+    mismatch = False
+    if from_bank and narration and party:
+        guess = RECON.name_guess(narration)
+        if RECON.distinctive_words(party) and RECON.distinctive_words(guess):
+            mismatch = not RECON.same_party(guess, party)
+    return {
+        "id": eid, "date": date, "title": title, "detail": (detail or "")[:160],
+        "amount": amount, "from_statement": from_bank, "link": link,
+        "bank_row_id": doc.get("bank_row_id") or "",
+        "name_mismatch": mismatch,
+        "narration_name": RECON.name_guess(narration) if mismatch else "",
+    }
+
+
+@api.get("/money/suspicious")
+async def money_suspicious(ctx=Depends(require_permission("payment.view"))):
+    """Entries recorded off the statement whose party does not match the
+    narration — the ones worth a second look before they reach the books."""
+    org = {"org_id": ctx["org_id"], "source": "bank_statement"}
+    out = []
+    for coll, link, title_f, date_f, amt_f in (
+            (db.expenses, "/expenses", lambda d: d.get("party_name") or d.get("category"),
+             "date", lambda d: d.get("amount", 0)),
+            (db.purchases, "/purchases", lambda d: d.get("party_name"),
+             "purchase_date", lambda d: (d.get("totals") or {}).get("grand_total", 0)),
+            (db.invoices, "/sales", lambda d: (d.get("party_snapshot") or {}).get("name"),
+             "invoice_date", lambda d: float(d.get("amount_received") or 0))):
+        async for d in coll.find(org, {"_id": 0}):
+            entry = _money_entry(d["id"], d.get(date_f), title_f(d) or "",
+                                 "", amt_f(d), d, link)
+            if entry["name_mismatch"]:
+                out.append(entry)
+    out.sort(key=lambda e: e["amount"], reverse=True)
+    return {"count": len(out), "entries": out}
+
+
 @api.get("/money/entries")
-async def money_entries(direction: str = "out", label: str = "",
+async def money_entries(direction: str = "out", label: str = "", group: str = "party",
                         from_date: str = "", to_date: str = "", limit: int = 200,
                         ctx=Depends(require_permission("payment.view"))):
     """The individual entries behind one slice of the pie."""
@@ -4640,42 +4697,33 @@ async def money_entries(direction: str = "out", label: str = "",
     if direction == "out":
         if label == "Purchases":
             async for p in db.purchases.find({**org, "purchase_date": window}, {"_id": 0}):
-                rows.append({
-                    "id": p["id"], "date": p.get("purchase_date"),
-                    "title": p.get("party_name") or "Supplier",
-                    "detail": p.get("bill_no") or "",
-                    "amount": (p.get("totals") or {}).get("grand_total", 0),
-                    "from_statement": p.get("source") == "bank_statement",
-                    "link": "/purchases",
-                })
+                rows.append(_money_entry(
+                    p["id"], p.get("purchase_date"), p.get("party_name") or "Supplier",
+                    p.get("notes") or p.get("bill_no") or "",
+                    (p.get("totals") or {}).get("grand_total", 0), p, "/purchases"))
         else:
             q = {**org, "date": window}
             if label:
                 q["category"] = label
             async for e in db.expenses.find(q, {"_id": 0}):
-                rows.append({
-                    "id": e["id"], "date": e.get("date"),
-                    "title": e.get("party_name") or e.get("category") or "Expense",
-                    "detail": e.get("description", "")[:120],
-                    "amount": e.get("amount", 0),
-                    "from_statement": e.get("source") == "bank_statement",
-                    "link": "/expenses",
-                })
+                rows.append(_money_entry(
+                    e["id"], e.get("date"),
+                    e.get("party_name") or e.get("category") or "Expense",
+                    e.get("description", ""), e.get("amount", 0), e, "/expenses"))
     else:
         q = {**org, "type": "sale", "invoice_date": window}
-        if label:
+        if label and group == "type":
+            q["items.name"] = label
+        elif label:
             q["party_snapshot.name"] = label
         async for inv in db.invoices.find(q, {"_id": 0}):
             if float(inv.get("amount_received") or 0) <= 0:
                 continue
-            rows.append({
-                "id": inv["id"], "date": inv.get("invoice_date"),
-                "title": (inv.get("party_snapshot") or {}).get("name") or "Walk-in",
-                "detail": inv.get("invoice_no", ""),
-                "amount": float(inv.get("amount_received") or 0),
-                "from_statement": inv.get("source") == "bank_statement",
-                "link": "/sales",
-            })
+            rows.append(_money_entry(
+                inv["id"], inv.get("invoice_date"),
+                (inv.get("party_snapshot") or {}).get("name") or "Walk-in",
+                inv.get("notes") or inv.get("invoice_no", ""),
+                float(inv.get("amount_received") or 0), inv, "/sales"))
 
     rows.sort(key=lambda r: (r.get("date") or "", r.get("amount") or 0), reverse=True)
     return {"label": label, "direction": direction, "count": len(rows),
