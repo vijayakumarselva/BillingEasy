@@ -14,7 +14,7 @@ import {
   LayoutDashboard, Users, Package, FileText, ShoppingCart, Wallet,
   Receipt, BookOpen, Landmark, Settings, LogOut, Moon, Sun, Building2,
   FileBarChart, ChevronDown, Plus, Bot, Wrench, FileSpreadsheet, Coins, Zap,
-  UtensilsCrossed, ChefHat, Scan, SlidersHorizontal, Sparkles, Menu, X, ChevronRight,
+  UtensilsCrossed, ChefHat, CheckSquare, Scan, SlidersHorizontal, Sparkles, Menu, X, ChevronRight,
   Home, Lock, ArrowLeftRight, Store, PackageCheck, Truck, BedDouble,
 } from "lucide-react";
 import { STATES } from "@/pages/Parties";
@@ -40,6 +40,7 @@ const ALL_NAV = [
   { to: "/restaurant",       label: "Counter billing",     icon: Receipt,          tid: "nav-restaurant",    group: "Modules", modes: ["restaurant"] , perm: "invoice.create" },
   { to: "/restaurant/admin", label: "Restaurant Settings", icon: SlidersHorizontal,tid: "nav-restaurant-admin",            group: "Modules", modes: ["restaurant"] , perm: "dining.manage" },
   { to: "/bank-statement", label: "Bank Statement",  icon: FileSpreadsheet, tid: "nav-bank-statement", group: "Accounting", modes: ["b2b","b2c","stay"] , perm: "payment.view" },
+  { to: "/reconcile",      label: "Explain statement", icon: CheckSquare,   tid: "nav-reconcile", badge: "New", group: "Accounting", modes: ["b2b","b2c","restaurant","pos","stay"] , perm: "payment.view" },
   { to: "/gst",            label: "GST Returns",     icon: FileBarChart,    tid: "nav-gst",  shortcut: "Alt+G", group: "Accounting", modes: ["b2b","b2c","stay"] , perm: "gst.view" },
   { to: "/tds",            label: "TDS",             icon: Landmark,        tid: "nav-tds",               group: "Accounting", modes: ["b2b"] , perm: "tds.view" },
   { to: "/reports",        label: "Reports & Books", icon: BookOpen,        tid: "nav-accounting", shortcut: "Alt+R", group: "Accounting", modes: ["b2b","b2c","restaurant","stay"] , perm: "report.view" },

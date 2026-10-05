@@ -43,6 +43,7 @@ import Security from "@/pages/Security";
 import Contact from "@/pages/Contact";
 import AskAi from "@/pages/AskAi";
 import BankStatement from "@/pages/BankStatement";
+import Reconcile from "@/pages/Reconcile";
 import RetailPOS from "@/pages/RetailPOS";
 import Restaurant from "@/pages/Restaurant";
 import Stay from "@/pages/Stay";
@@ -212,6 +213,7 @@ export default function App() {
               <Route path="/delivery-orders" element={<DeliveryOrders />} />
               <Route path="/payments" element={<Payments />} />
               <Route path="/bank-statement" element={<BankStatement />} />
+              <Route path="/reconcile" element={<Allowed perm="payment.view"><Reconcile /></Allowed>} />
               {/* The old credit-pack pages sold a different pricing model.
                   Everything about money now lives in Plan & Billing. */}
               <Route path="/wallet" element={<Navigate to="/billing?tab=credits" replace />} />

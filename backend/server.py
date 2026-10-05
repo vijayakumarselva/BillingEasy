@@ -4445,24 +4445,8 @@ async def _apply_reconcile(ctx: dict, row: dict, body: ReconcileIn) -> Dict[str,
     return {"ok": True, "kind": kind, "row_id": row["id"], "match_ref": match_ref, **made}
 
 
-@api.post("/reconcile/{row_id}")
-async def reconcile_row(row_id: str, body: ReconcileIn, request: Request,
-                        ctx=Depends(require_permission("payment.create"))):
-    """Record one bank line as whatever it actually was."""
-    row = await db.bank_statement_rows.find_one(
-        {"org_id": ctx["org_id"], "id": row_id}, {"_id": 0})
-    if not row:
-        raise HTTPException(404, "That statement line no longer exists")
-    if row.get("matched"):
-        return {"ok": True, "already": True, "match_ref": row.get("match_ref")}
-    res = await _apply_reconcile(ctx, row, body)
-    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="bank.reconciled",
-                    entity_type="bank_row", entity_id=row_id,
-                    metadata={"kind": body.kind, "amount": row.get("credit") or row.get("debit")},
-                    request=request)
-    return res
-
-
+# Declared before /reconcile/{row_id}: a path parameter would otherwise
+# swallow "bulk" and try to validate the batch body as a single entry.
 class BulkReconcileIn(BaseModel):
     row_ids: List[str]
     entry: ReconcileIn
@@ -4484,6 +4468,24 @@ async def reconcile_bulk(body: BulkReconcileIn, ctx=Depends(require_permission("
             failed.append({"row_id": rid,
                            "error": e.detail if isinstance(e.detail, str) else str(e.detail)})
     return {"recorded": len(done), "failed": failed}
+
+
+@api.post("/reconcile/{row_id}")
+async def reconcile_row(row_id: str, body: ReconcileIn, request: Request,
+                        ctx=Depends(require_permission("payment.create"))):
+    """Record one bank line as whatever it actually was."""
+    row = await db.bank_statement_rows.find_one(
+        {"org_id": ctx["org_id"], "id": row_id}, {"_id": 0})
+    if not row:
+        raise HTTPException(404, "That statement line no longer exists")
+    if row.get("matched"):
+        return {"ok": True, "already": True, "match_ref": row.get("match_ref")}
+    res = await _apply_reconcile(ctx, row, body)
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="bank.reconciled",
+                    entity_type="bank_row", entity_id=row_id,
+                    metadata={"kind": body.kind, "amount": row.get("credit") or row.get("debit")},
+                    request=request)
+    return res
 
 
 @api.post("/reconcile/{row_id}/undo")
