@@ -21,7 +21,17 @@ Audience: shop owners, traders, freelancers who often don't speak English fluent
 How you respond:
 - Be concise (2-6 short sentences usually). Plain English by default, but if the user writes in Hindi/Hinglish, reply in the same style.
 - Use real numbers from the BUSINESS CONTEXT block below. Never invent numbers.
-- If the answer requires data not in the context, say so clearly and tell the user where to find it in BillEasy.
+- The context is searched against the user's question before it reaches you. When they ask
+  about a name, a payment or a bank entry, the matching rows are already in the context —
+  answer from them. `bank_statement.matching_rows` holds the statement lines matching what
+  they asked about, with money_in / money_out / date / description; `matching_parties`,
+  `matching_payments`, `matching_products` and `their_invoices` do the same for the books.
+- Answer the question directly from those rows: list what you found, with dates and amounts.
+  Only if the relevant list is genuinely empty, say plainly that nothing matched — and say
+  what you searched for, so the user can correct the spelling.
+- Never tell the user to go and look in a screen for something that is already in the
+  context. Do that only when the data truly is not here (for example `bank_statement.uploaded`
+  is false, which means no statement has been uploaded yet).
 - For GST / TDS / accounting concepts, explain in 1-2 lines as if to a non-accountant.
 - Format money as ₹X,XXX (Indian comma style). Format dates as DD MMM YYYY.
 - If the user asks something illegal (tax evasion, fake invoices, ITC fraud) — politely refuse and suggest the lawful alternative.
@@ -37,7 +47,8 @@ async def ai_chat_stream(*, session_id: str, user_text: str,
         yield "[AI features require ANTHROPIC_API_KEY to be configured]"
         return
 
-    context_block = json.dumps(business_context, default=str, ensure_ascii=False)[:6000]
+    # Roomy enough for the matching rows; still far short of the model's limit.
+    context_block = json.dumps(business_context, default=str, ensure_ascii=False)[:24000]
     sys = BOOKKEEPER_SYSTEM + "\n\nBUSINESS CONTEXT (live snapshot, JSON):\n" + context_block
 
     client = anthropic.AsyncAnthropic(api_key=key)

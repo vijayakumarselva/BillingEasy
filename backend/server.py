@@ -1839,8 +1839,165 @@ class AiChatIn(BaseModel):
     message: str
 
 
-async def _build_business_context(org_id: str) -> Dict[str, Any]:
-    """Compact snapshot of the org's books for the LLM."""
+# Words that carry no search value — stripped before looking anything up.
+_AI_STOPWORDS = {
+    "any", "all", "the", "from", "with", "under", "name", "names", "show", "give",
+    "list", "find", "what", "which", "whats", "when", "how", "much", "many", "did",
+    "do", "does", "is", "are", "was", "were", "have", "has", "had", "for", "and",
+    "or", "in", "on", "at", "of", "to", "me", "my", "our", "us", "this", "that",
+    "there", "incoming", "outgoing", "payment", "payments", "statement", "bank",
+    "received", "paid", "credit", "debit", "amount", "total", "last", "month",
+    "year", "today", "please", "tell", "about", "customer", "supplier", "party",
+    "invoice", "invoices", "bill", "bills", "entry", "entries", "transaction",
+    "transactions", "search", "look", "check",
+}
+
+
+def _ai_search_terms(question: str) -> List[str]:
+    """The words in a question worth searching the books for.
+
+    "any incoming payment from the statement in the name of south india"
+    -> ["south", "india", "south india"]
+    """
+    words = [w for w in re.findall(r"[A-Za-z0-9&.-]{3,}", (question or "").lower())
+             if w not in _AI_STOPWORDS]
+    terms = list(dict.fromkeys(words))[:6]
+    # Adjacent words usually belong together ("south india", "acme traders").
+    pairs = [f"{a} {b}" for a, b in zip(words, words[1:])][:4]
+    return terms + [p for p in pairs if p not in terms]
+
+
+def _rx(term: str) -> dict:
+    return {"$regex": re.escape(term), "$options": "i"}
+
+
+async def _bank_context(org_id: str, terms: List[str]) -> Dict[str, Any]:
+    """The bank statement, as the assistant needs it: a summary of what is on
+    screen, plus the actual rows matching whatever the question asked about.
+
+    Only rows from the current upload count — a superseded upload is history.
+    """
+    base = {"org_id": org_id, "superseded": {"$ne": True}}
+    total = await db.bank_statement_rows.count_documents(base)
+    if not total:
+        return {"uploaded": False,
+                "note": "No bank statement has been uploaded yet."}
+
+    accounts = {a["id"]: a for a in await db.bank_accounts.find(
+        {"org_id": org_id}, {"_id": 0}).to_list(50)}
+
+    agg = await db.bank_statement_rows.aggregate([
+        {"$match": base},
+        {"$group": {"_id": None, "credits": {"$sum": "$credit"},
+                    "debits": {"$sum": "$debit"},
+                    "first": {"$min": "$date"}, "last": {"$max": "$date"}}},
+    ]).to_list(1)
+    totals = agg[0] if agg else {}
+
+    def row_out(r):
+        acc = accounts.get(r.get("bank_account_id")) or {}
+        return {
+            "date": r.get("date"), "description": r.get("description"),
+            "money_in": round(r.get("credit") or 0, 2),
+            "money_out": round(r.get("debit") or 0, 2),
+            "balance": r.get("balance"),
+            "account": f"{acc.get('bank_name', '')} {str(acc.get('account_no', ''))[-4:]}".strip(),
+            "matched_to": r.get("match_ref") if r.get("matched") else None,
+        }
+
+    matches: List[dict] = []
+    if terms:
+        rows = await db.bank_statement_rows.find(
+            {**base, "$or": [{"description": _rx(t)} for t in terms]}, {"_id": 0}
+        ).sort("date", -1).to_list(40)
+        matches = [row_out(r) for r in rows]
+
+    biggest_in = await db.bank_statement_rows.find(
+        {**base, "credit": {"$gt": 0}}, {"_id": 0}).sort("credit", -1).to_list(5)
+    recent = await db.bank_statement_rows.find(base, {"_id": 0}).sort("date", -1).to_list(10)
+
+    return {
+        "uploaded": True,
+        "rows_on_screen": total,
+        "period": f"{totals.get('first', '')} to {totals.get('last', '')}",
+        "total_money_in": round(totals.get("credits") or 0, 2),
+        "total_money_out": round(totals.get("debits") or 0, 2),
+        "unmatched_rows": await db.bank_statement_rows.count_documents(
+            {**base, "matched": {"$ne": True}}),
+        "accounts": [f"{a.get('bank_name')} {str(a.get('account_no', ''))[-4:]}"
+                     for a in accounts.values()],
+        "searched_for": terms,
+        "matching_rows": matches,
+        "matching_row_count": len(matches),
+        "largest_money_in": [row_out(r) for r in biggest_in],
+        "most_recent_rows": [row_out(r) for r in recent],
+    }
+
+
+async def _lookup_context(org_id: str, terms: List[str],
+                          may: Optional[set] = None) -> Dict[str, Any]:
+    """Parties, products and invoices matching the question, so the assistant
+    can answer about a specific name instead of sending the user off to look.
+
+    `may` is the asker's permission set: the assistant must not become a way
+    around the role that signed in.
+    """
+    if not terms:
+        return {}
+    out: Dict[str, Any] = {}
+    allowed = (lambda perm: True) if may is None else (
+        lambda perm: "*" in may or perm in may)
+
+    if not allowed("party.view"):
+        parties = []
+    else:
+        parties = await db.parties.find(
+        {"org_id": org_id, "$or": [{"name": _rx(t)} for t in terms]},
+        {"_id": 0, "id": 1, "name": 1, "gstin": 1, "phone": 1, "role": 1, "state": 1}
+        ).to_list(10)
+    if parties:
+        out["matching_parties"] = parties
+    if parties and allowed("invoice.view"):
+        names = [p["name"] for p in parties]
+        invs = await db.invoices.find(
+            {"org_id": org_id, "party_snapshot.name": {"$in": names}},
+            {"_id": 0, "invoice_no": 1, "invoice_date": 1, "totals.grand_total": 1,
+             "balance_due": 1, "type": 1, "party_snapshot.name": 1}
+        ).sort("invoice_date", -1).to_list(15)
+        out["their_invoices"] = [{
+            "invoice_no": i.get("invoice_no"), "date": i.get("invoice_date"),
+            "party": (i.get("party_snapshot") or {}).get("name"),
+            "total": (i.get("totals") or {}).get("grand_total"),
+            "balance_due": i.get("balance_due"), "type": i.get("type"),
+        } for i in invs]
+
+    if allowed("product.view"):
+        products = await db.products.find(
+            {"org_id": org_id, "$or": [{"name": _rx(t)} for t in terms]},
+            {"_id": 0, "name": 1, "sale_price": 1, "stock": 1, "gst_rate": 1, "hsn": 1}
+        ).to_list(10)
+        if products:
+            out["matching_products"] = products
+
+    if not allowed("payment.view"):
+        return out
+    payments = await db.payments.find(
+        {"org_id": org_id, "$or": [{"party_name": _rx(t)} for t in terms]},
+        {"_id": 0, "payment_date": 1, "party_name": 1, "amount": 1, "mode": 1,
+         "invoice_no": 1, "type": 1}
+    ).sort("payment_date", -1).to_list(15)
+    if payments:
+        out["matching_payments"] = payments
+    return out
+
+
+async def _build_business_context(org_id: str, question: str = "",
+                                  may: Optional[set] = None) -> Dict[str, Any]:
+    """Compact snapshot of the org's books for the LLM.
+
+    `question` is used to pull the specific rows being asked about — without it
+    the assistant only has totals and has to tell the user to go and look.
+    """
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
     month_prefix = now.strftime("%Y-%m")
@@ -1877,16 +2034,35 @@ async def _build_business_context(org_id: str) -> Dict[str, Any]:
         {"org_id": org_id, "type": "sale", "invoice_date": {"$regex": f"^{month_prefix}"}}
     )
 
-    return {
+    terms = _ai_search_terms(question)
+    allowed = (lambda perm: True) if may is None else (
+        lambda perm: "*" in may or perm in may)
+
+    context: Dict[str, Any] = {
         "business_name": org.get("name"),
         "gstin": org.get("gstin"),
         "today": now.strftime("%d %b %Y"),
-        "sales_last_30d": inv_agg[0] if inv_agg else {"count": 0, "total": 0, "received": 0},
-        "expenses_last_30d": exp_agg[0] if exp_agg else {"count": 0, "total": 0},
-        "invoices_this_month": invoices_this_month,
-        "top_customers_30d": top_parties,
-        "overdue_invoices": overdue[0] if overdue else {"count": 0, "total": 0},
     }
+    # The assistant must never become a way around the signed-in role: someone
+    # who cannot open the sales book cannot ask the assistant to read it out.
+    if allowed("invoice.view"):
+        context.update({
+            "sales_last_30d": inv_agg[0] if inv_agg else {"count": 0, "total": 0, "received": 0},
+            "invoices_this_month": invoices_this_month,
+            "top_customers_30d": top_parties,
+            "overdue_invoices": overdue[0] if overdue else {"count": 0, "total": 0},
+        })
+    if allowed("purchase.view"):
+        context["expenses_last_30d"] = exp_agg[0] if exp_agg else {"count": 0, "total": 0}
+    if allowed("payment.view"):
+        context["bank_statement"] = await _bank_context(org_id, terms)
+    else:
+        context["bank_statement"] = {
+            "uploaded": False,
+            "note": "This user's role does not include access to banking or payments.",
+        }
+    context.update(await _lookup_context(org_id, terms, may))
+    return context
 
 
 @api.post("/ai/chat")
@@ -1896,7 +2072,8 @@ async def ai_chat_endpoint(body: AiChatIn, ctx=Depends(get_org_ctx)):
     if not msg:
         raise HTTPException(400, "message is required")
     session_id = body.session_id or f"chat-{ctx['org_id']}-{secrets.token_hex(4)}"
-    context = await _build_business_context(ctx["org_id"])
+    context = await _build_business_context(ctx["org_id"], msg,
+                                            may=set(ctx.get("permissions") or []))
 
     # Persist user msg
     await db.ai_chats.insert_one({
