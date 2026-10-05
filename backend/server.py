@@ -67,6 +67,7 @@ import payment_provider as PAYPROVIDER
 import billing_invoice as BILLINV
 import dining as DINING
 import gst_auto as GSTAUTO
+import reconcile as RECON
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
@@ -3382,11 +3383,18 @@ def _device_label(request: Request) -> str:
 
 
 async def register_device(user: dict, request: Request) -> dict:
-    """Record this device and enforce the plan's device cap.
+    """Record this device and apply the plan's device cap.
 
-    On a one-device plan a second device is refused rather than silently
-    kicking the first one out — the person chooses which to keep.
+    Signing in is never refused. Blocking the new device is a trap: the only
+    way out would be the old device, which may be lost, stolen or at the shop.
+    So on a one-device plan the oldest session is signed out to make room, and
+    the person is simply told it happened.
+
+    BillingsEasy staff are never limited — we have to be able to get in.
     """
+    if user.get("is_super_admin"):
+        return {"device_id": _device_fingerprint(request), "limit": PRICING.UNLIMITED,
+                "new": False, "staff": True}
     account_id = user["id"]
     org = await db.organizations.find_one({"owner_user_id": account_id},
                                           {"_id": 0, "id": 1})
@@ -3408,22 +3416,18 @@ async def register_device(user: dict, request: Request) -> dict:
                                               "user_id": user["id"]}})
         return {"device_id": did, "limit": cap, "new": False}
 
+    signed_out = []
     if cap != PRICING.UNLIMITED:
         others = await db.devices.find({"account_id": account_id, "active": True},
-                                       {"_id": 0}).to_list(50)
-        if len(others) >= cap:
-            names = ", ".join(d.get("label", "a device") for d in others[:3])
-            nxt = PRICING.cheapest_plan_for_limit("devices", cap + 1, cat)
-            raise PlanError(
-                PRICING.ERR_DEVICES,
-                f"Your plan allows {cap} signed-in device"
-                f"{'s' if cap != 1 else ''} and you are already signed in on {names}. "
-                f"Log out of your other device, or upgrade"
-                + (f" to {nxt['name']} — {PRICING.fmt_inr(nxt['paise'])}/year." if nxt else "."),
-                devices=[{"device_id": d["device_id"], "label": d.get("label"),
-                          "last_seen": d.get("last_seen")} for d in others],
-                limit=cap, suggested_plan=(nxt or {}).get("code"),
-                suggested_plan_name=(nxt or {}).get("name"))
+                                       {"_id": 0}).sort("last_seen", 1).to_list(50)
+        # Make room rather than turning them away.
+        while len(others) >= cap and others:
+            oldest = others.pop(0)
+            await db.devices.update_one(
+                {"account_id": account_id, "device_id": oldest["device_id"]},
+                {"$set": {"active": False, "signed_out_at": now_iso(),
+                          "signed_out_reason": "device_limit"}})
+            signed_out.append(oldest.get("label") or "another device")
 
     await db.devices.insert_one({
         "id": str(uuid.uuid4()), "account_id": account_id, "user_id": user["id"],
@@ -3431,7 +3435,15 @@ async def register_device(user: dict, request: Request) -> dict:
         "user_agent": request.headers.get("User-Agent", "")[:300],
         "active": True, "first_seen": now, "last_seen": now,
     })
-    return {"device_id": did, "limit": cap, "new": True}
+    out = {"device_id": did, "limit": cap, "new": True}
+    if signed_out:
+        nxt = PRICING.cheapest_plan_for_limit("devices", cap + 1, cat)
+        out["signed_out"] = signed_out
+        out["notice"] = (
+            f"Your plan covers {cap} signed-in device{'s' if cap != 1 else ''}, so we signed "
+            f"you out on {', '.join(signed_out)}."
+            + (f" {nxt['name']} covers more — {PRICING.fmt_inr(nxt['paise'])}/year." if nxt else ""))
+    return out
 
 
 @api.get("/devices")
@@ -4155,6 +4167,379 @@ async def dining_session_history(limit: int = 50, ctx=Depends(require_permission
                                                      DINING.SESSION_CANCELLED]}},
         {"_id": 0}).sort("settled_at", -1).to_list(min(limit, 200))
     return rows
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# RECONCILE — work down the statement and write the books from it.
+# Most spending never starts with a bill: money leaves, and the entry is made
+# afterwards. This is where that happens, one line at a time or in bulk.
+# ═════════════════════════════════════════════════════════════════════════════
+async def _recon_rule_for(org_id: str, description: str) -> Optional[dict]:
+    key = RECON.rule_key(description)
+    if not key:
+        return None
+    return await db.bank_rules.find_one({"org_id": org_id, "rule_key": key}, {"_id": 0})
+
+
+async def _recon_party_for(org_id: str, description: str) -> Optional[dict]:
+    """Find the customer or supplier a narration is probably about."""
+    guess = RECON.name_guess(description)
+    if len(guess) < 4:
+        return None
+    words = [w for w in guess.split() if len(w) > 3][:3]
+    if not words:
+        return None
+    rows = await db.parties.find(
+        {"org_id": org_id, "$or": [{"name": {"$regex": re.escape(w), "$options": "i"}}
+                                   for w in words]},
+        {"_id": 0, "id": 1, "name": 1, "role": 1, "gstin": 1}).to_list(5)
+    if not rows:
+        return None
+    # Prefer the longest name overlap — "JK India Eagritech" over "India".
+    guess_up = guess.upper()
+    rows.sort(key=lambda p: len(set(p["name"].upper().split()) & set(guess_up.split())),
+              reverse=True)
+    return rows[0]
+
+
+@api.get("/reconcile/queue")
+async def reconcile_queue(bank_account_id: str = "all", limit: int = 50, skip: int = 0,
+                          direction: str = "all", q: str = "",
+                          ctx=Depends(require_permission("payment.view"))):
+    """The unmatched lines, each with a suggestion of what it is."""
+    query: Dict[str, Any] = {"org_id": ctx["org_id"], "superseded": {"$ne": True},
+                             "matched": {"$ne": True}, "ignored": {"$ne": True}}
+    if bank_account_id and bank_account_id != "all":
+        query["bank_account_id"] = bank_account_id
+    if direction == "in":
+        query["credit"] = {"$gt": 0}
+    elif direction == "out":
+        query["debit"] = {"$gt": 0}
+    if q:
+        query["description"] = {"$regex": re.escape(q), "$options": "i"}
+
+    total = await db.bank_statement_rows.count_documents(query)
+    rows = await db.bank_statement_rows.find(query, {"_id": 0}) \
+        .sort("date", -1).skip(max(0, skip)).limit(min(limit, 200)).to_list(200)
+
+    accounts = {a["id"]: a for a in await db.bank_accounts.find(
+        {"org_id": ctx["org_id"]}, {"_id": 0}).to_list(50)}
+    out = []
+    for r in rows:
+        rule = await _recon_rule_for(ctx["org_id"], r.get("description", ""))
+        party = None if rule else await _recon_party_for(ctx["org_id"], r.get("description", ""))
+        acc = accounts.get(r.get("bank_account_id")) or {}
+        out.append({
+            "id": r["id"], "date": r.get("date"), "description": r.get("description"),
+            "debit": r.get("debit") or 0, "credit": r.get("credit") or 0,
+            "account": f"{acc.get('bank_name','')} {str(acc.get('account_no',''))[-4:]}".strip(),
+            "suggestion": RECON.suggest(r, rule=rule, party=party),
+        })
+    return {"rows": out, "total": total, "returned": len(out),
+            "kind_labels": {k: RECON.describe(k) for k in
+                            RECON.MONEY_IN_KINDS + RECON.MONEY_OUT_KINDS}}
+
+
+@api.get("/reconcile/open-documents")
+async def reconcile_open_documents(direction: str = "in", amount: float = 0,
+                                   ctx=Depends(require_permission("payment.view"))):
+    """Unpaid invoices (money in) or unpaid bills (money out) to settle against,
+    nearest amount first so the right one is usually at the top."""
+    if direction == "in":
+        rows = await db.invoices.find(
+            org_filter(ctx, {"type": "sale", "status": {"$ne": "paid"}}),
+            {"_id": 0, "id": 1, "invoice_no": 1, "invoice_date": 1, "totals": 1,
+             "balance_due": 1, "party_snapshot": 1}).sort("invoice_date", -1).to_list(200)
+        docs = [{"id": r["id"], "ref": r["invoice_no"], "date": r.get("invoice_date"),
+                 "party": (r.get("party_snapshot") or {}).get("name", ""),
+                 "total": (r.get("totals") or {}).get("grand_total", 0),
+                 "due": r.get("balance_due", (r.get("totals") or {}).get("grand_total", 0))}
+                for r in rows]
+    else:
+        rows = await db.purchases.find(
+            org_filter(ctx, {"status": {"$ne": "paid"}}),
+            {"_id": 0, "id": 1, "bill_no": 1, "purchase_date": 1, "totals": 1,
+             "balance_due": 1, "party_name": 1}).sort("purchase_date", -1).to_list(200)
+        docs = [{"id": r["id"], "ref": r.get("bill_no", ""), "date": r.get("purchase_date"),
+                 "party": r.get("party_name", ""),
+                 "total": (r.get("totals") or {}).get("grand_total", 0),
+                 "due": r.get("balance_due", (r.get("totals") or {}).get("grand_total", 0))}
+                for r in rows]
+    if amount:
+        docs.sort(key=lambda d: abs((d.get("due") or 0) - amount))
+    return {"documents": docs[:50]}
+
+
+class ReconcileIn(BaseModel):
+    kind: str                                  # expense · purchase · sale · receipt · payment · transfer · ignore
+    category: str = ""
+    party_id: str = ""
+    party_name: str = ""                       # create the party if it is new
+    document_id: str = ""                      # the invoice or bill being settled
+    gst_rate: float = 0
+    note: str = ""
+    to_bank_account_id: str = ""               # the other side of a transfer
+    remember: bool = False                     # treat lines like this the same way next time
+
+
+async def _apply_reconcile(ctx: dict, row: dict, body: ReconcileIn) -> Dict[str, Any]:
+    """Write the entry this bank line represents, and mark the line done."""
+    org_id = ctx["org_id"]
+    is_in = float(row.get("credit") or 0) > 0
+    amount = round(float(row.get("credit") or 0) if is_in else float(row.get("debit") or 0), 2)
+    date = (row.get("date") or "")[:10]
+    narration = row.get("description", "")
+    kind = body.kind
+    made: Dict[str, Any] = {}
+
+    allowed = RECON.MONEY_IN_KINDS if is_in else RECON.MONEY_OUT_KINDS
+    if kind not in allowed:
+        raise HTTPException(
+            400, f"A money-{'in' if is_in else 'out'} line cannot be recorded as "
+                 f"{RECON.describe(kind).lower()}.")
+
+    # A name typed by the owner becomes a real party, once.
+    party_id, party_name = body.party_id, body.party_name.strip()
+    if not party_id and party_name:
+        existing = await db.parties.find_one(
+            org_filter(ctx, {"name": {"$regex": f"^{re.escape(party_name)}$", "$options": "i"}}),
+            {"_id": 0, "id": 1, "name": 1})
+        if existing:
+            party_id, party_name = existing["id"], existing["name"]
+        else:
+            party = {"id": str(uuid.uuid4()), "org_id": org_id, "name": party_name,
+                     "role": "customer" if is_in else "supplier", "gstin": "", "phone": "",
+                     "email": "", "address": "", "state": "", "state_code": "",
+                     "biz_type": ctx.get("biz_type"), "created_at": now_iso()}
+            await db.parties.insert_one(party)
+            party_id = party["id"]
+            made["party"] = {"id": party_id, "name": party_name}
+    elif party_id and not party_name:
+        p = await db.parties.find_one(org_filter(ctx, {"id": party_id}), {"_id": 0, "name": 1})
+        party_name = (p or {}).get("name", "")
+
+    match_type, match_id, match_ref = kind, "", ""
+
+    if kind == RECON.KIND_EXPENSE:
+        doc = {"id": str(uuid.uuid4()), "org_id": org_id, "biz_type": ctx.get("biz_type"),
+               "category": body.category or "General", "amount": amount, "date": date,
+               "description": body.note or narration[:140], "gst_rate": body.gst_rate,
+               "party_id": party_id, "party_name": party_name,
+               "source": "bank_statement", "bank_row_id": row["id"],
+               "bank_account_id": row.get("bank_account_id", ""), "created_at": now_iso()}
+        await db.expenses.insert_one(doc)
+        made["expense"] = strip_id(doc)
+        match_id, match_ref = doc["id"], f"{doc['category']} · ₹{amount:,.2f}"
+
+    elif kind == RECON.KIND_PURCHASE:
+        if not party_id:
+            raise HTTPException(400, "A purchase bill needs a supplier")
+        doc = {"id": str(uuid.uuid4()), "org_id": org_id, "biz_type": ctx.get("biz_type"),
+               "bill_no": body.note or f"BANK-{date}-{str(row['id'])[:6]}",
+               "purchase_date": date, "party_id": party_id, "party_name": party_name,
+               "items": [{"product_id": "", "name": body.category or "Goods / services",
+                          "hsn": "", "qty": 1, "unit": "NOS", "rate": amount,
+                          "discount_pct": 0, "gst_rate": body.gst_rate,
+                          "taxable": amount, "cgst": 0, "sgst": 0, "igst": 0, "total": amount}],
+               "totals": {"taxable_amount": amount, "cgst": 0, "sgst": 0, "igst": 0,
+                          "round_off": 0, "grand_total": amount},
+               "status": "paid", "amount_paid": amount, "balance_due": 0,
+               "notes": narration[:200], "source": "bank_statement", "bank_row_id": row["id"],
+               "created_at": now_iso()}
+        await db.purchases.insert_one(doc)
+        made["purchase"] = strip_id(doc)
+        match_id, match_ref = doc["id"], doc["bill_no"]
+
+    elif kind == RECON.KIND_SALE:
+        if not party_id:
+            raise HTTPException(400, "A sales invoice needs a customer")
+        inv_body = InvoiceIn(
+            party_id=party_id, invoice_date=date, type="sale", status="finalized",
+            invoice_category="service",
+            items=[LineItem(product_id="", name=body.category or "Sales",
+                            hsn="", qty=1, unit="NOS", rate=amount,
+                            discount_pct=0, gst_rate=body.gst_rate)],
+            notes=body.note or narration[:200])
+        doc = await _build_invoice_doc(inv_body, ctx, "INV")
+        doc.update({"source": "bank_statement", "bank_row_id": row["id"],
+                    "status": "paid", "amount_received": amount, "balance_due": 0})
+        await db.invoices.insert_one(doc)
+        made["invoice"] = strip_id(doc)
+        match_id, match_ref = doc["id"], doc["invoice_no"]
+
+    elif kind in (RECON.KIND_RECEIPT, RECON.KIND_PAYMENT):
+        if not body.document_id:
+            raise HTTPException(
+                400, "Pick the invoice or bill this money belongs to")
+        coll = db.invoices if kind == RECON.KIND_RECEIPT else db.purchases
+        target = await coll.find_one(org_filter(ctx, {"id": body.document_id}), {"_id": 0})
+        if not target:
+            raise HTTPException(404, "That document no longer exists")
+        ref = target.get("invoice_no") or target.get("bill_no") or ""
+        grand = (target.get("totals") or {}).get("grand_total", 0)
+        already = float(target.get("amount_received") if kind == RECON.KIND_RECEIPT
+                        else target.get("amount_paid") or 0) or 0
+        now_paid = round(already + amount, 2)
+        field = "amount_received" if kind == RECON.KIND_RECEIPT else "amount_paid"
+        await coll.update_one(
+            org_filter(ctx, {"id": body.document_id}),
+            {"$set": {field: now_paid,
+                      "balance_due": round(max(grand - now_paid, 0), 2),
+                      "status": "paid" if now_paid >= grand - 0.5 else "partially_paid"}})
+        pay = {"id": str(uuid.uuid4()), "org_id": org_id, "biz_type": ctx.get("biz_type"),
+               "party_id": target.get("party_id", party_id),
+               "party_name": target.get("party_name")
+                             or (target.get("party_snapshot") or {}).get("name", party_name),
+               "direction": "received" if kind == RECON.KIND_RECEIPT else "paid",
+               "type": "receipt" if kind == RECON.KIND_RECEIPT else "payment",
+               "amount": amount, "mode": "bank", "date": date, "payment_date": date,
+               "reference": narration[:120], "bank_account_id": row.get("bank_account_id", ""),
+               "invoice_id": body.document_id if kind == RECON.KIND_RECEIPT else "",
+               "purchase_id": body.document_id if kind == RECON.KIND_PAYMENT else "",
+               "invoice_no": ref, "linked_ref": ref,
+               "linked_type": "invoice" if kind == RECON.KIND_RECEIPT else "purchase",
+               "source": "bank_statement", "bank_row_id": row["id"], "created_at": now_iso()}
+        await db.payments.insert_one(pay)
+        made["payment"] = strip_id(pay)
+        match_type = "invoice" if kind == RECON.KIND_RECEIPT else "purchase"
+        match_id, match_ref = body.document_id, ref
+
+    elif kind == RECON.KIND_TRANSFER:
+        doc = {"id": str(uuid.uuid4()), "org_id": org_id, "date": date, "amount": amount,
+               "direction": "in" if is_in else "out",
+               "from_bank_account_id": row.get("bank_account_id", "") if not is_in
+                                       else body.to_bank_account_id,
+               "to_bank_account_id": body.to_bank_account_id if not is_in
+                                     else row.get("bank_account_id", ""),
+               "note": body.note or narration[:140], "bank_row_id": row["id"],
+               "created_at": now_iso()}
+        await db.bank_transfers.insert_one(doc)
+        made["transfer"] = strip_id(doc)
+        match_ref = "Own account transfer"
+        match_id = doc["id"]
+
+    elif kind == RECON.KIND_IGNORE:
+        await db.bank_statement_rows.update_one(
+            {"org_id": org_id, "id": row["id"]},
+            {"$set": {"ignored": True, "ignore_reason": body.note or "Not business",
+                      "reconciled_at": now_iso()}})
+        return {"ok": True, "kind": kind, "row_id": row["id"], "ignored": True}
+
+    await db.bank_statement_rows.update_one(
+        {"org_id": org_id, "id": row["id"]},
+        {"$set": {"matched": True, "match_type": match_type, "match_id": match_id,
+                  "match_ref": match_ref, "reconciled_at": now_iso(),
+                  "reconciled_by": ctx["user"].get("email", "")}})
+
+    if body.remember:
+        key = RECON.rule_key(narration)
+        if key:
+            await db.bank_rules.update_one(
+                {"org_id": org_id, "rule_key": key},
+                {"$set": {"org_id": org_id, "rule_key": key, "kind": kind,
+                          "category": body.category, "party_id": party_id,
+                          "party_name": party_name, "updated_at": now_iso(),
+                          "sample": narration[:140]}}, upsert=True)
+            made["rule"] = key
+
+    return {"ok": True, "kind": kind, "row_id": row["id"], "match_ref": match_ref, **made}
+
+
+@api.post("/reconcile/{row_id}")
+async def reconcile_row(row_id: str, body: ReconcileIn, request: Request,
+                        ctx=Depends(require_permission("payment.create"))):
+    """Record one bank line as whatever it actually was."""
+    row = await db.bank_statement_rows.find_one(
+        {"org_id": ctx["org_id"], "id": row_id}, {"_id": 0})
+    if not row:
+        raise HTTPException(404, "That statement line no longer exists")
+    if row.get("matched"):
+        return {"ok": True, "already": True, "match_ref": row.get("match_ref")}
+    res = await _apply_reconcile(ctx, row, body)
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="bank.reconciled",
+                    entity_type="bank_row", entity_id=row_id,
+                    metadata={"kind": body.kind, "amount": row.get("credit") or row.get("debit")},
+                    request=request)
+    return res
+
+
+class BulkReconcileIn(BaseModel):
+    row_ids: List[str]
+    entry: ReconcileIn
+
+
+@api.post("/reconcile/bulk")
+async def reconcile_bulk(body: BulkReconcileIn, ctx=Depends(require_permission("payment.create"))):
+    """Treat a whole batch of similar lines the same way — every fuel bill at once."""
+    done, failed = [], []
+    for rid in body.row_ids[:200]:
+        row = await db.bank_statement_rows.find_one(
+            {"org_id": ctx["org_id"], "id": rid, "matched": {"$ne": True}}, {"_id": 0})
+        if not row:
+            continue
+        try:
+            res = await _apply_reconcile(ctx, row, body.entry)
+            done.append(res["row_id"])
+        except HTTPException as e:
+            failed.append({"row_id": rid,
+                           "error": e.detail if isinstance(e.detail, str) else str(e.detail)})
+    return {"recorded": len(done), "failed": failed}
+
+
+@api.post("/reconcile/{row_id}/undo")
+async def reconcile_undo(row_id: str, ctx=Depends(require_permission("payment.create"))):
+    """Put a line back in the queue and delete what it created."""
+    row = await db.bank_statement_rows.find_one(
+        {"org_id": ctx["org_id"], "id": row_id}, {"_id": 0})
+    if not row:
+        raise HTTPException(404, "That statement line no longer exists")
+    removed = []
+    for coll, name in ((db.expenses, "expense"), (db.purchases, "purchase"),
+                       (db.invoices, "invoice"), (db.payments, "payment"),
+                       (db.bank_transfers, "transfer")):
+        r = await coll.delete_many({"org_id": ctx["org_id"], "bank_row_id": row_id})
+        if r.deleted_count:
+            removed.append(name)
+    await db.bank_statement_rows.update_one(
+        {"org_id": ctx["org_id"], "id": row_id},
+        {"$set": {"matched": False, "ignored": False, "match_type": None, "match_id": None,
+                  "match_ref": None, "reconciled_at": None}})
+    return {"ok": True, "removed": removed}
+
+
+@api.get("/reconcile/summary")
+async def reconcile_summary(ctx=Depends(require_permission("payment.view"))):
+    """How much of the statement is still unexplained."""
+    base = {"org_id": ctx["org_id"], "superseded": {"$ne": True}}
+    total = await db.bank_statement_rows.count_documents(base)
+    done = await db.bank_statement_rows.count_documents({**base, "matched": True})
+    ignored = await db.bank_statement_rows.count_documents({**base, "ignored": True})
+    left = max(0, total - done - ignored)
+    agg = await db.bank_statement_rows.aggregate([
+        {"$match": {**base, "matched": {"$ne": True}, "ignored": {"$ne": True}}},
+        {"$group": {"_id": None, "money_in": {"$sum": "$credit"},
+                    "money_out": {"$sum": "$debit"}}},
+    ]).to_list(1)
+    sums = agg[0] if agg else {}
+    return {
+        "total": total, "done": done, "ignored": ignored, "left": left,
+        "progress_pct": round((done + ignored) / total * 100) if total else 0,
+        "unexplained_in": round(sums.get("money_in") or 0, 2),
+        "unexplained_out": round(sums.get("money_out") or 0, 2),
+        "rules": await db.bank_rules.count_documents({"org_id": ctx["org_id"]}),
+    }
+
+
+@api.get("/reconcile/rules")
+async def reconcile_rules(ctx=Depends(require_permission("payment.view"))):
+    return await db.bank_rules.find({"org_id": ctx["org_id"]}, {"_id": 0}) \
+        .sort("updated_at", -1).to_list(200)
+
+
+@api.delete("/reconcile/rules/{key}")
+async def delete_reconcile_rule(key: str, ctx=Depends(require_permission("payment.create"))):
+    await db.bank_rules.delete_one({"org_id": ctx["org_id"], "rule_key": key})
+    return {"ok": True}
 
 
 # ---------------- ROLES & PERMISSIONS ----------------
