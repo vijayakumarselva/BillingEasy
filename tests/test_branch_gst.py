@@ -162,6 +162,42 @@ def test_warehouse_implies_its_branch():
           inv["branch_id"] == "br-ka")
 
 
+def test_filter_by_location():
+    print("\nfiltering the invoice list")
+    # One from each place.
+    base = {"party_id": "ka-cust", "invoice_date": "2026-10-06", "type": "sale",
+            "status": "finalized",
+            "items": [{"product_id": "p1", "name": "Steel rod", "hsn": "7214", "qty": 1,
+                       "unit": "NOS", "rate": 1000, "discount_pct": 0, "gst_rate": 18}]}
+    c.post("/api/invoices", headers=H, json={**base, "branch_id": "br-ka"})
+    c.post("/api/invoices", headers=H, json=base)                       # head office
+    c.post("/api/invoices", headers=H, json={**base, "warehouse_id": "wh-ka"})
+
+    everything = c.get("/api/invoices", headers=H).json()
+    check("every invoice says where it was billed from",
+          all("location_label" in i for i in everything), str(everything[:1])[:120])
+    check("head office invoices say so",
+          any(i["location_label"] == "Head Office" for i in everything))
+    check("branch invoices name the branch",
+          any(i["location_label"] == "Nammahut Karnataka" for i in everything))
+    check("and carry that branch's GSTIN for the list",
+          any(i.get("location_gstin") == KA_GSTIN for i in everything))
+
+    ka = c.get("/api/invoices", headers=H, params={"branch_id": "br-ka"}).json()
+    check("filtering by branch returns only that branch",
+          ka and all(i["branch_id"] == "br-ka" for i in ka), str(len(ka)))
+    check("which includes the ones sent from its warehouse", len(ka) >= 2, str(len(ka)))
+
+    head = c.get("/api/invoices", headers=H, params={"branch_id": "head"}).json()
+    check("filtering by head office excludes the branches",
+          head and all(not i.get("branch_id") for i in head), str(len(head)))
+
+    wh = c.get("/api/invoices", headers=H, params={"warehouse_id": "wh-ka"}).json()
+    check("filtering by warehouse works too",
+          wh and all(i.get("warehouse_id") == "wh-ka" for i in wh), str(len(wh)))
+    check("and the two filters do not return the same set", len(ka) != len(wh))
+
+
 def test_einvoice_uses_the_branch():
     print("\nwhat is filed with the government")
     from einvoice import build_einvoice_json
@@ -180,6 +216,7 @@ def main():
     test_the_branch_is_recorded()
     test_the_document_shows_the_branch()
     test_warehouse_implies_its_branch()
+    test_filter_by_location()
     test_einvoice_uses_the_branch()
     failed = [n for n, ok in OK if not ok]
     print(f"\n{len(OK) - len(failed)}/{len(OK)} checks passed")

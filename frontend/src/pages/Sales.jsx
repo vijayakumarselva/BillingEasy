@@ -31,6 +31,10 @@ export default function Sales() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
+  // Which registration or warehouse the invoice was billed from.
+  const [locFilter, setLocFilter] = useState("all");
+  const [branches, setBranches] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
   const [receiveTarget, setReceiveTarget] = useState(null); // invoice to record a receipt against
   const canReceive = (inv) => inv.type === "sale" && inv.due > 0.5 && !["cancelled", "void", "draft"].includes(inv.status);
   const nav = useNavigate();
@@ -40,10 +44,18 @@ export default function Sales() {
     const p = {};
     if (statusFilter !== "all") p.status = statusFilter;
     if (typeFilter !== "all") p.type = typeFilter;
+    if (locFilter.startsWith("b:")) p.branch_id = locFilter.slice(2);
+    else if (locFilter.startsWith("w:")) p.warehouse_id = locFilter.slice(2);
     const { data } = await api.get("/invoices", { params: p });
     setList(data); setLoading(false);
   };
-  useEffect(() => { load(); }, [statusFilter, typeFilter]); // eslint-disable-line
+  useEffect(() => { load(); }, [statusFilter, typeFilter, locFilter]); // eslint-disable-line
+  useEffect(() => {
+    api.get("/orgs/current/branches")
+      .then(r => setBranches((r.data || []).filter(b => b.active !== false))).catch(() => {});
+    api.get("/warehouses")
+      .then(r => setWarehouses((r.data || []).filter(w => w.active !== false))).catch(() => {});
+  }, []);
 
   const filtered = list.filter(i =>
     !search ||
@@ -132,6 +144,30 @@ export default function Sales() {
               <SelectItem value="credit_note">Credit Note</SelectItem>
             </SelectContent>
           </Select>
+          {(branches.length > 0 || warehouses.length > 0) && (
+            <Select value={locFilter} onValueChange={setLocFilter}>
+              <SelectTrigger className="w-40 md:w-52" data-testid="invoice-location-filter">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All locations</SelectItem>
+                <SelectItem value="b:head">Head Office only</SelectItem>
+                {branches.map(b => (
+                  <SelectItem key={b.id} value={`b:${b.id}`}>
+                    {b.name}{b.state ? ` · ${b.state}` : ""}
+                  </SelectItem>
+                ))}
+                {warehouses.length > 0 && branches.length > 0 && (
+                  <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Warehouses
+                  </div>
+                )}
+                {warehouses.map(w => (
+                  <SelectItem key={w.id} value={`w:${w.id}`}>{w.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-32 md:w-36" data-testid="invoice-status-filter"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -199,17 +235,30 @@ export default function Sales() {
         <div className="overflow-x-auto">
           <table className="app-table">
             <thead><tr>
-              <th>Invoice #</th><th>Type</th><th>Customer</th><th>Date</th><th>Due</th>
+              <th>Invoice #</th><th>Type</th><th>Customer</th><th>Billed from</th><th>Date</th><th>Due</th>
               <th className="text-right">Amount</th><th className="text-right">Paid</th><th className="text-right">Balance</th><th>Status</th><th></th>
             </tr></thead>
             <tbody>
-              {loading ? [1,2,3,4].map(i => <tr key={i}><td colSpan={10}><Skeleton className="h-8 w-full" /></td></tr>) :
-                filtered.length === 0 ? <tr><td colSpan={10} className="text-center text-muted-foreground py-8">No invoices.</td></tr> :
+              {loading ? [1,2,3,4].map(i => <tr key={i}><td colSpan={11}><Skeleton className="h-8 w-full" /></td></tr>) :
+                filtered.length === 0 ? <tr><td colSpan={11} className="text-center text-muted-foreground py-8">No invoices.</td></tr> :
                 filtered.map(inv => (
                   <tr key={inv.id} data-testid={`invoice-row-${inv.invoice_no}`}>
                     <td className="font-mono-fin text-blue-600 font-medium">{inv.invoice_no}</td>
                     <td><Badge variant="secondary">{inv.type}</Badge></td>
                     <td className="font-medium">{inv.party_name}</td>
+                    <td className="text-xs">
+                      <div className="text-foreground">{inv.location_label || "Head Office"}</div>
+                      {inv.location_gstin && (
+                        <div className="font-mono text-[10px] text-muted-foreground">
+                          {inv.location_gstin}
+                        </div>
+                      )}
+                      {inv.warehouse_label && (
+                        <div className="text-[10px] text-muted-foreground">
+                          {inv.warehouse_label}
+                        </div>
+                      )}
+                    </td>
                     <td className="text-muted-foreground">{fmtDate(inv.invoice_date)}</td>
                     <td className="text-muted-foreground">{fmtDate(inv.due_date)}</td>
                     <td className="num">{inr(inv.totals?.grand_total)}</td>

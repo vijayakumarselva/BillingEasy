@@ -5278,14 +5278,37 @@ async def customer_ytd(party_id: str, ctx=Depends(get_org_ctx)):
 
 @api.get("/invoices")
 async def list_invoices(status: Optional[str] = None, type: Optional[str] = None,
-                        party_id: Optional[str] = None,
+                        party_id: Optional[str] = None, branch_id: Optional[str] = None,
+                        warehouse_id: Optional[str] = None,
                         ctx=Depends(require_permission("invoice.view"))):
     q = biz_filter(ctx)
     if status: q["status"] = status
     if type: q["type"] = type
     if party_id: q["party_id"] = party_id
+    # "head" means billed from head office: no branch on the invoice at all.
+    if branch_id == "head":
+        q["$and"] = q.get("$and", []) + [
+            {"$or": [{"branch_id": ""}, {"branch_id": None},
+                     {"branch_id": {"$exists": False}}]}]
+    elif branch_id:
+        q["branch_id"] = branch_id
+    if warehouse_id:
+        q["warehouse_id"] = warehouse_id
     items = await db.invoices.find(q, {"_id": 0}).sort("invoice_date", -1).to_list(500)
     if not items: return items
+    # Name the location each invoice was billed from, for the list column.
+    org = await db.organizations.find_one(
+        {"id": ctx["org_id"]}, {"_id": 0, "branches": 1, "warehouses": 1, "name": 1}) or {}
+    branches = {b["id"]: b for b in (org.get("branches") or [])}
+    warehouses = {w["id"]: w for w in (org.get("warehouses") or [])}
+    for i in items:
+        b = branches.get(i.get("branch_id") or "")
+        w = warehouses.get(i.get("warehouse_id") or "")
+        i["location_label"] = (b or {}).get("name") or "Head Office"
+        i["location_gstin"] = ((i.get("branch_snapshot") or {}).get("gstin")
+                               or (b or {}).get("gstin") or "")
+        i["warehouse_label"] = (w or {}).get("name", "")
+
     # Bulk fetch party names
     party_ids = list({i["party_id"] for i in items})
     parties = {p["id"]: p["name"] async for p in db.parties.find(
