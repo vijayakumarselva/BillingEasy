@@ -247,6 +247,9 @@ def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale", template: str
         co_items.append(Spacer(1, 2*mm))
     co_items.append(Paragraph(biz.get("name", ""), s_co_name))
     addr = biz.get("address", "").replace("\n", "<br/>")
+    # A company registered in several states bills from one of them; say which.
+    if biz.get("_billing_from"):
+        co_items.append(Paragraph(biz["_billing_from"], s_co_info))
     if addr:
         co_items.append(Paragraph(addr, s_co_info))
     co_items.append(Paragraph(f"GSTIN {biz.get('gstin', '')}", s_co_info))

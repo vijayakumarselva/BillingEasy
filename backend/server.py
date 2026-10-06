@@ -248,13 +248,48 @@ def require_roles(*roles: str):
 # Plan enforcement. The subscription belongs to the login that OWNS the
 # business, so a staff member's actions are checked against the owner's plan.
 # ─────────────────────────────────────────────────────────────────────────────
-async def pdf_biz(ctx: dict, org: Optional[dict] = None) -> dict:
-    """Org document for PDF rendering, with the branding flag the plan dictates.
+def seller_for_invoice(org: dict, inv: Optional[dict] = None) -> dict:
+    """Who is selling, on this particular invoice.
+
+    A company registered in more than one state has a GSTIN per state. When an
+    invoice is raised from a branch, that branch's GSTIN, address and state are
+    the ones that belong on the document and in the IRN — not head office's.
+    """
+    branch = (inv or {}).get("branch_snapshot") or {}
+    if not branch:
+        # Goods going out of a warehouse are supplied from the branch that
+        # warehouse belongs to, even if nobody picked the branch by hand.
+        wid = (inv or {}).get("warehouse_id")
+        if wid:
+            wh = next((w for w in (org.get("warehouses") or [])
+                       if w.get("id") == wid), None)
+            if wh and wh.get("branch_id"):
+                branch = next((b for b in (org.get("branches") or [])
+                               if b.get("id") == wh["branch_id"]), {}) or {}
+    if not branch:
+        return org
+    return {
+        **org,
+        "gstin": branch.get("gstin") or org.get("gstin", ""),
+        "state": branch.get("state") or org.get("state", ""),
+        "state_code": branch.get("state_code") or org.get("state_code", ""),
+        "address": branch.get("address") or org.get("address", ""),
+        "branch_name": branch.get("name", ""),
+        # The legal name stays; the branch name sits under it on the document.
+        "_billing_from": branch.get("name", ""),
+    }
+
+
+async def pdf_biz(ctx: dict, org: Optional[dict] = None,
+                  inv: Optional[dict] = None) -> dict:
+    """Org document for PDF rendering, with the branding flag the plan dictates
+    and the branch's own GSTIN when the invoice was raised from one.
 
     Free plans carry the "Made with BillingsEasy" footer; every paid plan
     removes it.
     """
     org = org or await get_org_doc(ctx["org_id"])
+    org = seller_for_invoice(org, inv)
     try:
         info = await plan_for_ctx(ctx)
         show = not PRICING.has_feature(info["plan_code"], "remove_branding")
@@ -4308,9 +4343,16 @@ async def _apply_reconcile(ctx: dict, row: dict, body: ReconcileIn) -> Dict[str,
         if existing:
             party_id, party_name = existing["id"], existing["name"]
         else:
+            org_doc = await db.organizations.find_one(
+                {"id": org_id}, {"_id": 0, "state": 1, "state_code": 1}) or {}
             party = {"id": str(uuid.uuid4()), "org_id": org_id, "name": party_name,
-                     "role": "customer" if is_in else "supplier", "gstin": "", "phone": "",
-                     "email": "", "address": "", "state": "", "state_code": "",
+                     "type": "customer" if is_in else "supplier",
+                     "gstin": "", "phone": "", "email": "",
+                     "billing_address": "", "shipping_address": "",
+                     "shipping_addresses": [],
+                     "state": org_doc.get("state", "Tamil Nadu"),
+                     "state_code": org_doc.get("state_code", "33"),
+                     "opening_balance": 0,
                      "biz_type": ctx.get("biz_type"), "created_at": now_iso()}
             await db.parties.insert_one(party)
             party_id = party["id"]
@@ -4967,8 +5009,9 @@ async def compute_party_balance(pid: str, org_id: str) -> float:
 async def bulk_party_balances(org_id: str, parties: List[dict]) -> Dict[str, float]:
     """One-shot aggregation: returns {party_id: balance} for all parties in `parties`."""
     out: Dict[str, float] = {p["id"]: p.get("opening_balance", 0) for p in parties}
-    cust_ids = [p["id"] for p in parties if p["type"] == "customer"]
-    supp_ids = [p["id"] for p in parties if p["type"] == "supplier"]
+    # .get, not [] — one legacy document without a type must not 500 the list.
+    cust_ids = [p["id"] for p in parties if p.get("type") == "customer"]
+    supp_ids = [p["id"] for p in parties if p.get("type") == "supplier"]
     if cust_ids:
         async for r in db.invoices.aggregate([
             {"$match": {"org_id": org_id, "party_id": {"$in": cust_ids}}},
@@ -5271,11 +5314,18 @@ async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
         if not party: raise HTTPException(400, "Party not found")
     if not party:
         party = {"id": "", "name": "Walk-in Customer", "phone": "", "state_code": "33"}
-    # Resolve branch — if branch_id given, use that branch's state for GST determination
+    # Which registration is supplying: the branch chosen, or the branch the
+    # chosen warehouse belongs to. That decides the GSTIN on the invoice and
+    # whether the tax is IGST or CGST + SGST.
     branch = None
     seller_state_code = biz.get("state_code", "33")
-    if body.branch_id:
-        branch = next((b for b in biz.get("branches", []) if b["id"] == body.branch_id), None)
+    branch_id = body.branch_id
+    if not branch_id and getattr(body, "warehouse_id", ""):
+        wh = next((w for w in (biz.get("warehouses") or [])
+                   if w.get("id") == body.warehouse_id), None)
+        branch_id = (wh or {}).get("branch_id", "")
+    if branch_id:
+        branch = next((b for b in biz.get("branches", []) if b["id"] == branch_id), None)
         if branch:
             seller_state_code = branch.get("state_code", seller_state_code)
     same_state = (seller_state_code == party.get("state_code", "33"))
@@ -5291,7 +5341,7 @@ async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
         "totals": {k: v for k, v in totals.items() if k != "items"},
         "notes": body.notes, "status": body.status, "type": body.type,
         "is_recurring": body.is_recurring, "same_state": same_state,
-        "branch_id": body.branch_id, "branch_snapshot": branch,
+        "branch_id": branch_id, "branch_snapshot": branch,
         "invoice_category": getattr(body, "invoice_category", "stock"),
         "shipping_address": getattr(body, "shipping_address", ""),
         "shipping_label": getattr(body, "shipping_label", ""),
@@ -5449,7 +5499,7 @@ async def convert_quotation(iid: str, ctx=Depends(get_org_ctx)):
 async def invoice_pdf(iid: str, ctx=Depends(get_org_ctx)):
     inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
     if not inv: raise HTTPException(404, "Not found")
-    biz = await pdf_biz(ctx)
+    biz = await pdf_biz(ctx, inv=inv)
     tmpl = (biz.get("invoice_theme") or {}).get("template", "classic")
     try:
         pdf_bytes = generate_invoice_pdf(inv, biz, template=tmpl)
@@ -7804,7 +7854,9 @@ async def public_invoice(token: str):
         raise HTTPException(404, "Invoice not found or link revoked")
     org = await db.organizations.find_one({"id": inv["org_id"]},
         {"_id": 0, "name": 1, "address": 1, "gstin": 1, "pan": 1, "phone": 1, "email": 1,
+         "state": 1, "state_code": 1,
          "bank_name": 1, "bank_account": 1, "bank_ifsc": 1, "bank_branch": 1, "terms": 1})
+    org = seller_for_invoice(org or {}, inv)
     paid = 0
     async for p in db.payments.find({"invoice_id": inv["id"]}, {"_id": 0, "amount": 1}):
         paid += p["amount"]
@@ -7818,7 +7870,8 @@ async def public_invoice_pdf(token: str):
     inv = await db.invoices.find_one({"share_token": token}, {"_id": 0})
     if not inv:
         raise HTTPException(404, "Invoice not found")
-    biz = await db.organizations.find_one({"id": inv["org_id"]}, {"_id": 0}) or {}
+    biz = seller_for_invoice(
+        await db.organizations.find_one({"id": inv["org_id"]}, {"_id": 0}) or {}, inv)
     show = False
     if biz.get("owner_user_id"):
         info = await SUBS.account_plan(db, biz["owner_user_id"], await PRICING.load_catalogue(db))
@@ -10235,7 +10288,7 @@ async def invoice_generate_irn(iid: str, request: Request, ctx=Depends(require_p
     inv = await db.invoices.find_one(org_filter(ctx, {"id": iid}), {"_id": 0})
     if not inv:
         raise HTTPException(404, "Invoice not found")
-    org = await get_org_doc(ctx["org_id"])
+    org = seller_for_invoice(await get_org_doc(ctx["org_id"]), inv)
     res = await _generate_irn(ctx, inv, org)
     await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="invoice.irn_generated",
                     entity_type="invoice", entity_id=iid,
@@ -10308,7 +10361,7 @@ async def _auto_file_invoice(org_id: str, invoice_id: str, user: Optional[dict] 
     inv = await db.invoices.find_one({"org_id": org_id, "id": invoice_id}, {"_id": 0})
     if not inv:
         return {"ok": False, "reason": "Invoice not found"}
-    org = await db.organizations.find_one({"id": org_id}, {"_id": 0})
+    org = seller_for_invoice(await db.organizations.find_one({"id": org_id}, {"_id": 0}), inv)
     cfg = await _gst_settings(org_id)
     ctx = {"org_id": org_id, "user": user or {"id": "system", "email": "auto"}}
     out: Dict[str, Any] = {"invoice_no": inv.get("invoice_no")}

@@ -51,7 +51,7 @@ async def seed():
         for i, d, desc, dr, cr in LINES])
     await mdb.parties.insert_one({"id": "pa1", "org_id": ORG, "name": "Acme Traders Pvt Ltd",
                                   "gstin": "33BBBBB1111B1ZU", "state_code": "33",
-                                  "role": "customer"})
+                                  "type": "customer"})
     # An invoice already raised, waiting to be paid.
     await mdb.invoices.insert_one({
         "id": "inv1", "org_id": ORG, "type": "sale", "invoice_no": "INV-2026-0042",
@@ -94,7 +94,7 @@ def test_party_match_is_not_fooled_by_common_words():
           str(R.distinctive_words("Sri Vrishabh Traders Pvt Ltd")))
 
     asyncio.run(mdb.parties.insert_one({"id": "pa9", "org_id": ORG,
-                                        "name": "Vrishabh Traders", "role": "supplier"}))
+                                        "name": "Vrishabh Traders", "type": "supplier"}))
     asyncio.run(mdb.bank_statement_rows.insert_one({
         "id": "r9", "org_id": ORG, "bank_account_id": "hdfc", "date": "2026-09-20",
         "description": "RTGS DR-ICIC0001910-KARTHIKEYAN TRADERS-NETBANK",
@@ -197,7 +197,7 @@ def test_purchase_creates_supplier():
     check("marked paid, because the money has gone", pur["status"] == "paid"
           and pur["balance_due"] == 0)
     party = asyncio.run(mdb.parties.find_one({"name": "JK India Eagritech Limited"}, {"_id": 0}))
-    check("the supplier was created", party and party["role"] == "supplier")
+    check("the supplier was created", party and party["type"] == "supplier")
     check("and linked to the bill", pur["party_id"] == party["id"])
 
 
@@ -277,6 +277,27 @@ def test_suspicious_sweep():
           any(x["id"] == "r20" for x in q["rows"]))
 
 
+def test_created_party_is_usable():
+    """A party made from a bank line must behave like any other party."""
+    print("\na party created from the statement")
+    asyncio.run(mdb.bank_statement_rows.insert_one({
+        "id": "r30", "org_id": ORG, "bank_account_id": "hdfc", "date": "2026-09-15",
+        "description": "NEFT DR-SUNRISE POLYMERS", "debit": 75000, "credit": 0,
+        "matched": False, "superseded": False}))
+    c.post("/api/reconcile/r30", headers=H,
+           json={"kind": "purchase", "party_name": "Sunrise Polymers",
+                 "category": "Raw material"})
+    made = asyncio.run(mdb.parties.find_one({"name": "Sunrise Polymers"}, {"_id": 0}))
+    check("it is stored as a supplier under the real field",
+          made and made.get("type") == "supplier", str(made)[:140])
+    check("with a state, so GST can be worked out", bool(made.get("state_code")))
+    r = c.get("/api/parties", headers=H)
+    check("and the Parties list still loads", r.status_code == 200, r.text[:200])
+    body = r.json()
+    names = [p["name"] for p in (body["data"] if isinstance(body, dict) else body)]
+    check("with the new supplier in it", "Sunrise Polymers" in names)
+
+
 def test_undo():
     print("\nundo")
     r = c.post("/api/reconcile/r1/undo", headers=H)
@@ -319,6 +340,7 @@ def main():
     test_sale_and_transfer_and_ignore()
     test_wrong_direction_refused()
     test_suspicious_sweep()
+    test_created_party_is_usable()
     test_undo()
     test_bulk_and_summary()
     failed = [n for n, ok in OK if not ok]

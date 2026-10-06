@@ -589,20 +589,46 @@ export default function InvoiceCreate() {
                     {STATES.map(s => <SelectItem key={s.code} value={s.code}>[{s.code}] {s.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
-                <div className="text-xs text-muted-foreground mt-1">Source of Supply: {biz.state || "—"}</div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  Source of Supply: {selectedBranch?.state || biz.state || "—"}
+                </div>
               </div>
 
-              {/* Location / Branch */}
+              {/* Which registration is billing — drives the GSTIN on the
+                  invoice and whether GST is IGST or CGST+SGST. */}
               {branches.length > 0 && (
                 <div>
-                  <RLabel>Location</RLabel>
+                  <RLabel>Billing from</RLabel>
                   <Select value={branchId} onValueChange={setBranchId}>
-                    <SelectTrigger className="h-9 text-sm"><SelectValue placeholder="Head Office" /></SelectTrigger>
+                    <SelectTrigger className="h-9 text-sm">
+                      <SelectValue placeholder="Head Office" />
+                    </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__none__">Head Office</SelectItem>
-                      {branches.map(b => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+                      <SelectItem value="__none__">
+                        Head Office — {biz.state || "—"}
+                        {biz.gstin ? ` · ${biz.gstin}` : ""}
+                      </SelectItem>
+                      {branches.map(b => (
+                        <SelectItem key={b.id} value={b.id}>
+                          {b.name} — {b.state || "—"}{b.gstin ? ` · ${b.gstin}` : ""}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
+                  <div className="text-xs text-muted-foreground mt-1">
+                    GSTIN{" "}
+                    <span className="font-mono">
+                      {selectedBranch?.gstin || biz.gstin || "not set"}
+                    </span>
+                    {party?.state_code ? (
+                      <>
+                        {" · "}
+                        {sellerStateCode === party.state_code
+                          ? "same state, so CGST + SGST"
+                          : "different state, so IGST"}
+                      </>
+                    ) : null}
+                  </div>
                 </div>
               )}
             </div>
@@ -672,18 +698,6 @@ export default function InvoiceCreate() {
           {/* Table options row */}
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <div className="flex items-center gap-3">
-              {branches.length > 0 && (
-                <div className="flex items-center gap-1.5 text-sm">
-                  <span className="text-muted-foreground">Warehouse Location</span>
-                  <Select value={branchId} onValueChange={setBranchId}>
-                    <SelectTrigger className="h-7 text-xs border-dashed"><SelectValue placeholder="Head Office" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">Head Office</SelectItem>
-                      {branches.map(b => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
               <div className="flex items-center gap-1.5 text-sm border rounded-md overflow-hidden">
                 <button
                   onClick={() => setTaxMode("exclusive")}
