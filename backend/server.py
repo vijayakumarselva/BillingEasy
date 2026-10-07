@@ -4897,7 +4897,9 @@ async def zoho_authorize(ctx=Depends(require_permission("settings.edit"))):
     """Start the approval flow for a Server-based Application."""
     cfg = await _zoho_settings(ctx["org_id"])
     if not cfg.get("client_id") or not cfg.get("client_secret"):
-        raise HTTPException(400, "Add your Zoho Client ID and Secret first, then Save")
+        raise HTTPException(
+            400, "Your Zoho Client ID and Secret are not saved yet — press Save, "
+                 "then Approve.")
     redirect_uri = _zoho_redirect_uri()
     # A short-lived signed state, so the callback knows which business approved
     # it and nobody else can plant a token on them.
@@ -4954,7 +4956,9 @@ async def zoho_connect(body: ZohoCodeIn, request: Request,
     """Swap the one-time self-client code for a refresh token and list the orgs."""
     cfg = await _zoho_settings(ctx["org_id"])
     if not cfg.get("client_id") or not cfg.get("client_secret"):
-        raise HTTPException(400, "Add your Zoho Client ID and Secret first")
+        raise HTTPException(
+            400, "Your Zoho Client ID and Secret are not saved yet — press Save, "
+                 "then Connect.")
     try:
         tokens = await ZOHO.exchange_code(cfg, body.code)
     except ZOHO.ZohoError as exc:

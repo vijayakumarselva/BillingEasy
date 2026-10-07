@@ -289,6 +289,19 @@ def test_off_by_default():
     check("with it on, the sale is queued for Zoho", made.get("mirrored_to") == "zoho")
 
 
+def test_unsaved_credentials_are_explained():
+    print("\nconnecting before saving")
+    asyncio.run(mdb.integration_settings.delete_many({"org_id": ORG}))
+    r = c.post("/api/integrations/zoho/connect", headers=H, json={"code": "1000.x"})
+    check("connecting with nothing saved is refused", r.status_code == 400)
+    check("and the message says what to do",
+          "press Save" in r.json()["detail"], r.json().get("detail"))
+    a = c.get("/api/integrations/zoho/authorize", headers=H)
+    check("so is approving", a.status_code == 400 and "press Save" in a.json()["detail"],
+          a.text[:140])
+    configure()
+
+
 def test_redirect_flow():
     """A Server-based Application approves through a redirect, not a pasted code."""
     print("\nthe redirect route")
@@ -368,6 +381,7 @@ def main():
     test_eway_comes_back()
     test_failures_are_survivable()
     test_off_by_default()
+    test_unsaved_credentials_are_explained()
     test_redirect_flow()
     test_payload_shape()
     failed = [n for n, ok in OK if not ok]

@@ -40,6 +40,24 @@ export default function ZohoIntegration({ canEdit = true }) {
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
+  // Saving and connecting are one act as far as anyone is concerned: typing
+  // the credentials and pressing Connect must work without pressing Save
+  // first, or the server reads nothing and refuses with a baffling message.
+  const persist = async () => {
+    const { data } = await api.put("/integrations/zoho", {
+      enabled: !!form.enabled, product: form.product || "inventory",
+      data_centre: form.data_centre || "in",
+      client_id: form.client_id || "", client_secret: form.client_secret || "",
+      organization_id: form.organization_id || "",
+      organization_name: form.organization_name || "",
+      auto_push: !!form.auto_push, sync_items: form.sync_items !== false,
+      pull_eway: form.pull_eway !== false, redirect_uri: form.redirect_uri || "",
+    });
+    setCfg(data);
+    setForm((f) => ({ ...data, client_secret: f.client_secret }));
+    return data;
+  };
+
   const save = async () => {
     setBusy("save");
     try {
@@ -60,8 +78,10 @@ export default function ZohoIntegration({ canEdit = true }) {
   };
 
   const approve = async () => {
+    if (!form.client_id?.trim()) return toast.error("Enter your Zoho Client ID first");
     setBusy("approve");
     try {
+      await persist();                       // so the server has the credentials
       const { data } = await api.get("/integrations/zoho/authorize");
       window.location.href = data.url;
     } catch (e) {
@@ -72,8 +92,10 @@ export default function ZohoIntegration({ canEdit = true }) {
 
   const connect = async () => {
     if (!code.trim()) return toast.error("Paste the code from the Zoho API console");
+    if (!form.client_id?.trim()) return toast.error("Enter your Zoho Client ID first");
     setBusy("connect");
     try {
+      await persist();                       // so the server has the credentials
       const { data } = await api.post("/integrations/zoho/connect", { code: code.trim() });
       setOrgs(data.organizations || []);
       setCode("");
