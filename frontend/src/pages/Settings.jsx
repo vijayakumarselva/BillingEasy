@@ -23,6 +23,7 @@ import MomCubIntegration from "@/components/MomCubIntegration";
 import BookingChannelIntegration from "@/components/BookingChannelIntegration";
 import SplitCompany from "@/components/SplitCompany";
 import GstFilingSettings from "@/components/GstFilingSettings";
+import ZohoIntegration from "@/components/ZohoIntegration";
 import WebsiteApiKey from "@/components/WebsiteApiKey";
 
 export default function Settings() {
@@ -795,6 +796,7 @@ export default function Settings() {
 
         <TabsContent value="integrations">
           <div className="space-y-4">
+            <ZohoIntegration canEdit={currentRole === "owner" || currentRole === "accountant"} />
             {!currentOrg?.business_type && (currentRole === "owner") && <SplitCompany onDone={() => window.location.reload()} />}
             <GstFilingSettings canEdit={currentRole === "owner" || currentRole === "accountant"} />
             <WebsiteApiKey canEdit={currentRole === "owner"} />

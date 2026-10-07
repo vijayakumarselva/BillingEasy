@@ -53,9 +53,10 @@ from plans import (
 )
 from payment_settings import (
     load_payment_settings, save_payment_settings, get_cashfree_credentials,
-    public_view as payment_public_view,
+    public_view as payment_public_view, encrypt_secret, decrypt_secret, mask,
 )
 import tds194q as TDS194Q
+import zoho as ZOHO
 from launch_offer import (
     load_offer as load_launch_offer, save_offer as save_launch_offer,
     public_offer as public_launch_offer, admin_view as launch_offer_admin_view,
@@ -4804,6 +4805,283 @@ async def money_trend(months: int = 6, ctx=Depends(require_permission("payment.v
     return {"months": out}
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# ZOHO INVENTORY / BOOKS — invoices raised here appear there, and the e-way
+# bill raised there comes back here. Credentials are encrypted at rest.
+# ═════════════════════════════════════════════════════════════════════════════
+ZOHO_SETTINGS_ID = "zoho"
+
+
+async def _zoho_settings(org_id: str) -> Dict[str, Any]:
+    row = await db.integration_settings.find_one(
+        {"org_id": org_id, "id": ZOHO_SETTINGS_ID}, {"_id": 0}) or {}
+    return {
+        "enabled": False, "product": "inventory", "data_centre": "in",
+        "client_id": "", "client_secret": "", "refresh_token": "",
+        "organization_id": "", "organization_name": "",
+        "auto_push": False, "sync_items": True, "pull_eway": True,
+        "redirect_uri": "",
+        **row,
+        # Secrets are stored encrypted; hand the plain text to the caller.
+        "client_secret": decrypt_secret(row.get("client_secret_enc", "")) or "",
+        "refresh_token": decrypt_secret(row.get("refresh_token_enc", "")) or "",
+    }
+
+
+def _zoho_public(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    return {**{k: v for k, v in cfg.items()
+               if k not in ("client_secret", "refresh_token", "client_secret_enc",
+                            "refresh_token_enc")},
+            "client_secret": mask(cfg.get("client_secret", "")),
+            "connected": bool(cfg.get("refresh_token")),
+            "data_centres": {k: v["label"] for k, v in ZOHO.DATA_CENTRES.items()},
+            "scopes": ZOHO.SCOPES}
+
+
+@api.get("/integrations/zoho")
+async def zoho_get(ctx=Depends(require_permission("settings.view"))):
+    cfg = await _zoho_settings(ctx["org_id"])
+    pushed = await db.invoices.count_documents(
+        org_filter(ctx, {"zoho_invoice_id": {"$nin": ["", None]}}))
+    failed = await db.invoices.count_documents(org_filter(ctx, {"zoho_error": {"$nin": ["", None]}}))
+    return {**_zoho_public(cfg), "pushed": pushed, "failed": failed}
+
+
+class ZohoSettingsIn(BaseModel):
+    enabled: bool = False
+    product: str = "inventory"          # inventory | books
+    data_centre: str = "in"
+    client_id: str = ""
+    client_secret: str = ""
+    organization_id: str = ""
+    organization_name: str = ""
+    auto_push: bool = False             # push every finalized sale as it is raised
+    sync_items: bool = True             # create items in Zoho when they are missing
+    pull_eway: bool = True              # read the e-way bill number back
+    redirect_uri: str = ""
+
+
+@api.put("/integrations/zoho")
+async def zoho_save(body: ZohoSettingsIn, ctx=Depends(require_permission("settings.edit"))):
+    cur = await _zoho_settings(ctx["org_id"])
+    data = body.model_dump()
+    secret = data.pop("client_secret", "")
+    # A masked value coming back means "leave it alone".
+    if not secret or set(secret) <= {"•"} or secret == mask(cur.get("client_secret", "")):
+        secret = cur.get("client_secret", "")
+    await db.integration_settings.update_one(
+        {"org_id": ctx["org_id"], "id": ZOHO_SETTINGS_ID},
+        {"$set": {**data, "org_id": ctx["org_id"], "id": ZOHO_SETTINGS_ID,
+                  "client_secret_enc": encrypt_secret(secret),
+                  "updated_at": now_iso()}}, upsert=True)
+    return _zoho_public(await _zoho_settings(ctx["org_id"]))
+
+
+class ZohoCodeIn(BaseModel):
+    code: str
+
+
+@api.post("/integrations/zoho/connect")
+async def zoho_connect(body: ZohoCodeIn, request: Request,
+                       ctx=Depends(require_permission("settings.edit"))):
+    """Swap the one-time self-client code for a refresh token and list the orgs."""
+    cfg = await _zoho_settings(ctx["org_id"])
+    if not cfg.get("client_id") or not cfg.get("client_secret"):
+        raise HTTPException(400, "Add your Zoho Client ID and Secret first")
+    try:
+        tokens = await ZOHO.exchange_code(cfg, body.code)
+    except ZOHO.ZohoError as exc:
+        raise HTTPException(400, str(exc))
+    await db.integration_settings.update_one(
+        {"org_id": ctx["org_id"], "id": ZOHO_SETTINGS_ID},
+        {"$set": {"refresh_token_enc": encrypt_secret(tokens["refresh_token"]),
+                  "connected_at": now_iso()}}, upsert=True)
+    cfg = await _zoho_settings(ctx["org_id"])
+    orgs = []
+    try:
+        orgs = await ZOHO.list_organisations(cfg, tokens.get("access_token", ""))
+    except ZOHO.ZohoError:
+        logger.exception("Connected to Zoho but could not list organisations")
+    await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="zoho.connected",
+                    entity_type="integration", entity_id="zoho", request=request)
+    return {"ok": True, "organizations": orgs, **_zoho_public(cfg)}
+
+
+@api.get("/integrations/zoho/organizations")
+async def zoho_orgs(ctx=Depends(require_permission("settings.edit"))):
+    cfg = await _zoho_settings(ctx["org_id"])
+    try:
+        token = await ZOHO.access_token(cfg)
+        return {"organizations": await ZOHO.list_organisations(cfg, token)}
+    except ZOHO.ZohoError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@api.post("/integrations/zoho/test")
+async def zoho_test(ctx=Depends(require_permission("settings.edit"))):
+    """Prove the connection works without sending an invoice."""
+    cfg = await _zoho_settings(ctx["org_id"])
+    try:
+        token = await ZOHO.access_token(cfg)
+        orgs = await ZOHO.list_organisations(cfg, token)
+    except ZOHO.ZohoError as exc:
+        raise HTTPException(400, str(exc))
+    chosen = next((o for o in orgs if o["organization_id"] == cfg.get("organization_id")), None)
+    return {"ok": True, "organizations": orgs, "selected": chosen,
+            "message": (f"Connected to {chosen['name']}." if chosen else
+                        "Connected. Now choose which Zoho organisation to send invoices to.")}
+
+
+async def _zoho_push(org_id: str, invoice_id: str, user: Optional[dict] = None) -> Dict[str, Any]:
+    """Send one invoice to Zoho and record what came back."""
+    cfg = await _zoho_settings(org_id)
+    if not cfg.get("enabled"):
+        return {"ok": False, "skipped": "Zoho is switched off for this business"}
+    inv = await db.invoices.find_one({"org_id": org_id, "id": invoice_id}, {"_id": 0})
+    if not inv:
+        return {"ok": False, "error": "Invoice not found"}
+    if inv.get("zoho_invoice_id"):
+        return {"ok": True, "already": True, "zoho_invoice_id": inv["zoho_invoice_id"]}
+
+    party = inv.get("party_snapshot") or {}
+    try:
+        token = await ZOHO.access_token(cfg)
+        res = await ZOHO.push_invoice(cfg, token, inv, party)
+    except ZOHO.ZohoError as exc:
+        await db.invoices.update_one(
+            {"org_id": org_id, "id": invoice_id},
+            {"$set": {"zoho_error": str(exc)[:300], "zoho_tried_at": now_iso()}})
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:
+        logger.exception("Zoho push failed for %s", invoice_id)
+        await db.invoices.update_one(
+            {"org_id": org_id, "id": invoice_id},
+            {"$set": {"zoho_error": str(exc)[:300], "zoho_tried_at": now_iso()}})
+        return {"ok": False, "error": str(exc)}
+
+    patch = {"zoho_invoice_id": res.get("zoho_invoice_id"),
+             "zoho_invoice_number": res.get("zoho_invoice_number", ""),
+             "zoho_url": ZOHO.invoice_url(cfg, res.get("zoho_invoice_id") or ""),
+             "zoho_pushed_at": now_iso(), "zoho_error": ""}
+    if res.get("eway_bill_no"):
+        patch.update({"ewb_no": res["eway_bill_no"], "ewb_source": "zoho",
+                      "ewb_status": GSTAUTO.DONE})
+    await db.invoices.update_one({"org_id": org_id, "id": invoice_id}, {"$set": patch})
+    return {"ok": True, **res, "zoho_url": patch["zoho_url"]}
+
+
+@api.post("/integrations/zoho/push/{invoice_id}")
+async def zoho_push_one(invoice_id: str, ctx=Depends(require_permission("invoice.create"))):
+    inv = await db.invoices.find_one(org_filter(ctx, {"id": invoice_id}), {"_id": 0, "id": 1})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    res = await _zoho_push(ctx["org_id"], invoice_id, ctx["user"])
+    if not res.get("ok") and res.get("error"):
+        raise HTTPException(502, res["error"])
+    return res
+
+
+@api.post("/integrations/zoho/pull-eway/{invoice_id}")
+async def zoho_pull_eway(invoice_id: str, ctx=Depends(require_permission("invoice.create"))):
+    """Bring back the e-way bill you raised in Zoho."""
+    cfg = await _zoho_settings(ctx["org_id"])
+    inv = await db.invoices.find_one(org_filter(ctx, {"id": invoice_id}), {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    if not inv.get("zoho_invoice_id"):
+        raise HTTPException(400, "This invoice has not been sent to Zoho yet")
+    try:
+        token = await ZOHO.access_token(cfg)
+        res = await ZOHO.fetch_eway(cfg, token, inv["zoho_invoice_id"])
+    except ZOHO.ZohoError as exc:
+        raise HTTPException(502, str(exc))
+    if not res.get("eway_bill_no"):
+        return {"ok": True, "found": False,
+                "message": "No e-way bill on that invoice in Zoho yet."}
+    await db.invoices.update_one(
+        org_filter(ctx, {"id": invoice_id}),
+        {"$set": {"ewb_no": res["eway_bill_no"], "ewb_source": "zoho",
+                  "ewb_status": GSTAUTO.DONE, "ewb_at": now_iso()}})
+    return {"ok": True, "found": True, **res}
+
+
+@api.post("/integrations/zoho/sync-eway")
+async def zoho_sync_eway(ctx=Depends(require_permission("invoice.create"))):
+    """Sweep every invoice sent to Zoho that has no e-way bill here yet."""
+    cfg = await _zoho_settings(ctx["org_id"])
+    if not cfg.get("enabled") or not cfg.get("pull_eway"):
+        raise HTTPException(400, "Pulling e-way bills from Zoho is switched off")
+    rows = await db.invoices.find(
+        org_filter(ctx, {"zoho_invoice_id": {"$nin": ["", None]},
+                         "$or": [{"ewb_no": ""}, {"ewb_no": None},
+                                 {"ewb_no": {"$exists": False}}]}),
+        {"_id": 0, "id": 1, "zoho_invoice_id": 1, "invoice_no": 1}).to_list(200)
+    try:
+        token = await ZOHO.access_token(cfg)
+    except ZOHO.ZohoError as exc:
+        raise HTTPException(400, str(exc))
+    found = []
+    for r in rows:
+        try:
+            res = await ZOHO.fetch_eway(cfg, token, r["zoho_invoice_id"])
+        except ZOHO.ZohoError:
+            continue
+        if res.get("eway_bill_no"):
+            await db.invoices.update_one(
+                org_filter(ctx, {"id": r["id"]}),
+                {"$set": {"ewb_no": res["eway_bill_no"], "ewb_source": "zoho",
+                          "ewb_status": GSTAUTO.DONE, "ewb_at": now_iso()}})
+            found.append({"invoice_no": r["invoice_no"], "ewb_no": res["eway_bill_no"]})
+    return {"checked": len(rows), "found": len(found), "bills": found}
+
+
+@api.get("/integrations/zoho/queue")
+async def zoho_queue(status: str = "all", limit: int = 100,
+                     ctx=Depends(require_permission("invoice.view"))):
+    """Which invoices have reached Zoho, which failed, and which never went."""
+    q = org_filter(ctx, {"type": "sale"})
+    if status == "failed":
+        q["zoho_error"] = {"$nin": ["", None]}
+    elif status == "pushed":
+        q["zoho_invoice_id"] = {"$nin": ["", None]}
+    elif status == "pending":
+        q["$or"] = [{"zoho_invoice_id": ""}, {"zoho_invoice_id": None},
+                    {"zoho_invoice_id": {"$exists": False}}]
+    rows = await db.invoices.find(q, {"_id": 0}).sort("invoice_date", -1) \
+        .to_list(min(limit, 300))
+    return {"rows": [{
+        "id": r["id"], "invoice_no": r.get("invoice_no"),
+        "invoice_date": r.get("invoice_date"),
+        "party": (r.get("party_snapshot") or {}).get("name", ""),
+        "total": (r.get("totals") or {}).get("grand_total", 0),
+        "zoho_invoice_id": r.get("zoho_invoice_id", ""),
+        "zoho_invoice_number": r.get("zoho_invoice_number", ""),
+        "zoho_url": r.get("zoho_url", ""),
+        "zoho_error": r.get("zoho_error", ""),
+        "ewb_no": r.get("ewb_no", ""), "ewb_source": r.get("ewb_source", ""),
+    } for r in rows]}
+
+
+@api.post("/integrations/zoho/push-pending")
+async def zoho_push_pending(ctx=Depends(require_permission("invoice.create"))):
+    """Send everything that has not reached Zoho yet."""
+    rows = await db.invoices.find(
+        org_filter(ctx, {"type": "sale", "status": {"$in": ["finalized", "paid",
+                                                            "partially_paid"]},
+                         "$or": [{"zoho_invoice_id": ""}, {"zoho_invoice_id": None},
+                                 {"zoho_invoice_id": {"$exists": False}}]}),
+        {"_id": 0, "id": 1}).sort("invoice_date", -1).to_list(100)
+    sent, failed = 0, []
+    for r in rows:
+        res = await _zoho_push(ctx["org_id"], r["id"], ctx["user"])
+        if res.get("ok"):
+            sent += 1
+        elif res.get("error"):
+            failed.append(res["error"])
+    return {"tried": len(rows), "sent": sent,
+            "failed": len(failed), "first_error": failed[0] if failed else ""}
+
+
 # ---------------- ROLES & PERMISSIONS ----------------
 class RoleIn(BaseModel):
     name: str
@@ -5410,12 +5688,20 @@ async def create_invoice(body: InvoiceIn, request: Request, ctx=Depends(require_
     # a slow or broken GSP can never stop someone billing a customer — whatever
     # happens is recorded on the invoice and shown in GST → Compliance.
     filing = None
+    pushed_to = None
     if body.type == "sale" and body.status == "finalized":
         cfg = await _gst_settings(ctx["org_id"])
         if cfg.get("enabled") and (cfg.get("auto_einvoice") or cfg.get("auto_eway")):
             asyncio.create_task(_auto_file_invoice(ctx["org_id"], doc["id"], ctx["user"]))
             filing = "queued"
-    return {**strip_id(doc), "auto_filing": filing}
+        # Mirror the sale into Zoho, if that is switched on. Same rule as
+        # filing: the invoice is already saved, so a slow or broken Zoho can
+        # never stop someone billing a customer.
+        zcfg = await _zoho_settings(ctx["org_id"])
+        if zcfg.get("enabled") and zcfg.get("auto_push"):
+            asyncio.create_task(_zoho_push(ctx["org_id"], doc["id"], ctx["user"]))
+            pushed_to = "zoho"
+    return {**strip_id(doc), "auto_filing": filing, "mirrored_to": pushed_to}
 
 
 @api.get("/invoices/{iid}")
