@@ -137,6 +137,45 @@ def test_editing_does_not_double_count():
           r.json()["tds_amount"] != 99999, str(r.json()["tds_amount"]))
 
 
+def test_editing_never_counts_itself():
+    """Reopening a saved bill must not show its own value as prior purchases."""
+    print("\nreopening a saved bill")
+    asyncio.run(mdb.parties.insert_one({"id": "sup3", "org_id": ORG, "name": "Cane Co",
+                                        "type": "supplier", "gstin": "33EEEEE4444E1Z0",
+                                        "state_code": "33", "state": "Tamil Nadu"}))
+    saved = c.post("/api/purchases", headers=H, json={
+        "party_id": "sup3", "bill_no": "C1", "purchase_date": "2026-10-07",
+        "type": "purchase", "tds_rate": 0.1, "tds_amount": 1,
+        "items": [{"product_id": "pr1", "name": "Sugar", "hsn": "17011490", "qty": 10000,
+                   "unit": "NOS", "rate": 2200, "discount_pct": 0, "gst_rate": 5}]}).json()
+    check("the first bill deducts 17,000", saved["tds_amount"] == 17000.0,
+          str(saved["tds_amount"]))
+
+    # What the edit screen asks for.
+    d = c.get("/api/purchases/vendor-ytd/sup3", headers=H,
+              params={"current": 220 * L, "exclude_id": saved["id"]}).json()
+    check("prior purchases read zero, not the bill itself", d["ytd_total"] == 0,
+          str(d["ytd_total"]))
+    check("the cumulative is the bill, not double it",
+          d["calc"]["cumulative"] == 220 * L, str(d["calc"]["cumulative"]))
+    check("so the TDS stays 17,000 on reopening", d["calc"]["tds"] == 17000.0,
+          str(d["calc"]["tds"]))
+
+    # Without the exclusion it doubles — the bug that was on screen.
+    bad = c.get("/api/purchases/vendor-ytd/sup3", headers=H,
+                params={"current": 220 * L}).json()
+    check("leaving it in is what doubled the figure",
+          bad["calc"]["cumulative"] == 440 * L, str(bad["calc"]["cumulative"]))
+
+    again = c.put(f"/api/purchases/{saved['id']}", headers=H, json={
+        "party_id": "sup3", "bill_no": "C1", "purchase_date": "2026-10-07",
+        "type": "purchase", "tds_rate": 0.1, "tds_amount": 17000,
+        "items": [{"product_id": "pr1", "name": "Sugar", "hsn": "17011490", "qty": 10000,
+                   "unit": "NOS", "rate": 2200, "discount_pct": 0, "gst_rate": 5}]}).json()
+    check("and saving the edit does not change the deduction",
+          again["tds_amount"] == 17000.0, str(again["tds_amount"]))
+
+
 def test_below_threshold_seller():
     print("\na small seller")
     asyncio.run(mdb.parties.insert_one({"id": "sup2", "org_id": ORG, "name": "Small Traders",
@@ -162,6 +201,7 @@ def main():
     test_the_screenshot_case()
     test_the_second_bill()
     test_editing_does_not_double_count()
+    test_editing_never_counts_itself()
     test_below_threshold_seller()
     failed = [n for n, ok in OK if not ok]
     print(f"\n{len(OK) - len(failed)}/{len(OK)} checks passed")

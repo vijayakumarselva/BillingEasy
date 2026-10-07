@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -631,17 +631,16 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
     setItem(i, { product_id: p.id, name: p.name, hsn: p.hsn, unit: p.unit, rate: p.purchase_price, gst_rate: p.gst_rate });
   };
 
-  // Fetch vendor TDS info when supplier changes
+  // What has already been bought from this seller this year. When editing a
+  // bill, that bill must be left out — otherwise it is counted against itself
+  // and appears to have doubled.
   useEffect(() => {
     if (!partyId) { setTdsInfo(null); setTdsEnabled(false); return; }
-    api.get(`/purchases/vendor-ytd/${partyId}`)
-      .then(r => {
-        setTdsInfo(r.data);
-        // Auto-enable if already over threshold
-        if (r.data.tds_applicable) setTdsEnabled(true);
-      })
+    api.get(`/purchases/vendor-ytd/${partyId}`,
+            { params: editDoc?.id ? { exclude_id: editDoc.id } : {} })
+      .then(r => setTdsInfo(r.data))
       .catch(() => setTdsInfo(null));
-  }, [partyId]);
+  }, [partyId, editDoc?.id]);
 
   const totals = useMemo(() => {
     return items.reduce((acc, it) => {
@@ -670,6 +669,14 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
     };
   }, [tdsEnabled, tdsRate, totals.taxable, tdsInfo]);
   const tdsAmount = tds.amount;
+  // Whether this bill crosses the line is about the running total, not what
+  // was bought before it — a first purchase can be over on its own.
+  const overThreshold = tds.cumulative > TDS_THRESHOLD;
+  // Switch TDS on once it applies, unless the user has turned it off by hand.
+  const tdsTouched = useRef(false);
+  useEffect(() => {
+    if (!tdsTouched.current) setTdsEnabled(overThreshold);
+  }, [overThreshold]);
 
   const netPayable = totals.total - tdsAmount;
 
@@ -955,17 +962,17 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
         {/* TDS Banner */}
         {partyId && tdsInfo && (
           <div className={`rounded-lg border px-4 py-3 text-sm ${
-            tdsInfo.tds_applicable
+            overThreshold
               ? "bg-amber-50 border-amber-300 dark:bg-amber-950/30 dark:border-amber-700"
               : "bg-blue-50 border-blue-200 dark:bg-blue-950/20 dark:border-blue-800"
           }`}>
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div className="flex items-start gap-2">
-                {tdsInfo.tds_applicable
+                {overThreshold
                   ? <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
                   : <Info className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />}
                 <div>
-                  {tdsInfo.tds_applicable ? (
+                  {overThreshold ? (
                     <>
                       <p className="font-semibold text-amber-800 dark:text-amber-300">
                         TDS Applicable — Sec 194Q
@@ -1015,7 +1022,7 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
                 />
                 <button
                   type="button"
-                  onClick={() => setTdsEnabled(v => !v)}
+                  onClick={() => { tdsTouched.current = true; setTdsEnabled(v => !v); }}
                   className={`px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
                     tdsEnabled
                       ? "bg-amber-600 text-white border-amber-600"
