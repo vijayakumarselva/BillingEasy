@@ -150,6 +150,19 @@ def test_settings_and_secrets():
 
     check("the data centre list is offered", "in" in (d.get("data_centres") or {}))
     check("and the scopes to paste into Zoho", "ZohoInventory.invoices.CREATE" in d["scopes"])
+    check("with a link to the right console", d.get("console_url") == "https://api-console.zoho.in/",
+          d.get("console_url"))
+
+    # Books uses a different scope prefix; sending Inventory scopes is rejected.
+    configure(product="books")
+    b = c.get("/api/integrations/zoho", headers=H).json()
+    check("choosing Books changes the scopes", b["scopes"].startswith("ZohoBooks."), b["scopes"][:40])
+    check("and does not leave Inventory ones in", "ZohoInventory" not in b["scopes"])
+    configure(product="inventory", data_centre="com")
+    u = c.get("/api/integrations/zoho", headers=H).json()
+    check("the console link follows the data centre",
+          u["console_url"] == "https://api-console.zoho.com/", u["console_url"])
+    configure(data_centre="in")
 
 
 def test_push_creates_what_is_missing():

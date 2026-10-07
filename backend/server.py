@@ -4835,7 +4835,8 @@ def _zoho_public(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "client_secret": mask(cfg.get("client_secret", "")),
             "connected": bool(cfg.get("refresh_token")),
             "data_centres": {k: v["label"] for k, v in ZOHO.DATA_CENTRES.items()},
-            "scopes": ZOHO.SCOPES}
+            "scopes": ZOHO.scopes_for(cfg),
+            "console_url": f"https://api-console{ZOHO.dc(cfg)['accounts'].split('accounts')[1]}/"}
 
 
 @api.get("/integrations/zoho")

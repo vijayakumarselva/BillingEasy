@@ -40,10 +40,26 @@ DATA_CENTRES = {
 # Inventory and Books share the same objects; Inventory is the superset.
 PRODUCTS = {"inventory": "inventory", "books": "books"}
 
-SCOPES = ("ZohoInventory.invoices.CREATE,ZohoInventory.invoices.READ,"
-          "ZohoInventory.contacts.CREATE,ZohoInventory.contacts.READ,"
-          "ZohoInventory.items.CREATE,ZohoInventory.items.READ,"
-          "ZohoInventory.settings.READ")
+def _scopes(prefix: str) -> str:
+    return ",".join(f"{prefix}.{obj}.{verb}"
+                    for obj, verbs in (("invoices", ("CREATE", "READ")),
+                                       ("contacts", ("CREATE", "READ")),
+                                       ("items", ("CREATE", "READ")),
+                                       ("settings", ("READ",)))
+                    for verb in verbs)
+
+
+# The scope prefix differs per product — a Books token asked for with Inventory
+# scopes is rejected, which is a confusing first failure to debug.
+SCOPES_BY_PRODUCT = {
+    "inventory": _scopes("ZohoInventory"),
+    "books": _scopes("ZohoBooks"),
+}
+SCOPES = SCOPES_BY_PRODUCT["inventory"]
+
+
+def scopes_for(settings: Dict[str, Any]) -> str:
+    return SCOPES_BY_PRODUCT.get((settings or {}).get("product") or "inventory", SCOPES)
 
 
 class ZohoError(Exception):

@@ -170,36 +170,61 @@ export default function ZohoIntegration({ canEdit = true }) {
         </div>
       </div>
 
-      <details className="text-xs text-muted-foreground">
+      <details className="text-xs text-muted-foreground" open={!cfg.connected}>
         <summary className="cursor-pointer font-medium text-foreground">
-          How to get these (two minutes)
+          Where to get the Client ID, Secret and code
         </summary>
-        <ol className="list-decimal ml-5 mt-2 space-y-1">
+        <ol className="list-decimal ml-5 mt-2 space-y-1.5">
           <li>
             Open{" "}
             <a className="underline inline-flex items-center gap-0.5"
-               href="https://api-console.zoho.in/" target="_blank" rel="noreferrer">
-              api-console.zoho.in <ExternalLink className="h-3 w-3" />
+               href={cfg.console_url || "https://api-console.zoho.in/"}
+               target="_blank" rel="noreferrer">
+              {(cfg.console_url || "https://api-console.zoho.in/").replace("https://", "")}
+              <ExternalLink className="h-3 w-3" />
             </a>{" "}
-            and create a <strong>Self Client</strong>.
+            — signed in as the same Zoho account that owns the organisation.
           </li>
-          <li>Copy the Client ID and Secret into the boxes above and press Save.</li>
           <li>
-            Back in Zoho, open the <strong>Generate Code</strong> tab, paste this scope:
-            <code className="block bg-muted rounded p-1.5 mt-1 break-all">{cfg.scopes}</code>
-            pick a duration, and generate.
+            <strong>Add Client → Self Client → Create</strong>. Self Client needs no redirect
+            URL; it exists for exactly this kind of server-to-server link.
           </li>
-          <li>Paste the code below within three minutes — they expire quickly.</li>
+          <li>
+            Copy the <strong>Client ID</strong> and <strong>Client Secret</strong> it shows
+            into the boxes above, then press <strong>Save</strong> here.
+          </li>
+          <li>
+            Back in Zoho, open the <strong>Generate Code</strong> tab of that same Self Client.
+            Paste this into <em>Scope</em>:
+            <code className="block bg-muted rounded p-1.5 mt-1 break-all select-all">
+              {cfg.scopes}
+            </code>
+            set <em>Time Duration</em> to 10 minutes, type any description, and press
+            <strong> Create</strong>. Choose your organisation when it asks.
+          </li>
+          <li>
+            Zoho then shows a code starting <code>1000.</code> — that is the one-time code.
+            Copy it and paste it below, then press Connect.
+          </li>
         </ol>
+        <p className="mt-2">
+          The code is single-use and expires in the minutes you chose. If it fails, generate a
+          fresh one — do not reuse the old.
+        </p>
       </details>
 
       {/* Connect */}
       {canEdit && (
         <div className="flex gap-2 items-end flex-wrap">
           <div className="flex-1 min-w-[220px] space-y-1.5">
-            <Label className="text-xs">One-time code from Zoho</Label>
+            <Label className="text-xs">
+              One-time code from Zoho's <em>Generate Code</em> tab
+            </Label>
             <Input value={code} onChange={(e) => setCode(e.target.value)}
-                   placeholder="1000.xxxxxxxx.xxxxxxxx" />
+                   placeholder="1000.xxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxx" />
+            <p className="text-[11px] text-muted-foreground">
+              Single use, and expires in minutes — paste it as soon as Zoho shows it.
+            </p>
           </div>
           <Button onClick={connect} disabled={busy === "connect"} className="gap-1.5">
             {busy === "connect" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
