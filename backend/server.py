@@ -5003,6 +5003,11 @@ async def zoho_test(ctx=Depends(require_permission("settings.edit"))):
                         "Connected. Now choose which Zoho organisation to send invoices to.")}
 
 
+# A sale counts as real — and so worth filing and mirroring — at any status
+# other than a draft or a cancelled/void bill.
+LIVE_SALE_STATUSES = {"finalized", "dispatched", "delivered", "paid"}
+
+
 async def _zoho_push(org_id: str, invoice_id: str, user: Optional[dict] = None) -> Dict[str, Any]:
     """Send one invoice to Zoho and record what came back."""
     cfg = await _zoho_settings(org_id)
@@ -5760,7 +5765,7 @@ async def create_invoice(body: InvoiceIn, request: Request, ctx=Depends(require_
     # happens is recorded on the invoice and shown in GST → Compliance.
     filing = None
     pushed_to = None
-    if body.type == "sale" and body.status == "finalized":
+    if body.type == "sale" and body.status in LIVE_SALE_STATUSES:
         cfg = await _gst_settings(ctx["org_id"])
         if cfg.get("enabled") and (cfg.get("auto_einvoice") or cfg.get("auto_eway")):
             asyncio.create_task(_auto_file_invoice(ctx["org_id"], doc["id"], ctx["user"]))
@@ -5833,7 +5838,15 @@ async def change_invoice_status(iid: str, body: InvoiceStatusIn, request: Reques
     await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action=f"invoice.status.{body.status}",
                     entity_type="invoice", entity_id=iid,
                     metadata={"invoice_no": inv.get("invoice_no"), "new_status": body.status}, request=request)
-    return {"ok": True, "status": body.status}
+
+    # A bill saved as a draft and finalised later still has to reach Zoho.
+    mirrored = None
+    if body.status in LIVE_SALE_STATUSES:
+        zcfg = await _zoho_settings(ctx["org_id"])
+        if zcfg.get("enabled") and zcfg.get("auto_push"):
+            asyncio.create_task(_zoho_push(ctx["org_id"], iid, ctx["user"]))
+            mirrored = "zoho"
+    return {"ok": True, "status": body.status, "mirrored_to": mirrored}
 
 
 @api.patch("/invoices/{iid}/cancel")

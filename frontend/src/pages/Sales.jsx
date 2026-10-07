@@ -9,7 +9,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Ban, Eye, FileDown, Share2, ChevronRight, FileText, Pencil, ChevronDown, IndianRupee } from "lucide-react";
+import { Plus, Search, Ban, Eye, FileDown, Share2, ChevronRight, FileText, Pencil, ChevronDown, IndianRupee, Truck, Upload } from "lucide-react";
+import EwayBillDialog from "@/components/EwayBillDialog";
 import { PaymentDialog } from "@/pages/Payments";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { inr, fmtDate } from "@/lib/format";
@@ -36,8 +37,27 @@ export default function Sales() {
   const [branches, setBranches] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [receiveTarget, setReceiveTarget] = useState(null); // invoice to record a receipt against
+  const [ewbTarget, setEwbTarget] = useState(null);        // invoice to raise an e-way bill for
+  const [pushing, setPushing] = useState("");              // invoice id currently going to Zoho
+  const [zohoOn, setZohoOn] = useState(false);             // is the Zoho mirror switched on
   const canReceive = (inv) => inv.type === "sale" && inv.due > 0.5 && !["cancelled", "void", "draft"].includes(inv.status);
   const nav = useNavigate();
+
+  // Mirror one sale into Zoho Inventory/Books by hand — for bills raised before
+  // the integration was switched on, or when an earlier push failed.
+  const pushToZoho = async (inv) => {
+    setPushing(inv.id);
+    try {
+      const { data } = await api.post(`/integrations/zoho/push/${inv.id}`);
+      toast.success(data.already ? `${inv.invoice_no} is already in Zoho`
+                                 : `${inv.invoice_no} sent to Zoho`);
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not send to Zoho");
+    } finally {
+      setPushing("");
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -55,6 +75,8 @@ export default function Sales() {
       .then(r => setBranches((r.data || []).filter(b => b.active !== false))).catch(() => {});
     api.get("/warehouses")
       .then(r => setWarehouses((r.data || []).filter(w => w.active !== false))).catch(() => {});
+    api.get("/integrations/zoho")
+      .then(r => setZohoOn(!!r.data?.enabled)).catch(() => {});
   }, []);
 
   const filtered = list.filter(i =>
@@ -309,6 +331,21 @@ export default function Sales() {
                       {inv.status !== "cancelled" && inv.status !== "void" && (
                         <Button size="icon" variant="ghost" onClick={() => nav(`/sales/${inv.id}/edit`)} title="Edit"><Pencil className="h-4 w-4 text-blue-500" /></Button>
                       )}
+                      {inv.type === "sale" && !["cancelled", "void", "draft"].includes(inv.status) && (
+                        <Button size="icon" variant="ghost" title="Generate E-Way Bill"
+                          onClick={() => setEwbTarget(inv)}
+                          className="text-green-600 hover:text-green-700 hover:bg-green-50">
+                          <Truck className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {zohoOn && inv.type === "sale" && !["cancelled", "void", "draft"].includes(inv.status) && (
+                        <Button size="icon" variant="ghost" disabled={pushing === inv.id}
+                          title={inv.zoho_invoice_id ? "Already in Zoho" : "Send to Zoho"}
+                          onClick={() => pushToZoho(inv)}
+                          className={inv.zoho_invoice_id ? "text-emerald-600" : "text-orange-600 hover:bg-orange-50"}>
+                          <Upload className="h-4 w-4" />
+                        </Button>
+                      )}
                       <Button size="icon" variant="ghost" onClick={() => downloadPdf(inv)}><FileDown className="h-4 w-4" /></Button>
                       <Button size="icon" variant="ghost" onClick={() => shareWhatsApp(inv)}><Share2 className="h-4 w-4" /></Button>
                       {inv.status !== "cancelled" && inv.status !== "void" && (
@@ -354,6 +391,13 @@ export default function Sales() {
           onSaved={() => { setReceiveTarget(null); load(); }}
         />
       )}
+
+      <EwayBillDialog
+        invoiceId={ewbTarget?.id}
+        invoiceNo={ewbTarget?.invoice_no}
+        open={!!ewbTarget}
+        onOpenChange={(o) => { if (!o) setEwbTarget(null); }}
+      />
     </div>
   );
 }
