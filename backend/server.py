@@ -55,6 +55,7 @@ from payment_settings import (
     load_payment_settings, save_payment_settings, get_cashfree_credentials,
     public_view as payment_public_view,
 )
+import tds194q as TDS194Q
 from launch_offer import (
     load_offer as load_launch_offer, save_offer as save_launch_offer,
     public_offer as public_launch_offer, admin_view as launch_offer_admin_view,
@@ -5838,32 +5839,51 @@ async def dismiss_purchase_upload(uid: str, ctx=Depends(get_org_ctx)):
 
 
 @api.get("/purchases/vendor-ytd/{party_id}")
-async def vendor_ytd(party_id: str, ctx=Depends(get_org_ctx)):
-    """Return this vendor's YTD purchases + TDS applicability (respects opening balance for migrations)."""
+async def vendor_ytd(party_id: str, current: float = 0, exclude_id: str = "",
+                     ctx=Depends(get_org_ctx)):
+    """This seller's purchases so far this financial year, and the TDS due on a
+    bill of `current` (excluding GST) under Section 194Q.
+
+    The first ₹50 lakh from each seller each year carries no TDS; only what is
+    above it does. Pass the bill being typed as `current` to see exactly what
+    will be deducted and why.
+    """
     import datetime as _dt
     today = _dt.date.today()
-    fy_start = _dt.date(today.year if today.month >= 4 else today.year - 1, 4, 1)
-    pipeline = [
-        {"$match": {**biz_filter(ctx), "party_id": party_id,
-                    "purchase_date": {"$gte": fy_start.isoformat()},
-                    "type": "purchase"}},
-        {"$group": {"_id": None, "ytd": {"$sum": "$totals.grand_total"}}},
-    ]
-    result = await db.purchases.aggregate(pipeline).to_list(1)
-    ytd_in_system = result[0]["ytd"] if result else 0.0
-    # Get opening balance (purchases before migration) from party record
-    party = await db.parties.find_one(org_filter(ctx, {"id": party_id}), {"_id": 0, "tds_opening_balance": 1})
-    opening = float((party or {}).get("tds_opening_balance") or 0)
-    ytd_total = ytd_in_system + opening
-    TDS_THRESHOLD = 5_000_000  # ₹50 Lakhs
+    start = TDS194Q.fy_start(today)
+    q = {**biz_filter(ctx), "party_id": party_id,
+         "purchase_date": {"$gte": start}, "type": "purchase"}
+    if exclude_id:
+        q["id"] = {"$ne": exclude_id}       # editing a bill must not count itself
+
+    # 194Q works on the value excluding GST, so sum that — older rows that
+    # never stored a split fall back to their total.
+    ytd_in_system = 0.0
+    async for pur in db.purchases.find(q, {"_id": 0, "totals": 1}):
+        ytd_in_system += TDS194Q.bill_taxable(pur)
+
+    party = await db.parties.find_one(
+        org_filter(ctx, {"id": party_id}),
+        {"_id": 0, "tds_opening_balance": 1, "pan": 1, "gstin": 1, "name": 1}) or {}
+    opening = float(party.get("tds_opening_balance") or 0)
+    prior = ytd_in_system + opening
+
+    rate = TDS194Q.rate_for(party)
+    calc = TDS194Q.compute(prior, current, rate=rate)
     return {
         "party_id": party_id,
+        "party_name": party.get("name", ""),
         "ytd_in_system": round(ytd_in_system, 2),
         "tds_opening_balance": round(opening, 2),
-        "ytd_total": round(ytd_total, 2),
-        "tds_applicable": ytd_total >= TDS_THRESHOLD,
-        "threshold": TDS_THRESHOLD,
-        "remaining_to_threshold": max(0, round(TDS_THRESHOLD - ytd_total, 2)),
+        "ytd_total": round(prior, 2),                  # before this bill
+        "threshold": TDS194Q.THRESHOLD,
+        "remaining_to_threshold": round(max(0.0, TDS194Q.THRESHOLD - prior), 2),
+        # Whether this bill actually attracts TDS, not merely whether the
+        # seller has crossed the threshold at some point.
+        "tds_applicable": calc["applicable"],
+        "rate": rate,
+        "no_pan": rate != TDS194Q.RATE,
+        "calc": calc,
     }
 
 
@@ -5957,6 +5977,35 @@ async def list_purchases(ctx=Depends(require_permission("purchase.view"))):
     return items
 
 
+async def recompute_194q(ctx: dict, party_id: str, totals: dict, *,
+                         rate: float = 0, enabled: bool = True,
+                         exclude_id: str = "") -> tuple:
+    """Work out the TDS for a bill from what has already been bought this year.
+
+    The figure the browser sends is a preview; this is what gets stored. It
+    stops a stale page, a hand-edited request or a bill entered out of order
+    from deducting the wrong amount from a supplier.
+    """
+    if not enabled or not party_id:
+        return 0.0, 0.0, None
+    import datetime as _dt
+    start = TDS194Q.fy_start(_dt.date.today())
+    q = {**biz_filter(ctx), "party_id": party_id, "type": "purchase",
+         "purchase_date": {"$gte": start}}
+    if exclude_id:
+        q["id"] = {"$ne": exclude_id}
+    prior = 0.0
+    async for pur in db.purchases.find(q, {"_id": 0, "totals": 1}):
+        prior += TDS194Q.bill_taxable(pur)
+    party = await db.parties.find_one(
+        org_filter(ctx, {"id": party_id}),
+        {"_id": 0, "tds_opening_balance": 1, "pan": 1, "gstin": 1}) or {}
+    prior += float(party.get("tds_opening_balance") or 0)
+    use_rate = rate or TDS194Q.rate_for(party)
+    calc = TDS194Q.compute(prior, float(totals.get("taxable_amount") or 0), rate=use_rate)
+    return use_rate if calc["applicable"] else 0.0, calc["tds"], calc
+
+
 @api.post("/purchases")
 async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
     await ensure_active_subscription(ctx)
@@ -5971,6 +6020,9 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
             seller_state_code = branch.get("state_code", seller_state_code)
     same_state = (seller_state_code == party.get("state_code", "33"))
     totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state)
+    tds_rate, tds_amount, tds_calc = await recompute_194q(
+        ctx, body.party_id, totals, rate=body.tds_rate,
+        enabled=bool(body.tds_rate or body.tds_amount))
     # Resolve warehouse
     warehouse_name = ""
     if body.warehouse_id:
@@ -5997,9 +6049,9 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
         "eway_bill_no": body.eway_bill_no or "",
         "vehicle_no": body.vehicle_no or "",
         "purchase_category": body.purchase_category or "stock",
-        "tds_rate": body.tds_rate or 0,
-        "tds_amount": round(body.tds_amount or 0, 2),
-        "net_payable": round((totals.get("grand_total", 0) - (body.tds_amount or 0)), 2),
+        "tds_rate": tds_rate, "tds_amount": tds_amount,
+        "tds_calc": tds_calc,
+        "net_payable": round(totals.get("grand_total", 0) - tds_amount, 2),
         "created_at": now_iso(),
     }
     await db.purchases.insert_one(doc)
@@ -6039,6 +6091,10 @@ async def update_purchase(pid: str, body: PurchaseIn, ctx=Depends(require_permis
             seller_state_code = branch.get("state_code", seller_state_code)
     same_state = (seller_state_code == party.get("state_code", "33"))
     totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state)
+    # Editing a bill must not count itself in the year-to-date it is measured against.
+    tds_rate, tds_amount, tds_calc = await recompute_194q(
+        ctx, body.party_id, totals, rate=body.tds_rate,
+        enabled=bool(body.tds_rate or body.tds_amount), exclude_id=pid)
     # Reverse old stock if it was a stock purchase
     if p.get("type") == "purchase" and p.get("purchase_category", "stock") == "stock":
         for it in p.get("items", []):
@@ -6054,9 +6110,9 @@ async def update_purchase(pid: str, body: PurchaseIn, ctx=Depends(require_permis
         "warehouse_id": body.warehouse_id or "",
         "eway_bill_no": body.eway_bill_no or "", "vehicle_no": body.vehicle_no or "",
         "purchase_category": body.purchase_category or "stock",
-        "tds_rate": body.tds_rate or 0,
-        "tds_amount": round(body.tds_amount or 0, 2),
-        "net_payable": round((totals.get("grand_total", 0) - (body.tds_amount or 0)), 2),
+        "tds_rate": tds_rate, "tds_amount": tds_amount,
+        "tds_calc": tds_calc,
+        "net_payable": round(totals.get("grand_total", 0) - tds_amount, 2),
         "updated_at": now_iso(),
     }
     await db.purchases.update_one(org_filter(ctx, {"id": pid}), {"$set": update})

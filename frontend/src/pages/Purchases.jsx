@@ -650,11 +650,26 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
     }, { taxable: 0, gst: 0, total: 0 });
   }, [items, gstMode]);
 
-  // TDS computed on taxable amount (excl. GST) per Sec 194Q
-  const tdsAmount = useMemo(() => {
-    if (!tdsEnabled) return 0;
-    return Math.round((totals.taxable * tdsRate) / 100 * 100) / 100;
-  }, [tdsEnabled, tdsRate, totals.taxable]);
+  // Sec 194Q: the first ₹50 lakh from a seller each year carries no TDS, so
+  // only the amount above it is taxed — never the whole bill.
+  const TDS_THRESHOLD = 5000000;
+  const tds = useMemo(() => {
+    const prior = Number(tdsInfo?.ytd_total || 0);
+    const current = totals.taxable;
+    const cumulative = prior + current;
+    if (!tdsEnabled || cumulative <= TDS_THRESHOLD) {
+      return { base: 0, amount: 0, exemptHere: current, cumulative, prior };
+    }
+    const base = Math.min(current, cumulative - TDS_THRESHOLD);
+    return {
+      base,
+      amount: Math.round((base * tdsRate) / 100 * 100) / 100,
+      exemptHere: Math.max(0, current - base),
+      cumulative,
+      prior,
+    };
+  }, [tdsEnabled, tdsRate, totals.taxable, tdsInfo]);
+  const tdsAmount = tds.amount;
 
   const netPayable = totals.total - tdsAmount;
 
@@ -956,11 +971,19 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
                         TDS Applicable — Sec 194Q
                       </p>
                       <p className="text-amber-700 dark:text-amber-400 text-xs mt-0.5">
-                        This vendor's YTD purchases: <strong>{inr(tdsInfo.ytd_total)}</strong>
+                        Bought from this seller before this bill:{" "}
+                        <strong>{inr(tdsInfo.ytd_total)}</strong>
                         {tdsInfo.tds_opening_balance > 0 && (
-                          <span className="ml-1">(incl. ₹{inr(tdsInfo.tds_opening_balance)} opening balance)</span>
+                          <span className="ml-1">(incl. {inr(tdsInfo.tds_opening_balance)} opening)</span>
                         )}
-                        — exceeds ₹50 Lakhs. TDS @ {tdsRate}% will be deducted.
+                        {". "}With this bill it is <strong>{inr(tds.cumulative)}</strong>.
+                      </p>
+                      <p className="text-amber-700 dark:text-amber-400 text-xs mt-1">
+                        The first <strong>₹50,00,000</strong> each year carries no TDS
+                        {tds.exemptHere > 0
+                          ? <> — {inr(tds.exemptHere)} of this bill falls inside it</>
+                          : <> and was already used up</>}
+                        , so TDS @ {tdsRate}% applies to <strong>{inr(tds.base)}</strong>.
                       </p>
                     </>
                   ) : (
@@ -969,11 +992,13 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
                         TDS threshold not yet reached
                       </p>
                       <p className="text-blue-600 dark:text-blue-400 text-xs mt-0.5">
-                        YTD: <strong>{inr(tdsInfo.ytd_total)}</strong>
+                        Bought from this seller: <strong>{inr(tds.cumulative)}</strong>{" "}
+                        including this bill
                         {tdsInfo.tds_opening_balance > 0 && (
                           <span className="ml-1">(incl. {inr(tdsInfo.tds_opening_balance)} opening)</span>
                         )}
-                        · ₹{inr(tdsInfo.remaining_to_threshold)} more to reach ₹50L threshold.
+                        · {inr(Math.max(0, TDS_THRESHOLD - tds.cumulative))} more before
+                        TDS starts at ₹50,00,000.
                       </p>
                     </>
                   )}
@@ -1022,7 +1047,9 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
             </div>
             {tdsEnabled && tdsAmount > 0 && (
               <div className="flex justify-between px-4 py-2 border-b bg-amber-50 dark:bg-amber-950/20">
-                <span className="text-amber-700 dark:text-amber-400">TDS Deducted ({tdsRate}%)</span>
+                <span className="text-amber-700 dark:text-amber-400">
+                  TDS Deducted ({tdsRate}% on {inr(tds.base)})
+                </span>
                 <span className="font-mono-fin text-amber-700 dark:text-amber-400">− {inr(tdsAmount)}</span>
               </div>
             )}
