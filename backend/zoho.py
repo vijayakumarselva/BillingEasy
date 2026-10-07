@@ -78,9 +78,33 @@ def api_base(settings: Dict[str, Any]) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # OAuth
 # ─────────────────────────────────────────────────────────────────────────────
+def authorize_url(settings: Dict[str, Any], redirect_uri: str, state: str) -> str:
+    """Where to send the browser so the owner can approve the connection.
+
+    This is the normal route for a **Server-based Application** in the Zoho API
+    console — the kind with a Homepage URL and Redirect URIs. A Self Client has
+    no redirect and uses a pasted code instead; both end at the same place.
+    """
+    from urllib.parse import urlencode
+    query = urlencode({
+        "scope": scopes_for(settings),
+        "client_id": settings.get("client_id", ""),
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "access_type": "offline",
+        # Without this Zoho returns a refresh token only the first time, and a
+        # reconnect silently gets none.
+        "prompt": "consent",
+        "state": state,
+    })
+    return f"{dc(settings)['accounts']}/oauth/v2/auth?{query}"
+
+
 async def exchange_code(settings: Dict[str, Any], code: str,
-                        client: Optional[httpx.AsyncClient] = None) -> Dict[str, Any]:
-    """Turn the one-time self-client code into a refresh token."""
+                        client: Optional[httpx.AsyncClient] = None,
+                        redirect_uri: str = "") -> Dict[str, Any]:
+    """Turn a code — pasted from a Self Client, or returned to our redirect —
+    into a refresh token."""
     close = client is None
     client = client or httpx.AsyncClient(timeout=30)
     try:
@@ -89,7 +113,8 @@ async def exchange_code(settings: Dict[str, Any], code: str,
             "client_id": settings.get("client_id", ""),
             "client_secret": settings.get("client_secret", ""),
             "code": code.strip(),
-            "redirect_uri": settings.get("redirect_uri", "") or None,
+            # Zoho checks this matches the one the code was issued for.
+            "redirect_uri": redirect_uri or settings.get("redirect_uri") or None,
         })
         data = r.json()
     finally:

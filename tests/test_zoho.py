@@ -289,6 +289,62 @@ def test_off_by_default():
     check("with it on, the sale is queued for Zoho", made.get("mirrored_to") == "zoho")
 
 
+def test_redirect_flow():
+    """A Server-based Application approves through a redirect, not a pasted code."""
+    print("\nthe redirect route")
+    configure()
+    r = c.get("/api/integrations/zoho/redirect-uri", headers=H).json()
+    check("we publish the address to register in Zoho",
+          r["redirect_uri"].endswith("/api/integrations/zoho/callback"), r["redirect_uri"])
+
+    a = c.get("/api/integrations/zoho/authorize", headers=H)
+    check("an approval link is produced", a.status_code == 200, a.text[:160])
+    url = a.json()["url"]
+    check("it points at the right data centre", url.startswith("https://accounts.zoho.in/"), url[:60])
+    check("asks for offline access so a refresh token is issued", "access_type=offline" in url)
+    check("and forces consent, or a reconnect returns no refresh token",
+          "prompt=consent" in url)
+    check("carries our client id", "client_id=1000.ABC" in url)
+    check("the scopes match the product chosen", "ZohoInventory.invoices.CREATE" in url)
+    check("and the same redirect it will come back to",
+          "integrations%2Fzoho%2Fcallback" in url or "/integrations/zoho/callback" in url)
+
+    import urllib.parse as up
+    state = up.parse_qs(up.urlparse(url).query)["state"][0]
+
+    captured = {}
+    async def fake_exchange(settings, code, client=None, redirect_uri=""):
+        captured["code"] = code
+        captured["redirect_uri"] = redirect_uri
+        return {"refresh_token": "rt-from-redirect", "access_token": "at"}
+    real = Z.exchange_code
+    Z.exchange_code = fake_exchange
+    try:
+        cb = c.get("/api/integrations/zoho/callback",
+                   params={"code": "1000.zzz", "state": state}, follow_redirects=False)
+        check("the callback accepts Zoho's code", cb.status_code == 200, str(cb.status_code))
+        check("and says so in plain words", "Connected to Zoho" in cb.text, cb.text[:120])
+        check("sending back the same redirect it authorised with",
+              captured["redirect_uri"].endswith("/api/integrations/zoho/callback"),
+              captured.get("redirect_uri"))
+        cfg = asyncio.run(server._zoho_settings(ORG))
+        check("the refresh token is stored", cfg["refresh_token"] == "rt-from-redirect")
+        raw = asyncio.run(mdb.integration_settings.find_one({"org_id": ORG}, {"_id": 0}))
+        check("encrypted, not in the clear", "rt-from-redirect" not in json.dumps(raw))
+
+        bad = c.get("/api/integrations/zoho/callback",
+                    params={"code": "x", "state": "not-a-real-state"})
+        check("a forged or stale state is refused", bad.status_code == 400, str(bad.status_code))
+        check("with something a person can act on", "expired" in bad.text.lower(), bad.text[:120])
+
+        refused = c.get("/api/integrations/zoho/callback",
+                        params={"error": "access_denied", "state": state})
+        check("and a refusal in Zoho is reported, not swallowed",
+              refused.status_code == 400 and "access_denied" in refused.text)
+    finally:
+        Z.exchange_code = real
+
+
 def test_payload_shape():
     print("\nthe shape we send")
     body = Z.build_invoice(
@@ -312,6 +368,7 @@ def main():
     test_eway_comes_back()
     test_failures_are_survivable()
     test_off_by_default()
+    test_redirect_flow()
     test_payload_shape()
     failed = [n for n, ok in OK if not ok]
     print(f"\n{len(OK) - len(failed)}/{len(OK)} checks passed")

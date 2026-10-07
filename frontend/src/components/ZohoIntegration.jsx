@@ -22,6 +22,10 @@ export default function ZohoIntegration({ canEdit = true }) {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState("");
   const [queue, setQueue] = useState(null);
+  const [redirectUri, setRedirectUri] = useState("");
+  // Two ways in: a Server-based Application approves through a redirect, a
+  // Self Client hands you a code to paste. Both end with a refresh token.
+  const [how, setHow] = useState("redirect");
 
   const load = async () => {
     const { data } = await api.get("/integrations/zoho");
@@ -29,6 +33,10 @@ export default function ZohoIntegration({ canEdit = true }) {
     setForm(data);
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    api.get("/integrations/zoho/redirect-uri")
+      .then((r) => setRedirectUri(r.data.redirect_uri)).catch(() => {});
+  }, []);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -49,6 +57,17 @@ export default function ZohoIntegration({ canEdit = true }) {
     } catch (e) {
       toast.error(e.response?.data?.detail || "Could not save");
     } finally { setBusy(""); }
+  };
+
+  const approve = async () => {
+    setBusy("approve");
+    try {
+      const { data } = await api.get("/integrations/zoho/authorize");
+      window.location.href = data.url;
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not start the approval");
+      setBusy("");
+    }
   };
 
   const connect = async () => {
@@ -215,6 +234,42 @@ export default function ZohoIntegration({ canEdit = true }) {
 
       {/* Connect */}
       {canEdit && (
+        <div className="space-y-3">
+          <div className="inline-flex bg-muted rounded-lg p-1">
+            {[["redirect", "I have a Server-based app"],
+              ["code", "I have a Self Client"]].map(([v, l]) => (
+              <button key={v} onClick={() => setHow(v)}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium ${
+                        how === v ? "bg-background shadow-sm" : "text-muted-foreground"}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+
+          {how === "redirect" ? (
+            <div className="space-y-2">
+              <div className="space-y-1.5">
+                <Label className="text-xs">
+                  Add this to <em>Authorized Redirect URIs</em> in the Zoho console first
+                </Label>
+                <div className="flex gap-2">
+                  <Input readOnly value={redirectUri} className="font-mono text-xs" />
+                  <Button variant="outline" onClick={() => {
+                    navigator.clipboard?.writeText(redirectUri);
+                    toast.success("Copied — paste it into Zoho, press Update, then Approve");
+                  }}>Copy</Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  It must match character for character, and your Client ID and Secret must be
+                  saved here first.
+                </p>
+              </div>
+              <Button onClick={approve} disabled={busy === "approve"} className="gap-1.5">
+                {busy === "approve" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {cfg.connected ? "Approve again in Zoho" : "Approve in Zoho"}
+              </Button>
+            </div>
+          ) : (
         <div className="flex gap-2 items-end flex-wrap">
           <div className="flex-1 min-w-[220px] space-y-1.5">
             <Label className="text-xs">
@@ -230,6 +285,8 @@ export default function ZohoIntegration({ canEdit = true }) {
             {busy === "connect" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {cfg.connected ? "Reconnect" : "Connect"}
           </Button>
+        </div>
+          )}
           {cfg.connected && (
             <Button variant="outline" onClick={test} disabled={busy === "test"}>
               Test connection

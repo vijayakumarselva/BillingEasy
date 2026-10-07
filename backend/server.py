@@ -36,7 +36,7 @@ import jwt as pyjwt
 import httpx
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query, Body
 from fastapi import UploadFile, File
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel, Field, EmailStr
 from motor.motor_asyncio import AsyncIOMotorClient
 from starlette.middleware.cors import CORSMiddleware
@@ -4876,6 +4876,72 @@ async def zoho_save(body: ZohoSettingsIn, ctx=Depends(require_permission("settin
                   "client_secret_enc": encrypt_secret(secret),
                   "updated_at": now_iso()}}, upsert=True)
     return _zoho_public(await _zoho_settings(ctx["org_id"]))
+
+
+def _zoho_redirect_uri() -> str:
+    """The address Zoho sends the browser back to. It must be registered in the
+    API console exactly, character for character."""
+    base = (os.environ.get("BACKEND_PUBLIC_URL")
+            or "https://billingeasy-backend-production.up.railway.app").rstrip("/")
+    return f"{base}/api/integrations/zoho/callback"
+
+
+@api.get("/integrations/zoho/redirect-uri")
+async def zoho_redirect_uri(ctx=Depends(require_permission("settings.view"))):
+    """What to paste into Authorized Redirect URIs in the Zoho console."""
+    return {"redirect_uri": _zoho_redirect_uri()}
+
+
+@api.get("/integrations/zoho/authorize")
+async def zoho_authorize(ctx=Depends(require_permission("settings.edit"))):
+    """Start the approval flow for a Server-based Application."""
+    cfg = await _zoho_settings(ctx["org_id"])
+    if not cfg.get("client_id") or not cfg.get("client_secret"):
+        raise HTTPException(400, "Add your Zoho Client ID and Secret first, then Save")
+    redirect_uri = _zoho_redirect_uri()
+    # A short-lived signed state, so the callback knows which business approved
+    # it and nobody else can plant a token on them.
+    state = pyjwt.encode(
+        {"org_id": ctx["org_id"], "uid": ctx["user"]["id"],
+         "exp": now_dt() + timedelta(minutes=15)}, JWT_SECRET, algorithm=JWT_ALG)
+    return {"url": ZOHO.authorize_url(cfg, redirect_uri, state),
+            "redirect_uri": redirect_uri}
+
+
+@api.get("/integrations/zoho/callback")
+async def zoho_callback(code: str = "", state: str = "", error: str = "",
+                        request: Request = None):
+    """Where Zoho sends the browser back. Public by necessity — the signed
+    state is what proves who this belongs to."""
+    origin = "https://billingseasy.com"
+    def done(msg: str, ok: bool = True):
+        where = f"{origin}/settings?tab=integrations&zoho={'ok' if ok else 'error'}"
+        return HTMLResponse(
+            f"""<!doctype html><meta charset="utf-8">
+            <title>Zoho</title>
+            <body style="font-family:system-ui;padding:3rem;text-align:center">
+            <h2 style="color:{'#059669' if ok else '#DC2626'}">{msg}</h2>
+            <p><a href="{where}">Back to BillingsEasy</a></p>
+            <script>setTimeout(function(){{location.href={where!r}}},2500)</script>
+            </body>""", status_code=200 if ok else 400)
+
+    if error:
+        return done(f"Zoho refused the connection: {error}", ok=False)
+    try:
+        payload = pyjwt.decode(state, JWT_SECRET, algorithms=[JWT_ALG])
+    except pyjwt.PyJWTError:
+        return done("That approval link has expired. Start again from Settings.", ok=False)
+    org_id = payload.get("org_id")
+    cfg = await _zoho_settings(org_id)
+    try:
+        tokens = await ZOHO.exchange_code(cfg, code, redirect_uri=_zoho_redirect_uri())
+    except ZOHO.ZohoError as exc:
+        return done(str(exc), ok=False)
+    await db.integration_settings.update_one(
+        {"org_id": org_id, "id": ZOHO_SETTINGS_ID},
+        {"$set": {"refresh_token_enc": encrypt_secret(tokens["refresh_token"]),
+                  "connected_at": now_iso()}}, upsert=True)
+    return done("Connected to Zoho. You can close this tab.")
 
 
 class ZohoCodeIn(BaseModel):
