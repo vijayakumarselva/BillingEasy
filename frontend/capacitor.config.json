@@ -2,20 +2,25 @@
   "appId": "com.billingeasy.app",
   "appName": "BillingsEasy",
   "webDir": "build",
-  "server": {
-    "url": "https://billingseasy.com",
-    "cleartext": false
-  },
   "android": {
     "allowMixedContent": false,
     "captureInput": true,
     "webContentsDebuggingEnabled": false
   },
+  "ios": {
+    "contentInset": "always",
+    "backgroundColor": "#ffffff",
+    "scrollEnabled": true
+  },
   "plugins": {
     "SplashScreen": {
-      "launchShowDuration": 2000,
+      "launchShowDuration": 1200,
       "backgroundColor": "#1d4ed8",
-      "showSpinner": false
+      "showSpinner": false,
+      "launchAutoHide": true
+    },
+    "CapacitorHttp": {
+      "enabled": false
     }
   }
 }

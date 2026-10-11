@@ -962,6 +962,62 @@ async def change_password(body: ChangePasswordIn, user=Depends(get_current_user)
     return {"ok": True}
 
 
+class DeleteAccountIn(BaseModel):
+    password: str = ""
+    confirm: str = ""          # the user types DELETE, so a stray tap cannot do this
+
+
+@api.post("/auth/delete-account")
+async def delete_account(body: DeleteAccountIn, request: Request,
+                         user=Depends(get_current_user)):
+    """Close this login for good.
+
+    Apple requires an in-app way to delete an account (App Store Review
+    Guideline 5.1.1(v)), and it has to be real, not a support email.
+
+    What this does and does not touch matters legally. The *login* goes: the
+    user row, its sessions, devices and memberships. A business's books do not,
+    where someone else still works in them — and in any case section 36 of the
+    CGST Act requires invoices to be kept for 72 months. Where this was the
+    last member of a business, the business is marked closed and purged by the
+    retention job rather than deleted from under the records.
+    """
+    u = await db.users.find_one({"id": user["id"]})
+    if not u:
+        raise HTTPException(404, "Account not found")
+    if (body.confirm or "").strip().upper() != "DELETE":
+        raise HTTPException(400, 'Type DELETE to confirm')
+    # A password check, unless this login never had one (OTP / phone sign-in).
+    if u.get("password_hash"):
+        if not body.password or not verify_password(body.password, u["password_hash"]):
+            raise HTTPException(400, "Password is incorrect")
+
+    orphaned = []
+    async for m in db.memberships.find({"user_id": u["id"]}, {"_id": 0}):
+        others = await db.memberships.count_documents(
+            {"org_id": m["org_id"], "user_id": {"$ne": u["id"]}})
+        if others == 0:
+            orphaned.append(m["org_id"])
+
+    await db.memberships.delete_many({"user_id": u["id"]})
+    await db.sessions.delete_many({"user_id": u["id"]})
+    await db.devices.delete_many({"user_id": u["id"]})
+    for org_id in orphaned:
+        await db.organizations.update_one(
+            {"id": org_id},
+            {"$set": {"closed": True, "closed_at": now_iso(),
+                      "closed_reason": "owner deleted their account"}})
+
+    await audit_log(db, org_id=(orphaned[0] if orphaned else ""), user=user,
+                    action="auth.account.deleted", entity_type="user",
+                    entity_id=u["id"], metadata={"orgs_closed": orphaned},
+                    request=request)
+    await db.users.delete_one({"id": u["id"]})
+    return {"ok": True, "orgs_closed": len(orphaned),
+            "message": "Your account is deleted. Business records are kept for "
+                       "72 months as GST law requires, then removed."}
+
+
 @api.post("/auth/logout")
 async def logout(response: Response):
     response.delete_cookie("access_token", path="/")

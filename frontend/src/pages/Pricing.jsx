@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import axios from "axios";
 import { API_BASE } from "@/lib/api";
+import { isIosApp } from "@/lib/mobile";
 import { Check, X, Star, Sparkles, ChevronDown, ArrowRight, Zap } from "lucide-react";
 
 const BRAND = "#2563EB";
@@ -100,6 +101,14 @@ function PlanCard({ tier, yearly, founding, onPick }) {
         )}
       </p>
 
+      {isIosApp ? (
+        // Apple does not allow a plan to be sold outside In-App Purchase, nor a
+        // link out to buy one. In the iOS app the plans are shown for reference
+        // and the account is managed from a browser.
+        <div className="w-full text-center text-[12px] text-slate-500 border border-slate-200 rounded-xl py-2.5 px-3">
+          {isFree ? "Included" : "Manage your plan from a web browser"}
+        </div>
+      ) : (
       <button
         onClick={() => onPick(tier, yearly)}
         className={`w-full font-semibold py-2.5 rounded-xl text-sm transition-colors ${
@@ -110,6 +119,7 @@ function PlanCard({ tier, yearly, founding, onPick }) {
       >
         {isFree ? "Start free" : `Choose ${tier.name}`}
       </button>
+      )}
 
       <ul className="space-y-2.5 mt-6">
         <li className="flex items-start gap-2 text-[13px] text-slate-700 font-medium">

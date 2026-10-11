@@ -389,3 +389,18 @@ body {
 }
 .fkey-item:hover { background: hsl(158 50% 25%); color: white; }
 .fkey-item .fkey-label { color: hsl(158 40% 75%); font-weight: 700; }
+
+/* Native app: an offline banner, so a tap that cannot reach the server is
+   explained before it fails rather than after. */
+body.is-offline::before {
+  content: "No internet connection";
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 100000;
+  padding: calc(env(safe-area-inset-top, 0px) + 6px) 12px 6px;
+  background: #b91c1c;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}

@@ -1,6 +1,19 @@
 // Mobile / Capacitor detection and safe browser/download helpers
+//
+// On a real device a blob: URL means nothing outside the webview, so
+// `window.open(url, "_system")` hands the OS something it cannot open. Native
+// builds therefore write the bytes to the app's own storage and raise the
+// share sheet, which is what lets someone save an invoice to Files, mail it,
+// or send it on WhatsApp.
+import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
+import { Browser } from "@capacitor/browser";
 
 export const isCapacitor = typeof window !== "undefined" && !!(window.Capacitor?.isNativePlatform?.());
+/** Running inside the iOS app specifically — where Apple's rules on
+ *  in-app purchase and outbound payment links apply. */
+export const isIosApp = isCapacitor &&
+  (window.Capacitor?.getPlatform?.() === "ios");
 export const isMobileApp = isCapacitor || /Android|iPhone|iPad/i.test(navigator.userAgent);
 
 /**
@@ -45,7 +58,11 @@ export function openPrintWindow(htmlContent) {
  */
 export function openExternalUrl(url) {
   if (isCapacitor) {
-    window.open(url, "_system");
+    // An in-app Safari view: the user keeps our app, and Apple is satisfied
+    // that outbound links are not navigating the app itself away.
+    Browser.open({ url, presentationStyle: "popover" }).catch(() => {
+      window.open(url, "_system");
+    });
   } else {
     window.open(url, "_blank", "noopener,noreferrer");
   }
@@ -55,10 +72,22 @@ export function openExternalUrl(url) {
  * Download a file from a blob/data-URI.
  * On Capacitor anchor-click downloads don't work — open in system browser instead.
  */
-export function downloadFile(url, filename) {
+export async function downloadFile(url, filename) {
   if (isCapacitor) {
-    window.open(url, "_system");
-  } else {
+    const name = filename || "download";
+    try {
+      const base64 = await toBase64(url);
+      const { uri } = await Filesystem.writeFile({
+        path: name, data: base64, directory: Directory.Cache,
+      });
+      await Share.share({ title: name, url: uri });
+    } catch (e) {
+      // Nothing to save is worse than an untidy fallback.
+      try { await Browser.open({ url }); } catch { window.open(url, "_system"); }
+    }
+    return;
+  }
+  {
     const a = document.createElement("a");
     a.href = url;
     a.download = filename || "download";
@@ -92,4 +121,34 @@ export function downloadOrShowPng(dataUri, filename) {
     a.href = dataUri;
     a.click();
   }
+}
+
+
+/** A blob:, data: or http(s): URL as bare base64, for Filesystem.writeFile. */
+async function toBase64(url) {
+  const blob = url.startsWith("data:") || url.startsWith("blob:")
+    ? await (await fetch(url)).blob()
+    : await (await fetch(url, { credentials: "include" })).blob();
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Save text (CSV, JSON) and offer it to the share sheet on a device. */
+export async function saveTextFile(text, filename, mime = "text/plain") {
+  if (isCapacitor) {
+    try {
+      const { uri } = await Filesystem.writeFile({
+        path: filename, data: text, directory: Directory.Cache, encoding: Encoding.UTF8,
+      });
+      await Share.share({ title: filename, url: uri });
+      return;
+    } catch { /* fall through to the browser path */ }
+  }
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  await downloadFile(url, filename);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

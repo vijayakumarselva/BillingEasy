@@ -24,6 +24,7 @@ import BookingChannelIntegration from "@/components/BookingChannelIntegration";
 import SplitCompany from "@/components/SplitCompany";
 import GstFilingSettings from "@/components/GstFilingSettings";
 import ZohoIntegration from "@/components/ZohoIntegration";
+import DeleteAccountCard from "@/components/DeleteAccountCard";
 import WebsiteApiKey from "@/components/WebsiteApiKey";
 
 export default function Settings() {
@@ -453,6 +454,7 @@ export default function Settings() {
 
         <TabsContent value="security">
           <ChangePasswordCard />
+          <DeleteAccountCard />
         </TabsContent>
 
         <TabsContent value="invoice">
