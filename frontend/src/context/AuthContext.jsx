@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import api from "@/lib/api";
+import { rememberSession, forgetSession, clearCache } from "@/lib/offline";
 
 const AuthCtx = createContext(null);
 
@@ -50,6 +51,7 @@ export function AuthProvider({ children }) {
     if (data.refresh_token) localStorage.setItem("be_refresh", data.refresh_token);
     setUser({ id: data.id, email: data.email, name: data.name });
     if (data.org_id) setOrgId(data.org_id);
+    rememberSession();
     await loadOrgs();
     return data;
   };
@@ -59,6 +61,7 @@ export function AuthProvider({ children }) {
     if (data.refresh_token) localStorage.setItem("be_refresh", data.refresh_token);
     setUser({ id: data.id, email: data.email, name: data.name });
     if (data.org_id) setOrgId(data.org_id);
+    rememberSession();
     await loadOrgs();
     return data;
   };
@@ -68,6 +71,8 @@ export function AuthProvider({ children }) {
     localStorage.removeItem("be_refresh");
     localStorage.removeItem("be_org_id");
     setUser(null); setOrgs([]); setOrgIdState(null);
+    // Nothing of this account may survive a sign-out on a shared phone.
+    forgetSession(); clearCache();
   };
   const switchOrg = (id) => setOrgId(id);
 

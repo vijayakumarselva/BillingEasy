@@ -13,7 +13,9 @@
  *   compact     — smaller variant (used inside dialogs)
  */
 import { useRef, useState } from "react";
-import { Upload } from "lucide-react";
+import { Upload, Camera, Images } from "lucide-react";
+import { canTakePhoto, takePhoto, wasDenied } from "@/lib/camera";
+import { toast } from "sonner";
 
 export default function DropZone({
   accept = "*",
@@ -54,6 +56,24 @@ export default function DropZone({
     e.target.value = "";
   };
 
+  // Inside the app, a bill is almost always photographed rather than found in
+  // a folder, so the camera is offered first.
+  const photoAllowed = canTakePhoto && /image|\*/.test(accept);
+
+  const shoot = async (e, source) => {
+    e.stopPropagation();          // not a tap on the drop zone behind it
+    if (disabled) return;
+    try {
+      const f = await takePhoto(source);
+      if (f) onFile(f);
+    } catch (err) {
+      if (wasDenied(err)) {
+        toast.error("Camera access is off — turn it on in Settings › BillingsEasy");
+      }
+      // Backing out of the camera throws too; that needs no message.
+    }
+  };
+
   const py = compact ? "py-4" : "py-8";
   const iconSize = compact ? "h-7 w-7" : "h-10 w-10";
   const textSize = compact ? "text-sm" : "text-base";
@@ -85,6 +105,21 @@ export default function DropZone({
         onChange={handleChange}
         disabled={disabled}
       />
+
+      {photoAllowed && !file && !dragging && (
+        <div className="flex gap-2 mb-1">
+          <button type="button" onClick={(e) => shoot(e, "camera")} disabled={disabled}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-sm font-semibold px-3.5 py-2 active:bg-blue-700"
+            data-testid="dropzone-camera">
+            <Camera className="h-4 w-4" /> Take photo
+          </button>
+          <button type="button" onClick={(e) => shoot(e, "photos")} disabled={disabled}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 text-sm font-medium px-3.5 py-2"
+            data-testid="dropzone-photos">
+            <Images className="h-4 w-4" /> Photos
+          </button>
+        </div>
+      )}
 
       {dragging ? (
         <>

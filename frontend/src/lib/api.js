@@ -1,5 +1,6 @@
 // Centralized API client with auth + active org + refresh-token retry
 import axios from "axios";
+import { cacheResponse, cachedResponse, rememberSession } from "@/lib/offline";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API_BASE = `${BACKEND_URL}/api`;
@@ -30,14 +31,19 @@ async function tryRefresh() {
   const refresh = localStorage.getItem("be_refresh");
   if (!refresh) return null;
   refreshing = axios.post(`${API_BASE}/auth/refresh`, { refresh_token: refresh })
-    .then(r => { localStorage.setItem("be_token", r.data.token); return r.data.token; })
+    .then(r => { localStorage.setItem("be_token", r.data.token); rememberSession(); return r.data.token; })
     .catch(() => null)
     .finally(() => { refreshing = null; });
   return refreshing;
 }
 
 api.interceptors.response.use(
-  (r) => r,
+  (r) => {
+    if ((r.config?.method || "get").toLowerCase() === "get") {
+      cacheResponse(r.config.url, r.config.headers?.["X-Org-Id"], r.data);
+    }
+    return r;
+  },
   async (err) => {
     // FastAPI 422s send `detail` as an array of {type, loc, msg, input} objects.
     // Pages pass `detail` straight into toast.error(), and rendering an object
@@ -59,6 +65,7 @@ api.interceptors.response.use(
       }
       localStorage.removeItem("be_token");
       localStorage.removeItem("be_refresh");
+      rememberSession();
       if (!window.location.pathname.startsWith("/login")) window.location.href = "/login";
     }
     // A plan limit is not an error page — it is an upgrade prompt. Hand the
@@ -70,6 +77,18 @@ api.interceptors.response.use(
         err.planLimit = d;
       } else if (!window.location.pathname.startsWith("/billing")) {
         window.location.href = "/billing";
+      }
+    }
+    // No response at all means no network (or a dead server). For a read, the
+    // figures from last time beat an empty screen — pages can tell, because
+    // `fromCache` is set and `cachedAt` says how old they are.
+    if (!err.response && (original.method || "get").toLowerCase() === "get") {
+      const hit = cachedResponse(original.url, original.headers?.["X-Org-Id"]);
+      if (hit) {
+        return Promise.resolve({
+          data: hit.data, status: 200, statusText: "OK (offline)",
+          headers: {}, config: original, fromCache: true, cachedAt: hit.at,
+        });
       }
     }
     return Promise.reject(err);

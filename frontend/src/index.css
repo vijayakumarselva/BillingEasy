@@ -404,3 +404,58 @@ body.is-offline::before {
   font-weight: 600;
   text-align: center;
 }
+
+/* ── Native shell ─────────────────────────────────────────────────────────
+   Applied only when Capacitor is running (lib/native.js sets .is-native), so
+   the website keeps normal browser behaviour. These are the details that
+   otherwise give a webview away.                                           */
+body.is-native {
+  /* A long-press should not raise the web text selection magnifier. */
+  -webkit-user-select: none;
+  user-select: none;
+  /* Nor the "Copy / Look Up / Share" callout on any tappable thing. */
+  -webkit-touch-callout: none;
+  /* No grey flash behind taps — iOS apps do not do that. */
+  -webkit-tap-highlight-color: transparent;
+  /* Stop the whole page rubber-banding away from the status bar. */
+  overscroll-behavior-y: none;
+  /* The system font, so the app matches everything else on the phone. */
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+               system-ui, sans-serif;
+}
+
+/* Text people need to read, copy or correct stays selectable. */
+body.is-native input,
+body.is-native textarea,
+body.is-native [contenteditable],
+body.is-native .selectable {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* iOS zooms the page when a font under 16px takes focus. */
+body.is-native input,
+body.is-native textarea,
+body.is-native select {
+  font-size: max(16px, 1rem);
+}
+
+/* Scrolling panes keep momentum rather than stopping dead. */
+body.is-native .overflow-auto,
+body.is-native .overflow-y-auto,
+body.is-native .overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Apple asks for a 44pt target; a dense table's icon buttons are smaller. */
+body.is-native button,
+body.is-native [role="button"],
+body.is-native a.btn {
+  min-height: 44px;
+  min-width: 44px;
+}
+body.is-native .table-actions button {
+  min-height: 38px;
+  min-width: 38px;
+}

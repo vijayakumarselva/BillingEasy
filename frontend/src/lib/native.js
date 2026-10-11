@@ -7,6 +7,11 @@ import { isCapacitor, isIosApp } from "@/lib/mobile";
 export async function startNative() {
   if (!isCapacitor) return;
 
+  // Lets the stylesheet drop the browser-isms (selection magnifier, tap
+  // highlight, rubber-band scroll) only where we are really an app.
+  document.body.classList.add("is-native");
+  if (isIosApp) document.body.classList.add("is-ios");
+
   try {
     const { StatusBar, Style } = await import("@capacitor/status-bar");
     // The header is a dark blue, so the clock and battery need to be light.
