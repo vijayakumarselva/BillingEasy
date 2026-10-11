@@ -27,10 +27,13 @@ export async function startNative() {
   try {
     const { App } = await import("@capacitor/app");
     // Android's hardware back button should walk our history, not quit.
-    App.addListener("backButton", ({ canGoBack }) => {
-      if (canGoBack) window.history.back();
-      else App.exitApp();
-    });
+    // iOS has no such button and Capacitor's proxy throws if we ask for it.
+    if (!isIosApp) {
+      App.addListener("backButton", ({ canGoBack }) => {
+        if (canGoBack) window.history.back();
+        else App.exitApp();
+      });
+    }
     // A deep link (billingseasy.com/sales/123) opens the right screen.
     App.addListener("appUrlOpen", ({ url }) => {
       try {

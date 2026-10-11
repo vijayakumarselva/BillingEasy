@@ -7,6 +7,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import Login from "@/pages/Login";
 import Register from "@/pages/Register";
 import Landing from "@/pages/Landing";
+import { isCapacitor } from "@/lib/mobile";
 import AppLayout from "@/layouts/AppLayout";
 import Dashboard from "@/pages/Dashboard";
 import Parties from "@/pages/Parties";
@@ -133,9 +134,15 @@ function Public({ children }) {
 function LandingOrDashboard() {
   // Logged-out users see the marketing landing page; everyone else goes to
   // wherever their role belongs.
+  //
+  // Except in the app: someone who has installed it does not need to be sold
+  // the product, and a reviewer who opens it onto a marketing page with a
+  // "Watch Demo" button concludes they are looking at a website in a wrapper.
+  // The app opens where work happens — the books, or the sign-in.
   const { user, loading } = useAuth();
   if (loading) return null;
   if (user) return <RoleHome />;
+  if (isCapacitor) return <Navigate to="/login" replace />;
   return <Landing />;
 }
 

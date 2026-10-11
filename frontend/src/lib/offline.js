@@ -13,39 +13,44 @@ const SESSION_KEYS = ["be_token", "be_refresh", "be_org_id", "be_user"];
 const CACHE_PREFIX = "be_cache:";
 const CACHE_MAX = 60;                 // newest N responses, oldest dropped
 
+// A Capacitor plugin is a Proxy that answers every property with a function,
+// `then` included — so it looks like a thenable. Resolving a promise with one
+// (`return Prefs` from an async function, or `await Prefs`) makes JavaScript
+// call `Preferences.then()`, which throws "not implemented on ios" and takes
+// the whole boot down with it. Never let the plugin object cross an await.
 let Prefs = null;
-async function prefs() {
-  if (!isCapacitor) return null;
-  if (!Prefs) ({ Preferences: Prefs } = await import("@capacitor/preferences"));
-  return Prefs;
+async function loadPrefs() {
+  if (!isCapacitor) return false;
+  if (!Prefs) {
+    const mod = await import("@capacitor/preferences");
+    Prefs = mod.Preferences;
+  }
+  return !!Prefs;
 }
 
 /** Put the session back before anything reads localStorage. */
 export async function restoreSession() {
-  const p = await prefs();
-  if (!p) return;
+  if (!(await loadPrefs())) return;
   for (const key of SESSION_KEYS) {
     if (localStorage.getItem(key)) continue;        // the webview still has it
-    const { value } = await p.get({ key });
+    const { value } = await Prefs.get({ key });
     if (value) localStorage.setItem(key, value);
   }
 }
 
 /** Keep the durable copy in step with localStorage. */
 export async function rememberSession() {
-  const p = await prefs();
-  if (!p) return;
+  if (!(await loadPrefs())) return;
   for (const key of SESSION_KEYS) {
     const value = localStorage.getItem(key);
-    if (value) await p.set({ key, value });
-    else await p.remove({ key });
+    if (value) await Prefs.set({ key, value });
+    else await Prefs.remove({ key });
   }
 }
 
 export async function forgetSession() {
-  const p = await prefs();
-  if (!p) return;
-  for (const key of SESSION_KEYS) await p.remove({ key });
+  if (!(await loadPrefs())) return;
+  for (const key of SESSION_KEYS) await Prefs.remove({ key });
 }
 
 const cacheKey = (url, orgId) => `${CACHE_PREFIX}${orgId || "-"}:${url}`;
