@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useRef } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -168,6 +168,9 @@ export default function InvoiceCreate() {
   const nav = useNavigate();
   const { id: editId } = useParams();
   const isEdit = !!editId;
+  // /sales/new?clone=<id> — start from an existing invoice rather than blank.
+  const [searchParams] = useSearchParams();
+  const cloneId = searchParams.get("clone") || "";
 
   const [biz, setBiz]           = useState({});
   const [parties, setParties]   = useState([]);
@@ -246,18 +249,27 @@ export default function InvoiceCreate() {
   }, []);
 
   useEffect(() => {
-    if (!editId) return;
-    api.get(`/invoices/${editId}`).then(r => {
+    const sourceId = editId || cloneId;
+    if (!sourceId) return;
+    const cloning = !editId;
+    api.get(`/invoices/${sourceId}`).then(r => {
       const inv = r.data;
       setPartyId(inv.party_id || "");
-      setInvoiceDate(inv.invoice_date || todayISO());
-      setDueDate(inv.due_date || todayISO());
+      // A clone is a new bill today, not a copy of an old date.
+      setInvoiceDate(cloning ? todayISO() : (inv.invoice_date || todayISO()));
+      setDueDate(cloning ? todayISO() : (inv.due_date || todayISO()));
       setType(inv.type || "sale");
-      setStatus(inv.status || "finalized");
+      // A copy has not been dispatched, delivered, paid, voided or cancelled —
+      // whatever happened to the original did not happen to this one.
+      setStatus(cloning
+        ? (inv.status === "draft" ? "draft" : "finalized")
+        : (inv.status || "finalized"));
       setInvoiceCategory(inv.invoice_category || "stock");
       setWarehouseId(inv.warehouse_id || "");
       setCustomerNotes(inv.notes || "");
-      setOrderNo(inv.po_number || "");
+      // A purchase-order number belongs to the order it came from, so a clone
+      // starts without one rather than quietly repeating it.
+      setOrderNo(cloning ? "" : (inv.po_number || ""));
       setBranchId(inv.branch_id || "");
       if (inv.shipping_address) {
         setShipText(inv.shipping_address);
@@ -273,8 +285,9 @@ export default function InvoiceCreate() {
         hsn: it.hsn || "", qty: it.qty, unit: it.unit || "NOS",
         rate: it.rate, discount_pct: it.discount_pct || 0, gst_rate: it.gst_rate ?? 5, stock: null,
       })));
+      if (cloning) toast.success(`Copied from ${inv.invoice_no} — check the details and save`);
     }).catch(() => toast.error("Failed to load invoice"));
-  }, [editId]);
+  }, [editId, cloneId]);
 
   // Handle terms change → auto-set due date
   const handleTermsChange = (t) => {
@@ -444,7 +457,7 @@ export default function InvoiceCreate() {
             <ArrowLeft className="h-5 w-5" />
           </button>
           <h1 className="text-lg font-semibold">
-            {isEdit ? "Edit" : "New"} {TYPE_OPTS.find(t => t.value === type)?.label || "Invoice"}
+            {isEdit ? "Edit" : cloneId ? "Copy of" : "New"} {TYPE_OPTS.find(t => t.value === type)?.label || "Invoice"}
           </h1>
         </div>
         <div className="flex items-center gap-2">

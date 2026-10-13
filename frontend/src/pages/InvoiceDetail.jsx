@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, FileDown, Share2, Wallet, ArrowRightLeft, FileJson, AlertTriangle, CheckCircle2, Pencil, Truck, ChevronDown, FileCheck2 } from "lucide-react";
+import { ArrowLeft, FileDown, Share2, Wallet, ArrowRightLeft, FileJson, AlertTriangle, CheckCircle2, Pencil, Truck, ChevronDown, FileCheck2, Copy } from "lucide-react";
 import { inr, fmtDate, todayISO } from "@/lib/format";
 import { openExternalUrl, downloadFile } from "@/lib/mobile";
 
@@ -195,6 +195,11 @@ export default function InvoiceDetail() {
               )}
             </div>
           </div>
+          <Button variant="outline" onClick={() => nav(`/sales/new?clone=${id}`)}
+            data-testid="clone-invoice-button"
+            className="border-violet-400/60 text-violet-700 hover:bg-violet-50 dark:hover:bg-violet-950/30">
+            <Copy className="h-4 w-4 mr-1.5" /> Duplicate
+          </Button>
           {inv.type === "quotation" && <Button variant="outline" onClick={convertQuote} data-testid="convert-quote-button"><ArrowRightLeft className="h-4 w-4 mr-1.5" /> Convert to Invoice</Button>}
           {inv.due > 0 && inv.type === "sale" && <Button onClick={() => setPayOpen(true)} className="bg-emerald-600 hover:bg-emerald-700" data-testid="record-payment-button"><Wallet className="h-4 w-4 mr-1.5" /> Record Payment</Button>}
           <Button variant="outline" onClick={async () => {

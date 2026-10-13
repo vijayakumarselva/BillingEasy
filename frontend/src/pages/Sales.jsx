@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Ban, Eye, FileDown, Share2, ChevronRight, FileText, Pencil, ChevronDown, IndianRupee, Truck, Upload } from "lucide-react";
+import { Plus, Search, Ban, Eye, FileDown, Share2, ChevronRight, FileText, Pencil, ChevronDown, IndianRupee, Truck, Upload, Copy } from "lucide-react";
 import EwayBillDialog from "@/components/EwayBillDialog";
 import { PaymentDialog } from "@/pages/Payments";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -246,6 +246,11 @@ export default function Sales() {
                     className="w-8 h-8 flex items-center justify-center rounded-lg bg-green-50 dark:bg-green-900/20 hover:bg-green-100">
                     <Share2 className="w-3.5 h-3.5 text-green-600" />
                   </button>
+                  <button onClick={(e) => { e.stopPropagation(); nav(`/sales/new?clone=${inv.id}`); }}
+                    title="Make a copy"
+                    className="w-8 h-8 flex items-center justify-center rounded-lg bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100">
+                    <Copy className="w-3.5 h-3.5 text-violet-600" />
+                  </button>
                 </div>
               </div>
             ))
@@ -331,6 +336,12 @@ export default function Sales() {
                       {inv.status !== "cancelled" && inv.status !== "void" && (
                         <Button size="icon" variant="ghost" onClick={() => nav(`/sales/${inv.id}/edit`)} title="Edit"><Pencil className="h-4 w-4 text-blue-500" /></Button>
                       )}
+                      <Button size="icon" variant="ghost" title="Make a copy of this invoice"
+                        onClick={() => nav(`/sales/new?clone=${inv.id}`)}
+                        className="text-violet-600 hover:text-violet-700 hover:bg-violet-50"
+                        data-testid="clone-invoice">
+                        <Copy className="h-4 w-4" />
+                      </Button>
                       {inv.type === "sale" && !["cancelled", "void", "draft"].includes(inv.status) && (
                         <Button size="icon" variant="ghost" title="Generate E-Way Bill"
                           onClick={() => setEwbTarget(inv)}
