@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import { inr, inrShort, fmtDate } from "@/lib/format";
@@ -18,6 +18,7 @@ import { useAuth } from "@/context/AuthContext";
 export default function Dashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const nav = useNavigate();
   const { currentOrg } = useAuth();
   const role = currentOrg?.role;
@@ -41,22 +42,41 @@ export default function Dashboard() {
     }
   }, [role, nav]);
 
-  useEffect(() => {
+  // A dashboard that cannot load must say so. Rendering `data?.x || 0` on a
+  // failed request paints a confident ₹0 across every card, which reads as
+  // "you have no business" rather than "this did not load".
+  const load = useCallback(() => {
     const endpoint = bizMode === "pos" ? "/dashboard/pos" : "/dashboard";
-    api.get(endpoint).then(r => setData(r.data)).finally(() => setLoading(false));
+    setLoading(true);
+    setError("");
+    api.get(endpoint)
+      .then((r) => { setData(r.data); setError(""); })
+      .catch((e) => {
+        const status = e?.response?.status;
+        const detail = e?.response?.data?.detail;
+        setData(null);
+        setError(
+          !e?.response ? "No connection to the server."
+          : status === 403 ? "You do not have access to these figures."
+          : typeof detail === "string" ? detail
+          : `The server returned an error (${status || "unknown"}).`);
+      })
+      .finally(() => setLoading(false));
   }, [bizMode]);
+
+  useEffect(() => { load(); }, [load]);
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const today = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
 
   const metrics = [
-    { key: "sales_total",    label: "Sales",      icon: TrendingUp,      color: "bg-emerald-500", light: "bg-emerald-50 dark:bg-emerald-950/40", text: "text-emerald-600 dark:text-emerald-400" },
-    { key: "purchase_total", label: "Purchases",  icon: ShoppingCart,    color: "bg-blue-500",    light: "bg-blue-50 dark:bg-blue-950/40",       text: "text-blue-600 dark:text-blue-400" },
-    { key: "receivable",     label: "Receivable", icon: ArrowDownToLine, color: "bg-amber-500",   light: "bg-amber-50 dark:bg-amber-950/40",     text: "text-amber-600 dark:text-amber-400" },
-    { key: "payable",        label: "Payable",    icon: ArrowUpFromLine, color: "bg-red-500",     light: "bg-red-50 dark:bg-red-950/40",         text: "text-red-600 dark:text-red-400" },
-    { key: "gst_payable",    label: "GST",        icon: Landmark,        color: "bg-violet-500",  light: "bg-violet-50 dark:bg-violet-950/40",   text: "text-violet-600 dark:text-violet-400" },
-    { key: "net_profit",     label: "Net Profit", icon: PiggyBank,       color: "bg-cyan-500",    light: "bg-cyan-50 dark:bg-cyan-950/40",       text: "text-cyan-600 dark:text-cyan-400" },
+    { key: "sales_total",    period: "This month", label: "Sales",      icon: TrendingUp,      color: "bg-emerald-500", light: "bg-emerald-50 dark:bg-emerald-950/40", text: "text-emerald-600 dark:text-emerald-400" },
+    { key: "purchase_total", period: "This month", label: "Purchases",  icon: ShoppingCart,    color: "bg-blue-500",    light: "bg-blue-50 dark:bg-blue-950/40",       text: "text-blue-600 dark:text-blue-400" },
+    { key: "receivable",     period: "Outstanding", label: "Receivable", icon: ArrowDownToLine, color: "bg-amber-500",   light: "bg-amber-50 dark:bg-amber-950/40",     text: "text-amber-600 dark:text-amber-400" },
+    { key: "payable",        period: "Outstanding", label: "Payable",    icon: ArrowUpFromLine, color: "bg-red-500",     light: "bg-red-50 dark:bg-red-950/40",         text: "text-red-600 dark:text-red-400" },
+    { key: "gst_payable",    period: "This month", label: "GST",        icon: Landmark,        color: "bg-violet-500",  light: "bg-violet-50 dark:bg-violet-950/40",   text: "text-violet-600 dark:text-violet-400" },
+    { key: "net_profit",     period: "This month", label: "Net Profit", icon: PiggyBank,       color: "bg-cyan-500",    light: "bg-cyan-50 dark:bg-cyan-950/40",       text: "text-cyan-600 dark:text-cyan-400" },
   ];
 
   const quickActions = [
@@ -68,8 +88,32 @@ export default function Dashboard() {
 
   if (bizMode === "pos") return <POSDashboard data={data} loading={loading} orgName={currentOrg?.name} today={today} greeting={greeting} nav={nav} />;
 
+  // Shown above both layouts, so a failure is never mistaken for zero takings.
+  const errorBanner = error ? (
+    <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 dark:bg-rose-950/20 p-4"
+         data-testid="dashboard-error">
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold text-rose-800 dark:text-rose-300 text-sm">
+            Your figures could not be loaded
+          </p>
+          <p className="text-xs text-rose-700/80 dark:text-rose-300/80 mt-0.5">
+            {error} The ₹0 below is not your real position — your invoices and
+            payments are untouched.
+          </p>
+          <button onClick={load}
+            className="mt-2.5 text-xs font-semibold bg-rose-600 text-white rounded-lg px-3 py-1.5 hover:bg-rose-700">
+            Try again
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   return (
     <div data-testid="dashboard-page">
+      {errorBanner}
 
       {/* ══════════ MOBILE LAYOUT ══════════ */}
       <div className="md:hidden space-y-4 pb-2">
@@ -93,7 +137,7 @@ export default function Dashboard() {
                 : <p className="text-lg font-bold text-gray-900 dark:text-white">{inrShort(data?.[m.key] || 0)}</p>
               }
               <p className={`text-xs font-medium ${m.text}`}>{m.label}</p>
-              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">This month</p>
+              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{m.period}</p>
             </div>
           ))}
         </div>
@@ -110,7 +154,7 @@ export default function Dashboard() {
                 : <p className="text-lg font-bold text-gray-900 dark:text-white">{inrShort(data?.[m.key] || 0)}</p>
               }
               <p className={`text-xs font-medium ${m.text}`}>{m.label}</p>
-              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">This month</p>
+              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{m.period}</p>
             </div>
           ))}
         </div>
@@ -261,7 +305,7 @@ export default function Dashboard() {
               </div>
               <div className="px-2 py-2 bg-card">
                 {loading ? <Skeleton className="h-5 w-16" /> : <div className="font-mono text-sm font-bold">{inrShort(data?.[m.key] || 0)}</div>}
-                <div className="text-[10px] text-muted-foreground mt-0.5">This month</div>
+                <div className="text-[10px] text-muted-foreground mt-0.5">{m.period}</div>
               </div>
             </div>
           ))}

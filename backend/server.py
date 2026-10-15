@@ -5392,7 +5392,7 @@ async def compute_party_balance(pid: str, org_id: str) -> float:
     if not party:
         return 0
     bal = party.get("opening_balance", 0)
-    if party["type"] == "customer":
+    if party.get("type") == "customer":
         inv_agg = await db.invoices.aggregate([
             {"$match": {"party_id": pid, "org_id": org_id}},
             {"$group": {"_id": None, "total": {"$sum": "$totals.grand_total"}}},
@@ -5517,7 +5517,7 @@ async def party_ledger(pid: str, ctx=Depends(get_org_ctx)):
     party = await db.parties.find_one(org_filter(ctx, {"id": pid}), {"_id": 0})
     if not party: raise HTTPException(404, "Not found")
     txns = []
-    if party["type"] == "customer":
+    if party.get("type") == "customer":
         async for i in db.invoices.find(org_filter(ctx, {"party_id": pid}), {"_id": 0}):
             txns.append({"date": i["invoice_date"], "type": "Invoice", "ref": i["invoice_no"],
                          "debit": i["totals"]["grand_total"], "credit": 0, "id": i["id"]})
@@ -7635,8 +7635,10 @@ async def dashboard(ctx=Depends(get_org_ctx)):
     # Bulk receivable / payable
     parties_all = await db.parties.find({"org_id": oid}, {"_id": 0, "id": 1, "type": 1, "opening_balance": 1}).to_list(2000)
     balances = await bulk_party_balances(oid, parties_all)
-    receivable = sum(balances[p["id"]] for p in parties_all if p["type"] == "customer")
-    payable = sum(balances[p["id"]] for p in parties_all if p["type"] == "supplier")
+    # .get, not [] — one legacy party saved without a type must not 500 the
+    # whole dashboard, which then renders as a confident ₹0 everywhere.
+    receivable = sum(balances[p["id"]] for p in parties_all if p.get("type") == "customer")
+    payable = sum(balances[p["id"]] for p in parties_all if p.get("type") == "supplier")
 
     # Sales last 6 months (one aggregation grouping by year-month)
     six_months_ago_str = (today.replace(day=1) - timedelta(days=180)).strftime("%Y-%m-%d")
@@ -7864,8 +7866,10 @@ async def trial_balance(ctx=Depends(get_org_ctx)):
     # Bulk party balances
     parties_all = await db.parties.find({"org_id": oid}, {"_id": 0, "id": 1, "type": 1, "opening_balance": 1}).to_list(2000)
     balances = await bulk_party_balances(oid, parties_all)
-    receivable = sum(balances[p["id"]] for p in parties_all if p["type"] == "customer")
-    payable = sum(balances[p["id"]] for p in parties_all if p["type"] == "supplier")
+    # .get, not [] — one legacy party saved without a type must not 500 the
+    # whole dashboard, which then renders as a confident ₹0 everywhere.
+    receivable = sum(balances[p["id"]] for p in parties_all if p.get("type") == "customer")
+    payable = sum(balances[p["id"]] for p in parties_all if p.get("type") == "supplier")
 
     rows = [
         {"account": "Sales", "debit": 0, "credit": round(sales, 2)},
@@ -8395,7 +8399,7 @@ async def balance_sheet(ctx=Depends(get_org_ctx)):
     parties_all = await db.parties.find({"org_id": oid}, {"_id": 0, "id": 1, "type": 1, "opening_balance": 1}).to_list(2000)
     balances = await bulk_party_balances(oid, parties_all)
     for p in parties_all:
-        if p["type"] == "customer": receivable += balances[p["id"]]
+        if p.get("type") == "customer": receivable += balances[p["id"]]
         else: payable += balances[p["id"]]
     stock_value = 0
     async for prod in db.products.find({"org_id": oid}, {"_id": 0, "stock": 1, "purchase_price": 1}):
