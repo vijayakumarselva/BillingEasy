@@ -44,18 +44,19 @@ const STATES = [
   { name:"Puducherry",code:"34"}, { name:"Chandigarh",code:"04"},
 ];
 
+// Must agree with calc_invoice_totals() on the server, or the screen and the
+// saved invoice disagree. Inclusive means the rate already contains GST, so
+// the taxable value is backed out of it — including the discount, which is
+// money off an inclusive price and has to be converted the same way.
 function calcLine(it, taxMode, sameState) {
+  const g = it.gst_rate || 0;
+  const divisor = taxMode === "inclusive" && g ? 1 + g / 100 : 1;
   const gross = it.qty * it.rate;
   const d = gross * ((it.discount_pct || 0) / 100);
-  let taxable, gstAmt;
-  if (taxMode === "inclusive") {
-    taxable = gross / (1 + it.gst_rate / 100) - d;
-  } else {
-    taxable = gross - d;
-  }
-  gstAmt = taxable * (it.gst_rate / 100);
-  const lineTotal = taxMode === "inclusive" ? gross - d : taxable + gstAmt;
-  return { taxable, gstAmt, lineTotal };
+  const taxable = (gross - d) / divisor;
+  const gstAmt = taxable * (g / 100);
+  return { taxable, gstAmt, lineTotal: taxable + gstAmt, grossEx: gross / divisor,
+           discountEx: d / divisor };
 }
 
 // ── Section wrapper ──────────────────────────────────────────────────────────
@@ -259,6 +260,7 @@ export default function InvoiceCreate() {
       setInvoiceDate(cloning ? todayISO() : (inv.invoice_date || todayISO()));
       setDueDate(cloning ? todayISO() : (inv.due_date || todayISO()));
       setType(inv.type || "sale");
+      setTaxMode(inv.tax_inclusive || inv.totals?.tax_inclusive ? "inclusive" : "exclusive");
       // A copy has not been dispatched, delivered, paid, voided or cancelled —
       // whatever happened to the original did not happen to this one.
       setStatus(cloning
@@ -362,17 +364,10 @@ export default function InvoiceCreate() {
   const totals = useMemo(() => {
     let subtotal = 0, discount = 0, taxable = 0, cgst = 0, sgst = 0, igst = 0;
     items.forEach(it => {
-      const gross = it.qty * it.rate;
-      const d = gross * ((it.discount_pct || 0) / 100);
-      let tx;
-      if (taxMode === "inclusive") {
-        tx = gross / (1 + it.gst_rate / 100) - d;
-      } else {
-        tx = gross - d;
-      }
-      const tax = tx * (it.gst_rate / 100);
-      subtotal += taxMode === "inclusive" ? gross - d : gross;
-      discount += taxMode === "inclusive" ? 0 : d;
+      const { taxable: tx, gstAmt: tax, grossEx, discountEx } = calcLine(it, taxMode, sameState);
+      // Reported before tax either way, so subtotal - discount === taxable.
+      subtotal += grossEx;
+      discount += discountEx;
       taxable  += tx;
       if (sameState) { cgst += tax / 2; sgst += tax / 2; } else igst += tax;
     });
@@ -394,18 +389,11 @@ export default function InvoiceCreate() {
     if (!items.length || items.some(it => !it.name)) { toast.error("Add at least one item with a name"); return; }
     setSaving(true);
     try {
-      // For inclusive GST: convert each item's rate to the exclusive taxable base
-      // so the backend (which always calculates GST on top of rate) produces correct totals.
-      // inclusive: rate already contains GST → taxable_base = rate / (1 + gst_rate/100)
-      const normalizedItems = items.map(({ stock, description, ...it }) => {
-        if (taxMode === "inclusive" && it.gst_rate > 0) {
-          const grossInclusive = it.qty * it.rate * (1 - (it.discount_pct || 0) / 100);
-          const taxableTotal = grossInclusive / (1 + it.gst_rate / 100);
-          const baseRate = taxableTotal / (it.qty || 1);
-          return { ...it, rate: parseFloat(baseRate.toFixed(6)), discount_pct: 0 };
-        }
-        return it;
-      });
+      // The rate goes across exactly as it was typed, with a flag saying what
+      // it means. Rewriting an inclusive rate into its taxable base used to
+      // make the invoice print ₹22,000 where ₹23,100 was agreed, and threw the
+      // discount away with it.
+      const normalizedItems = items.map(({ stock, description, ...it }) => it);
       // Shipping and adjustment are part of what the customer owes, so they have to
       // reach the invoice — saved as their own lines (untaxed, as shown on screen).
       if (shippingCharges) {
@@ -423,7 +411,9 @@ export default function InvoiceCreate() {
         bank_account_id: (bankId && bankId !== "__none__") ? bankId : null,
         branch_id: (branchId && branchId !== "__none__") ? branchId : "",
         invoice_category: invoiceCategory,
-        tax_mode: taxMode,
+        // tax_mode was sent for years and silently dropped — the server model
+        // had no such field. This is the one it reads.
+        tax_inclusive: taxMode === "inclusive",
         shipping_address: shipSel === "billing" ? "" : shipText,
         shipping_label: shipSel === "billing" ? "" : shipLabel,
         po_number: orderNo,

@@ -388,12 +388,29 @@ def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale", template: str
 
     def P(txt, style): return Paragraph(str(txt), style)
 
+    # When the rates were quoted with GST inside them, the invoice says so and
+    # prints both: the rate agreed with the customer, and the taxable value the
+    # GST was worked out on. Printing only the back-calculated taxable rate
+    # makes the bill disagree with what was quoted.
+    incl = bool(inv.get("tax_inclusive") or (inv.get("totals") or {}).get("tax_inclusive"))
+    rate_hdr = "Rate\n(incl. GST)" if incl else "Rate"
+
+    def _rate_cell(it):
+        shown = _inr_amount(it.get("rate", 0))
+        if incl and it.get("gst_rate"):
+            taxable_rate = it.get("taxable_rate")
+            if taxable_rate is None:
+                qty = it.get("qty") or 0
+                taxable_rate = (it.get("taxable", 0) / qty) if qty else 0
+            return f"{shown}<br/><font size=5 color='#777777'>taxable {_inr_amount(taxable_rate)}</font>"
+        return shown
+
     if same_state:
         # 10 data columns: # | Item | HSN | Qty | Rate | CGST% | CGST Amt | SGST% | SGST Amt | Amount
         # 2-row header: row0 uses SPAN for CGST/SGST; row1 has %, Amt sub-headers
         hdr0 = [
             P("#", s_tbl_hdr), P("Item &amp; Description", s_tbl_hdr),
-            P("HSN\n/SAC", s_tbl_hdr), P("Qty", s_tbl_hdr), P("Rate", s_tbl_hdr),
+            P("HSN\n/SAC", s_tbl_hdr), P("Qty", s_tbl_hdr), P(rate_hdr, s_tbl_hdr),
             P("CGST", s_tbl_hdr), "",   # SPAN (5,0)-(6,0)
             P("SGST", s_tbl_hdr), "",   # SPAN (7,0)-(8,0)
             P("Amount", s_tbl_hdr),
@@ -413,7 +430,7 @@ def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale", template: str
                 P(it.get("name",""), s_tbl_cell),
                 P(it.get("hsn","—"), s_tbl_ctr),
                 P(f"{it.get('qty',0):g}\n{it.get('unit','NOS')}", s_tbl_ctr),
-                P(_inr_amount(it.get("rate",0)), s_tbl_num),
+                P(_rate_cell(it), s_tbl_num),
                 P(f"{half:g}%", s_tbl_ctr),
                 P(_inr_amount(it.get("cgst",0)), s_tbl_num),
                 P(f"{half:g}%", s_tbl_ctr),
@@ -453,7 +470,7 @@ def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale", template: str
         # Inter-state: # | Item | HSN | Qty | Rate | IGST% | IGST Amt | Amount
         hdr0 = [
             P("#", s_tbl_hdr), P("Item &amp; Description", s_tbl_hdr),
-            P("HSN\n/SAC", s_tbl_hdr), P("Qty", s_tbl_hdr), P("Rate", s_tbl_hdr),
+            P("HSN\n/SAC", s_tbl_hdr), P("Qty", s_tbl_hdr), P(rate_hdr, s_tbl_hdr),
             P("IGST", s_tbl_hdr), "",
             P("Amount", s_tbl_hdr),
         ]
@@ -465,7 +482,7 @@ def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale", template: str
                 P(it.get("name",""), s_tbl_cell),
                 P(it.get("hsn","—"), s_tbl_ctr),
                 P(f"{it.get('qty',0):g}\n{it.get('unit','NOS')}", s_tbl_ctr),
-                P(_inr_amount(it.get("rate",0)), s_tbl_num),
+                P(_rate_cell(it), s_tbl_num),
                 P(f"{it.get('gst_rate',0):g}%", s_tbl_ctr),
                 P(_inr_amount(it.get("igst",0)), s_tbl_num),
                 P(_inr_amount(it.get("total",0)), s_tbl_num),
@@ -560,8 +577,9 @@ def generate_invoice_pdf(inv: dict, biz: dict, kind: str = "sale", template: str
     due      = inv.get("due", grand)
 
     tot_rows_data = []
-    # Sub Total (Tax Inclusive) — matches Zoho style
-    tot_rows_data.append(_tot_row("Sub Total\n(Tax Inclusive)", _inr_amount(subtotal)))
+    # `subtotal` is the value of the goods before GST, in both tax modes — it
+    # was labelled "(Tax Inclusive)", which said the opposite of what it showed.
+    tot_rows_data.append(_tot_row("Sub Total\n(before GST)", _inr_amount(subtotal)))
     if discount > 0.005:
         tot_rows_data.append(_tot_row("Discount", "-" + _inr_amount(discount)))
     if same_state:

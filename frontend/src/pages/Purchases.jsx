@@ -585,6 +585,8 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
     setEwayBillNo(editDoc.eway_bill_no || "");
     setVehicleNo(editDoc.vehicle_no || "");
     setPurchaseCategory(editDoc.purchase_category || "stock");
+    // Reopen an inclusive bill the way it was entered, not as exclusive.
+    setGstMode(editDoc.tax_inclusive || editDoc.totals?.tax_inclusive ? "inclusive" : "exclusive");
     if (editDoc.items?.length) {
       setItems(editDoc.items.map(it => ({
         product_id: it.product_id || "",
@@ -704,14 +706,10 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
 
   const save = async () => {
     if (!partyId || !billNo) { toast.error("Supplier and bill # required"); return; }
-    // Always save taxable rates to backend (convert if inclusive)
-    const normalizedItems = items.map(it => {
-      if (gstMode === "inclusive") {
-        const base = (it.qty * it.rate) / (1 + it.gst_rate / 100);
-        return { ...it, rate: base / (it.qty || 1) };
-      }
-      return it;
-    });
+    // The supplier's rate is saved as it appears on their bill, with a flag
+    // saying whether GST is inside it. Rewriting it into a taxable base made
+    // our record disagree with the paper bill it came from.
+    const normalizedItems = items;
     const payload = {
       party_id: partyId, bill_no: billNo, purchase_date: date,
       items: normalizedItems, notes, type,
@@ -721,6 +719,7 @@ function PurchaseDialog({ open, onClose, onSaved, prefill, editDoc }) {
       eway_bill_no: ewayBillNo || "",
       vehicle_no: vehicleNo || "",
       purchase_category: purchaseCategory,
+      tax_inclusive: gstMode === "inclusive",
       tds_rate: tdsEnabled ? tdsRate : 0,
       tds_amount: tdsEnabled ? tdsAmount : 0,
     };

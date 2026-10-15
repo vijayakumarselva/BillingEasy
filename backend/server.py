@@ -683,6 +683,7 @@ class InvoiceIn(BaseModel):
     tds_rate: float = 0          # TDS rate customer will deduct (e.g. 0.1%)
     tds_amount: float = 0        # Expected TDS deduction by customer
     warehouse_id: str = ""       # dispatch warehouse (stock invoices)
+    tax_inclusive: bool = False  # the rate on each line already contains GST
 
 
 class PurchaseIn(BaseModel):
@@ -700,6 +701,7 @@ class PurchaseIn(BaseModel):
     purchase_category: str = "stock"  # "stock" | "service"
     tds_rate: float = 0          # TDS rate applied (e.g. 0.1 for 0.1%)
     tds_amount: float = 0        # Computed TDS deduction amount
+    tax_inclusive: bool = False  # the rate on each line already contains GST
 
 
 class PaymentIn(BaseModel):
@@ -743,21 +745,46 @@ class TDSEntryIn(BaseModel):
 
 
 # ---------------- GST helpers ----------------
-def calc_invoice_totals(items: List[dict], same_state: bool) -> dict:
+def calc_invoice_totals(items: List[dict], same_state: bool,
+                        tax_inclusive: bool = False) -> dict:
+    """Totals for a set of lines.
+
+    `tax_inclusive` says what the rate on each line means. Exclusive (the
+    default) is the usual case: GST is added on top of the rate. Inclusive
+    means the rate is what the customer pays, GST already inside it, and the
+    taxable value is backed out as rate / (1 + gst/100).
+
+    The rate is kept exactly as it was entered either way — the invoice has to
+    print the price that was agreed. Earlier the front end converted an
+    inclusive rate to its taxable base before saving, so a bill entered at
+    ₹23,100 a bag printed at ₹22,000 a bag: the same grand total, but not the
+    number anyone had agreed to.
+
+    `subtotal` and `discount` are always reported in pre-tax terms, so
+    subtotal - discount == taxable_amount whichever way the rate was given.
+    """
     subtotal = discount = taxable = cgst = sgst = igst = 0.0
     detailed = []
     for it in items:
+        g = it.get("gst_rate", 0) or 0
+        divisor = (1 + g / 100) if (tax_inclusive and g) else 1.0
         gross = it["qty"] * it["rate"]
         d = gross * (it.get("discount_pct", 0) / 100)
-        tx = gross - d
-        tax = tx * (it.get("gst_rate", 0) / 100)
+        # Pre-tax equivalents of what was entered.
+        gross_ex = gross / divisor
+        d_ex = d / divisor
+        tx = gross_ex - d_ex
+        tax = tx * (g / 100)
         c, s, i_ = (tax/2, tax/2, 0) if same_state else (0, 0, tax)
         total = tx + tax
-        detailed.append({**it, "gross": round(gross, 2), "discount": round(d, 2),
+        detailed.append({**it, "gross": round(gross_ex, 2), "discount": round(d_ex, 2),
                          "taxable": round(tx, 2), "cgst": round(c, 2),
                          "sgst": round(s, 2), "igst": round(i_, 2),
+                         # What one unit is worth before tax — the figure a GST
+                         # invoice has to show when the rate quoted includes it.
+                         "taxable_rate": round(tx / it["qty"], 2) if it.get("qty") else 0,
                          "total": round(total, 2)})
-        subtotal += gross; discount += d; taxable += tx
+        subtotal += gross_ex; discount += d_ex; taxable += tx
         cgst += c; sgst += s; igst += i_
     grand = taxable + cgst + sgst + igst
     round_off = round(grand) - grand
@@ -768,6 +795,7 @@ def calc_invoice_totals(items: List[dict], same_state: bool) -> dict:
         "cgst": round(cgst, 2), "sgst": round(sgst, 2), "igst": round(igst, 2),
         "round_off": round(round_off, 2),
         "grand_total": round(grand + round_off, 2),
+        "tax_inclusive": bool(tax_inclusive),
     }
 
 
@@ -5763,7 +5791,8 @@ async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
         if branch:
             seller_state_code = branch.get("state_code", seller_state_code)
     same_state = (seller_state_code == party.get("state_code", "33"))
-    totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state)
+    totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state,
+                                 getattr(body, "tax_inclusive", False))
     return {
         "id": str(uuid.uuid4()),
         "org_id": ctx["org_id"],
@@ -5784,6 +5813,9 @@ async def _build_invoice_doc(body: InvoiceIn, ctx: dict, prefix: str) -> dict:
         "tds_amount": round(getattr(body, "tds_amount", 0) or 0, 2),
         "net_receivable": round((totals.get("grand_total", 0) - (getattr(body, "tds_amount", 0) or 0)), 2),
         "warehouse_id": getattr(body, "warehouse_id", "") or "",
+        # Whether the rates on this invoice were quoted with GST inside them.
+        # The PDF needs it to label the rate column honestly.
+        "tax_inclusive": bool(getattr(body, "tax_inclusive", False)),
         "created_at": now_iso(),
     }
 
@@ -6445,7 +6477,8 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
         if branch:
             seller_state_code = branch.get("state_code", seller_state_code)
     same_state = (seller_state_code == party.get("state_code", "33"))
-    totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state)
+    totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state,
+                                 getattr(body, "tax_inclusive", False))
     tds_rate, tds_amount, tds_calc = await recompute_194q(
         ctx, body.party_id, totals, rate=body.tds_rate,
         enabled=bool(body.tds_rate or body.tds_amount))
@@ -6475,6 +6508,8 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
         "eway_bill_no": body.eway_bill_no or "",
         "vehicle_no": body.vehicle_no or "",
         "purchase_category": body.purchase_category or "stock",
+        # Whether the supplier quoted rates with GST inside them.
+        "tax_inclusive": bool(getattr(body, "tax_inclusive", False)),
         "tds_rate": tds_rate, "tds_amount": tds_amount,
         "tds_calc": tds_calc,
         "net_payable": round(totals.get("grand_total", 0) - tds_amount, 2),
@@ -6516,7 +6551,8 @@ async def update_purchase(pid: str, body: PurchaseIn, ctx=Depends(require_permis
         if branch:
             seller_state_code = branch.get("state_code", seller_state_code)
     same_state = (seller_state_code == party.get("state_code", "33"))
-    totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state)
+    totals = calc_invoice_totals([i.model_dump() for i in body.items], same_state,
+                                 getattr(body, "tax_inclusive", False))
     # Editing a bill must not count itself in the year-to-date it is measured against.
     tds_rate, tds_amount, tds_calc = await recompute_194q(
         ctx, body.party_id, totals, rate=body.tds_rate,
@@ -6536,6 +6572,8 @@ async def update_purchase(pid: str, body: PurchaseIn, ctx=Depends(require_permis
         "warehouse_id": body.warehouse_id or "",
         "eway_bill_no": body.eway_bill_no or "", "vehicle_no": body.vehicle_no or "",
         "purchase_category": body.purchase_category or "stock",
+        # Whether the supplier quoted rates with GST inside them.
+        "tax_inclusive": bool(getattr(body, "tax_inclusive", False)),
         "tds_rate": tds_rate, "tds_amount": tds_amount,
         "tds_calc": tds_calc,
         "net_payable": round(totals.get("grand_total", 0) - tds_amount, 2),
@@ -11581,7 +11619,8 @@ async def public_import_invoices(body: ImportBatchIn, ictx=Depends(api_key_ctx))
                                        unit=it.unit or (prod or {}).get("unit", "NOS"), rate=rate,
                                        discount_pct=it.discount_pct, gst_rate=gst))
         same_state = seller_state == (party.get("state_code") or seller_state)
-        totals = calc_invoice_totals([i.model_dump() for i in line_items], same_state)
+        totals = calc_invoice_totals([i.model_dump() for i in line_items], same_state,
+                                     getattr(body, "tax_inclusive", False))
         row.update({"customer": party.get("name"), "total": totals["grand_total"],
                     "taxable": totals["taxable_amount"],
                     "tax": round(totals["cgst"] + totals["sgst"] + totals["igst"], 2),
