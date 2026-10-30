@@ -15,7 +15,7 @@ import {
   Receipt, BookOpen, Landmark, Settings, LogOut, Moon, Sun, Building2,
   FileBarChart, ChevronDown, Plus, Bot, Wrench, FileSpreadsheet, Coins, Zap,
   UtensilsCrossed, ChefHat, CheckSquare, PieChart as PieChartIcon, Scan, SlidersHorizontal, Sparkles, Menu, X, ChevronRight,
-  Home, Lock, ArrowLeftRight, Store, PackageCheck, Truck, BedDouble,
+  Home, Lock, ArrowLeftRight, Store, PackageCheck, Truck, BedDouble, Scale,
 } from "lucide-react";
 import { STATES } from "@/pages/Parties";
 import SupportChat from "@/components/SupportChat";
@@ -44,6 +44,7 @@ const ALL_NAV = [
   { to: "/money",          label: "Money",             icon: PieChartIcon,  tid: "nav-money", badge: "New", group: "Accounting", modes: ["b2b","b2c","restaurant","pos","stay"] , perm: "payment.view" },
   { to: "/gst",            label: "GST Returns",     icon: FileBarChart,    tid: "nav-gst",  shortcut: "Alt+G", group: "Accounting", modes: ["b2b","b2c","stay"] , perm: "gst.view" },
   { to: "/tds",            label: "TDS",             icon: Landmark,        tid: "nav-tds",               group: "Accounting", modes: ["b2b"] , perm: "tds.view" },
+  { to: "/accounting",     label: "Books of Account", icon: Scale,       tid: "nav-ledger", badge: "New", group: "Accounting", modes: ["b2b","b2c","restaurant","stay"] , perm: "report.view" },
   { to: "/reports",        label: "Reports & Books", icon: BookOpen,        tid: "nav-accounting", shortcut: "Alt+R", group: "Accounting", modes: ["b2b","b2c","restaurant","stay"] , perm: "report.view" },
   { to: "/ask-ai", label: "Ask AI",    icon: Bot,    tid: "nav-ai",    badge: "AI",   group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos","stay"] },
   { to: "/tools",  label: "Tax Toolkit", icon: Wrench, tid: "nav-tools", badge: "Free", group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos","stay"] },

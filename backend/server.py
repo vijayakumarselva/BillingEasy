@@ -70,6 +70,7 @@ import billing_invoice as BILLINV
 import dining as DINING
 import gst_auto as GSTAUTO
 import reconcile as RECON
+import ledger as LEDGER
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
@@ -4476,6 +4477,7 @@ async def _apply_reconcile(ctx: dict, row: dict, body: ReconcileIn) -> Dict[str,
                "notes": narration[:200], "source": "bank_statement", "bank_row_id": row["id"],
                "created_at": now_iso()}
         await db.purchases.insert_one(doc)
+        await post_document("purchase", doc, ctx["org_id"])
         made["purchase"] = strip_id(doc)
         match_id, match_ref = doc["id"], doc["bill_no"]
 
@@ -5865,6 +5867,7 @@ async def create_invoice(body: InvoiceIn, request: Request, ctx=Depends(require_
         if zcfg.get("enabled") and zcfg.get("auto_push"):
             asyncio.create_task(_zoho_push(ctx["org_id"], doc["id"], ctx["user"]))
             pushed_to = "zoho"
+    await post_document("invoice", doc, ctx["org_id"])
     return {**strip_id(doc), "auto_filing": filing, "mirrored_to": pushed_to}
 
 
@@ -5906,6 +5909,8 @@ async def update_invoice(iid: str, body: InvoiceIn, request: Request, ctx=Depend
     await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="invoice.updated",
                     entity_type="invoice", entity_id=iid,
                     metadata={"invoice_no": doc["invoice_no"]}, request=request)
+    # Re-post: the edited figures replace what the old ones put in the books.
+    await post_document("invoice", doc, ctx["org_id"])
     return strip_id(doc)
 
 
@@ -5951,6 +5956,8 @@ async def cancel_invoice(iid: str, request: Request, ctx=Depends(require_permiss
     await audit_log(db, org_id=ctx["org_id"], user=ctx["user"], action="invoice.cancelled",
                     entity_type="invoice", entity_id=iid,
                     metadata={"invoice_no": inv.get("invoice_no")}, request=request)
+    # A cancelled invoice is no longer an accounting event.
+    await unpost_document("invoice", iid, ctx["org_id"])
     return {"ok": True}
 
 
@@ -6516,6 +6523,7 @@ async def create_purchase(body: PurchaseIn, ctx=Depends(get_org_ctx)):
         "created_at": now_iso(),
     }
     await db.purchases.insert_one(doc)
+    await post_document("purchase", doc, ctx["org_id"])
     # Only add stock for stock purchases (not service purchases)
     if body.type == "purchase" and body.purchase_category == "stock":
         for it in body.items:
@@ -6770,6 +6778,7 @@ async def create_payment(body: PaymentIn, ctx=Depends(get_org_ctx)):
             doc["linked_ref"] = exp.get("description") or exp.get("category", body.expense_id)
             doc["linked_type"] = "expense"
     await db.payments.insert_one(doc)
+    await post_document("payment", doc, ctx["org_id"])
     # Auto-mark invoice as paid if total payments now cover it
     if body.invoice_id:
         # First check sale invoices
@@ -6920,6 +6929,7 @@ async def update_payment(pid: str, body: PaymentIn, ctx=Depends(get_org_ctx)):
 @api.delete("/payments/{pid}")
 async def delete_payment(pid: str, ctx=Depends(require_permission("payment.delete"))):
     await db.payments.delete_one(org_filter(ctx, {"id": pid}))
+    await unpost_document("payment", pid, ctx["org_id"])
     return {"ok": True}
 
 
@@ -7128,6 +7138,7 @@ async def create_expense(body: ExpenseIn, ctx=Depends(get_org_ctx)):
     doc = {**body.model_dump(), "id": str(uuid.uuid4()),
            "org_id": ctx["org_id"], "biz_type": ctx.get("biz_type"), "created_at": now_iso()}
     await db.expenses.insert_one(doc)
+    await post_document("expense", doc, ctx["org_id"])
     return strip_id(doc)
 
 
@@ -7643,6 +7654,278 @@ async def create_tds(body: TDSEntryIn, ctx=Depends(get_org_ctx)):
 
 
 # ---------------- DASHBOARD ----------------
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GENERAL LEDGER
+#
+# Documents post entries; reports read balances. Posting never blocks the
+# document: a bill that is saved stays saved even if its entry cannot be made,
+# and `/ledger/rebuild` derives the missing ones later. Accounting that
+# refuses to let someone invoice a customer is worse than accounting that
+# catches up.
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def ledger_accounts(org_id: str) -> List[dict]:
+    """This business's chart of accounts: the defaults, plus one account per
+    bank account, plus anything the owner has added."""
+    custom = await db.ledger_accounts.find({"org_id": org_id}, {"_id": 0}).to_list(500)
+    accounts = [dict(a) for a in LEDGER.DEFAULT_ACCOUNTS]
+    async for b in db.bank_accounts.find({"org_id": org_id}, {"_id": 0}):
+        accounts.append({
+            "code": LEDGER.bank_code_for(b["id"]),
+            "name": f"{b.get('bank_name', 'Bank')} – {str(b.get('account_no', ''))[-4:]}",
+            "type": LEDGER.ASSET, "parent": "1010", "bank_account_id": b["id"],
+        })
+    have = {a["code"] for a in accounts}
+    accounts.extend(a for a in custom if a.get("code") not in have)
+    return accounts
+
+
+async def post_entry(entry: dict) -> Optional[dict]:
+    """Store one entry, replacing any earlier posting of the same document."""
+    if entry.get("source_type") and entry.get("source_id"):
+        await db.ledger_entries.delete_many({
+            "org_id": entry["org_id"], "source_type": entry["source_type"],
+            "source_id": entry["source_id"]})
+    await db.ledger_entries.insert_one(dict(entry))
+    return entry
+
+
+async def _post_safely(make, *args, **kwargs) -> None:
+    """Post in the background, and never let a ledger problem reach the user."""
+    try:
+        entry = make(*args, **kwargs)
+        if entry:
+            await post_entry(entry)
+    except LEDGER.LedgerError as exc:
+        logger.warning("ledger refused an entry: %s", exc)
+    except Exception:
+        logger.exception("ledger posting failed")
+
+
+async def post_document(kind: str, doc: dict, org_id: str = "") -> None:
+    """Post whatever a saved document implies, if anything."""
+    org_id = org_id or doc.get("org_id", "")
+    if kind == "invoice":
+        # Drafts, quotations and cancelled bills are not accounting events.
+        if doc.get("type") not in ("sale", "credit_note", "sales_return"):
+            return
+        if doc.get("status") in ("draft", "cancelled", "void"):
+            await unpost_document("invoice", doc.get("id", ""), org_id)
+            return
+        await _post_safely(LEDGER.sale_entry, doc, org_id)
+    elif kind == "purchase":
+        if doc.get("type") != "purchase":
+            return
+        await _post_safely(LEDGER.purchase_entry, doc, org_id)
+    elif kind == "payment":
+        await _post_safely(LEDGER.payment_entry, doc, org_id)
+    elif kind == "expense":
+        await _post_safely(LEDGER.expense_entry, doc, org_id)
+
+
+async def unpost_document(source_type: str, source_id: str, org_id: str) -> int:
+    """Remove a document's postings — used when it is cancelled or deleted."""
+    res = await db.ledger_entries.delete_many(
+        {"org_id": org_id, "source_type": source_type, "source_id": source_id})
+    return res.deleted_count
+
+
+async def _entries_for(org_id: str, since: str = "", upto: str = "") -> List[dict]:
+    q: Dict[str, Any] = {"org_id": org_id}
+    if since or upto:
+        q["date"] = {}
+        if since: q["date"]["$gte"] = since
+        if upto:  q["date"]["$lte"] = upto
+    return await db.ledger_entries.find(q, {"_id": 0}).to_list(50000)
+
+
+def _fy_start(today=None) -> str:
+    d = today or now_dt()
+    year = d.year if d.month >= 4 else d.year - 1
+    return f"{year:04d}-04-01"
+
+
+@api.get("/ledger/accounts")
+async def get_ledger_accounts(ctx=Depends(get_org_ctx)):
+    return await ledger_accounts(ctx["org_id"])
+
+
+@api.get("/ledger/trial-balance")
+async def ledger_trial_balance(upto: str = "", ctx=Depends(get_org_ctx)):
+    entries = await _entries_for(ctx["org_id"])
+    tb = LEDGER.trial_balance(entries, await ledger_accounts(ctx["org_id"]), upto=upto)
+    tb["entries"] = len(entries)
+    return tb
+
+
+@api.get("/ledger/profit-loss")
+async def ledger_pl(since: str = "", upto: str = "", ctx=Depends(get_org_ctx)):
+    return LEDGER.profit_and_loss(await _entries_for(ctx["org_id"]),
+                                  await ledger_accounts(ctx["org_id"]),
+                                  since=since or _fy_start(), upto=upto)
+
+
+@api.get("/ledger/balance-sheet")
+async def ledger_balance_sheet(upto: str = "", ctx=Depends(get_org_ctx)):
+    return LEDGER.balance_sheet(await _entries_for(ctx["org_id"]),
+                                await ledger_accounts(ctx["org_id"]),
+                                upto=upto, period_start=_fy_start())
+
+
+@api.get("/ledger/journal")
+async def ledger_journal(since: str = "", upto: str = "", limit: int = 200,
+                         ctx=Depends(get_org_ctx)):
+    """Every entry, newest first — the day book."""
+    entries = await _entries_for(ctx["org_id"], since, upto)
+    entries.sort(key=lambda e: (e.get("date", ""), e.get("created_at", "")), reverse=True)
+    accounts = {a["code"]: a["name"] for a in await ledger_accounts(ctx["org_id"])}
+    out = []
+    for e in entries[:limit]:
+        out.append({**e, "total": LEDGER.to_rupees(e.get("total", 0)),
+                    "lines": [{**l, "account_name": accounts.get(l["account"], l["account"]),
+                               "debit": LEDGER.to_rupees(l.get("debit", 0)),
+                               "credit": LEDGER.to_rupees(l.get("credit", 0))}
+                              for l in e.get("lines", [])]})
+    return {"entries": out, "count": len(entries)}
+
+
+@api.get("/ledger/account/{code:path}")
+async def ledger_account_view(code: str, since: str = "", upto: str = "",
+                              ctx=Depends(get_org_ctx)):
+    """One account's transactions with a running balance."""
+    entries = await _entries_for(ctx["org_id"])
+    opening = 0
+    if since:
+        before = LEDGER.account_balances(entries, upto=since)
+        opening = before.get(code, {}).get("balance", 0)
+    view = LEDGER.ledger_for(entries, code, since=since, upto=upto, opening_p=opening)
+    accounts = {a["code"]: a for a in await ledger_accounts(ctx["org_id"])}
+    meta = accounts.get(code, {})
+    view["name"] = meta.get("name", code)
+    view["type"] = meta.get("type", "")
+    return view
+
+
+@api.get("/ledger/cash-book")
+async def ledger_cash_book(since: str = "", upto: str = "", ctx=Depends(get_org_ctx)):
+    entries = await _entries_for(ctx["org_id"])
+    return LEDGER.ledger_for(entries, LEDGER.SYSTEM_CODES["cash"], since=since, upto=upto)
+
+
+@api.get("/ledger/bank-book")
+async def ledger_bank_book(bank_account_id: str = "", since: str = "", upto: str = "",
+                           ctx=Depends(get_org_ctx)):
+    entries = await _entries_for(ctx["org_id"])
+    code = LEDGER.bank_code_for(bank_account_id) if bank_account_id else LEDGER.SYSTEM_CODES["bank"]
+    return LEDGER.ledger_for(entries, code, since=since, upto=upto)
+
+
+class JournalLineIn(BaseModel):
+    account: str
+    debit: float = 0
+    credit: float = 0
+    party_id: str = ""
+    description: str = ""
+    cost_centre: str = ""
+
+
+class JournalIn(BaseModel):
+    date: str
+    lines: List[JournalLineIn]
+    narration: str = ""
+    voucher_type: str = "journal"    # journal | contra
+
+
+@api.post("/ledger/journal")
+async def create_journal(body: JournalIn, ctx=Depends(require_permission("invoice.create"))):
+    """A manual entry — journals, contras, depreciation, opening capital."""
+    try:
+        entry = LEDGER.build_entry(
+            ctx["org_id"], body.date,
+            [LEDGER.line(l.account, LEDGER.to_paise(l.debit), LEDGER.to_paise(l.credit),
+                         party_id=l.party_id, description=l.description,
+                         cost_centre=l.cost_centre) for l in body.lines],
+            voucher_type=body.voucher_type, narration=body.narration,
+            source_type="manual", source_id=str(uuid.uuid4()),
+            created_by=ctx["user"]["id"])
+    except LEDGER.LedgerError as exc:
+        raise HTTPException(400, str(exc))
+    await post_entry(entry)
+    return {"ok": True, "id": entry["id"], "total": LEDGER.to_rupees(entry["total"])}
+
+
+@api.post("/ledger/rebuild")
+async def rebuild_ledger(ctx=Depends(require_permission("settings.edit"))):
+    """Derive the ledger from the documents already in the books.
+
+    Safe to run as often as you like: it removes only entries it generated
+    before and builds them again from the same documents. Manual journals are
+    left alone — nothing derived them, so nothing can re-derive them. No
+    invoice, bill, payment or expense is touched.
+    """
+    oid = ctx["org_id"]
+    await db.ledger_entries.delete_many({"org_id": oid, "source_type": {"$ne": "manual"}})
+
+    made = {"invoices": 0, "purchases": 0, "payments": 0, "expenses": 0,
+            "opening": 0, "skipped": 0}
+    problems: List[str] = []
+
+    async def attempt(make, doc, key, label):
+        try:
+            entry = make(doc, oid)
+            if entry:
+                await db.ledger_entries.insert_one(dict(entry))
+                made[key] += 1
+        except LEDGER.LedgerError as exc:
+            made["skipped"] += 1
+            if len(problems) < 25:
+                problems.append(f"{label}: {exc}")
+        except Exception as exc:
+            made["skipped"] += 1
+            if len(problems) < 25:
+                problems.append(f"{label}: {exc}")
+
+    # Opening balances first, so the books start where the business did.
+    opening: List[tuple] = []
+    async for b in db.bank_accounts.find({"org_id": oid}, {"_id": 0}):
+        if b.get("opening_balance"):
+            opening.append((LEDGER.bank_code_for(b["id"]),
+                            LEDGER.to_paise(b["opening_balance"])))
+    async for party in db.parties.find({"org_id": oid}, {"_id": 0, "opening_balance": 1, "type": 1}):
+        ob = LEDGER.to_paise(party.get("opening_balance", 0))
+        if not ob:
+            continue
+        if party.get("type") == "customer":
+            opening.append((LEDGER.SYSTEM_CODES["receivable"], ob))
+        else:
+            opening.append((LEDGER.SYSTEM_CODES["payable"], -ob))
+    if opening:
+        try:
+            entry = LEDGER.opening_balance_entry(oid, _fy_start(), opening)
+            await db.ledger_entries.insert_one(dict(entry))
+            made["opening"] = 1
+        except LEDGER.LedgerError as exc:
+            problems.append(f"opening balances: {exc}")
+
+    async for inv in db.invoices.find(
+            {"org_id": oid, "type": {"$in": ["sale", "credit_note", "sales_return"]},
+             "status": {"$nin": ["draft", "cancelled", "void"]}}, {"_id": 0}):
+        await attempt(LEDGER.sale_entry, inv, "invoices", inv.get("invoice_no", inv.get("id", "")))
+    async for pur in db.purchases.find({"org_id": oid, "type": "purchase"}, {"_id": 0}):
+        await attempt(LEDGER.purchase_entry, pur, "purchases", pur.get("bill_no", pur.get("id", "")))
+    async for pay in db.payments.find({"org_id": oid}, {"_id": 0}):
+        await attempt(LEDGER.payment_entry, pay, "payments", pay.get("ref_no", pay.get("id", "")))
+    async for exp in db.expenses.find({"org_id": oid}, {"_id": 0}):
+        await attempt(LEDGER.expense_entry, exp, "expenses", exp.get("category", exp.get("id", "")))
+
+    entries = await _entries_for(oid)
+    tb = LEDGER.trial_balance(entries, await ledger_accounts(oid))
+    return {"ok": True, "posted": made, "problems": problems,
+            "balanced": tb["balanced"], "difference": tb["difference"],
+            "total_entries": len(entries)}
+
+
 @api.get("/dashboard")
 async def dashboard(ctx=Depends(get_org_ctx)):
     today = now_dt()
@@ -11344,6 +11627,7 @@ async def public_create_payment(body: PublicPaymentIn, ictx=Depends(api_key_ctx)
            "external_id": body.external_id, "source": "api", "biz_type": ictx.get("biz_type"),
            "created_at": now_iso()}
     await db.payments.insert_one(doc)
+    await post_document("payment", doc, ctx["org_id"])
     if inv:
         total_paid = 0.0
         async for p in db.payments.find({"org_id": org_id, "invoice_id": inv["id"]}, {"_id": 0, "amount": 1}):
