@@ -8142,6 +8142,13 @@ async def gstr3b(month: Optional[str] = Query(None, description="YYYY-MM; defaul
 @api.get("/reports/pl")
 async def pl_report(month: Optional[str] = None, ctx=Depends(get_org_ctx)):
     oid = ctx["org_id"]
+    if await db.ledger_entries.count_documents({"org_id": oid}, limit=1):
+        since, upto = (f"{month}-01", f"{month}-31") if month else (_fy_start(), "")
+        pl = LEDGER.profit_and_loss(await _entries_for(oid),
+                                    await ledger_accounts(oid), since=since, upto=upto)
+        return {**pl, "source": "ledger",
+                "sales": pl["total_income"], "purchases": 0,
+                "expenses": pl["total_expenses"], "profit": pl["net_profit"]}
     q_inv = {"org_id": oid, "type": "sale"}
     q_pur = {"org_id": oid, "type": "purchase"}
     q_exp = {"org_id": oid}
@@ -8167,6 +8174,16 @@ async def pl_report(month: Optional[str] = None, ctx=Depends(get_org_ctx)):
 @api.get("/reports/trial-balance")
 async def trial_balance(ctx=Depends(get_org_ctx)):
     oid = ctx["org_id"]
+    # Once the ledger has entries it is the authority: a trial balance assembled
+    # from four unrelated aggregations cannot be made to agree, and this one
+    # never did. The old computation stays for books that have not been built
+    # yet, so the page keeps working either way.
+    if await db.ledger_entries.count_documents({"org_id": oid}, limit=1):
+        entries = await _entries_for(oid)
+        tb = LEDGER.trial_balance(entries, await ledger_accounts(oid))
+        return {**tb, "source": "ledger",
+                "rows": tb["rows"], "total_debits": tb["total_debit"],
+                "total_credits": tb["total_credit"]}
     # Aggregations over invoices, purchases, expenses
     sales_agg = await db.invoices.aggregate([
         {"$match": {"org_id": oid, "type": "sale"}},
@@ -8714,8 +8731,21 @@ async def public_invoice_pdf(token: str):
 # ---------------- BALANCE SHEET + CASH FLOW ----------------
 @api.get("/reports/balance-sheet")
 async def balance_sheet(ctx=Depends(get_org_ctx)):
-    """Simple snapshot — assets vs liabilities + equity."""
+    """Assets against liabilities and equity.
+
+    From the ledger where one exists. The older computation below reported the
+    bank's *opening* balance as Cash & Bank, because nothing ever posted a
+    receipt or payment against an account — so every rupee that moved was
+    invisible to it.
+    """
     oid = ctx["org_id"]
+    if await db.ledger_entries.count_documents({"org_id": oid}, limit=1):
+        bs = LEDGER.balance_sheet(await _entries_for(oid),
+                                  await ledger_accounts(oid),
+                                  period_start=_fy_start())
+        return {**bs, "source": "ledger",
+                "liabilities": bs["liabilities"] + bs["equity"],
+                "total_liabilities": round(bs["total_liabilities"] + bs["total_equity"], 2)}
     receivable = 0; payable = 0
     parties_all = await db.parties.find({"org_id": oid}, {"_id": 0, "id": 1, "type": 1, "opening_balance": 1}).to_list(2000)
     balances = await bulk_party_balances(oid, parties_all)

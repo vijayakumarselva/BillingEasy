@@ -192,6 +192,35 @@ def test_a_manual_journal_must_balance():
     check("the books still balance afterwards", tb["balanced"])
 
 
+def test_the_old_report_screens_switch_over():
+    print("\nthe existing Reports page")
+    tb = run(server.trial_balance(CTX))
+    check("trial balance now comes from the ledger", tb.get("source") == "ledger", str(tb.get("source")))
+    check("and it balances", tb.get("balanced"), f'off by {tb.get("difference")}')
+
+    bs = run(server.balance_sheet(CTX))
+    check("so does the balance sheet", bs.get("source") == "ledger")
+    bank = next((a for a in bs["assets"] if "HDFC" in a["name"]), None)
+    check("and Cash & Bank is no longer frozen at the opening figure",
+          bank and bank["amount"] == 118000.0, str(bank))
+
+    pl = run(server.pl_report(None, CTX))
+    # ₹49,000 of trading, less the ₹1,000 depreciation journal posted above —
+    # which is the point: a manual entry moves the profit, as it should.
+    check("profit and loss too", pl.get("source") == "ledger" and pl["profit"] == 48000.0,
+          str(pl.get("profit")))
+
+
+def test_a_business_with_no_ledger_still_sees_its_reports():
+    print("\nbooks that have not been built yet")
+    other = {**CTX, "org_id": "org2"}
+    run(mdb.organizations.insert_one({"id": "org2", "name": "No Ledger Co"}))
+    tb = run(server.trial_balance(other))
+    check("the old computation still answers", tb.get("source") != "ledger")
+    bs = run(server.balance_sheet(other))
+    check("and the balance sheet does not break", "assets" in bs)
+
+
 def main():
     for t in (test_the_chart_of_accounts_includes_each_bank,
               test_saving_a_document_posts_it,
@@ -200,7 +229,9 @@ def main():
               test_the_books_balance_after_a_rebuild,
               test_running_it_again_changes_nothing,
               test_the_reports_read_from_it,
-              test_a_manual_journal_must_balance):
+              test_a_manual_journal_must_balance,
+              test_the_old_report_screens_switch_over,
+              test_a_business_with_no_ledger_still_sees_its_reports):
         t()
     failed = [n for n, ok in OK if not ok]
     print(f"\n{len(OK) - len(failed)}/{len(OK)} checks passed")
