@@ -71,6 +71,7 @@ import dining as DINING
 import gst_auto as GSTAUTO
 import reconcile as RECON
 import ledger as LEDGER
+import receivables as RECV
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
@@ -567,6 +568,8 @@ class PartyIn(BaseModel):
     shipping_addresses: List[ShippingAddress] = []   # new: multiple addresses
     opening_balance: float = 0
     credit_limit: float = 0
+    credit_days: int = 0          # agreed credit period, in days
+    block_over_limit: bool = False  # refuse a credit sale past the limit
     tds_opening_balance: float = 0
 
 
@@ -5829,6 +5832,35 @@ async def create_invoice(body: InvoiceIn, request: Request, ctx=Depends(require_
     await check_limit(db, org, "invoice")
     prefix = {"sale": "INV", "quotation": "QT", "credit_note": "CN", "sales_return": "SR"}.get(body.type, "INV")
     doc = await _build_invoice_doc(body, ctx, prefix)
+
+    # Credit control. A limit nobody checks is a number in a form, and this one
+    # has never been read: a customer at twice their limit could be invoiced
+    # again without a word. A warning rides back on the response so the seller
+    # sees it; only a party explicitly marked block_over_limit is refused,
+    # because stopping a real sale at the counter needs to be a deliberate
+    # choice by the owner, not a side effect.
+    credit = None
+    if body.type == "sale" and body.status != "draft":
+        party_doc = await db.parties.find_one(
+            org_filter(ctx, {"id": body.party_id}),
+            {"_id": 0, "credit_limit": 1, "credit_days": 1, "block_over_limit": 1, "name": 1})
+        if party_doc and (party_doc.get("credit_limit") or party_doc.get("block_over_limit")):
+            prior, _ = await _outstanding_docs(ctx["org_id"], "receivable")
+            mine = [d for d in prior if d["party_id"] == body.party_id]
+            oldest = 0
+            for d in mine:
+                oldest = max(oldest, RECV.days_overdue(
+                    d.get("due_date") or d.get("invoice_date"), now_dt().date()))
+            credit = RECV.credit_status(
+                outstanding=round(sum(d["outstanding"] for d in mine), 2),
+                credit_limit=party_doc.get("credit_limit", 0) or 0,
+                oldest_overdue=oldest,
+                credit_days=party_doc.get("credit_days", 0) or 0,
+                new_amount=(doc.get("totals") or {}).get("grand_total", 0) or 0)
+            if party_doc.get("block_over_limit") and credit["level"] == "over_limit":
+                raise HTTPException(409, credit["message"] +
+                                    " Raise the limit in the customer's record, or take payment first.")
+
     await db.invoices.insert_one(doc)
     # Only deduct stock for stock invoices (not service invoices)
     if body.type == "sale" and body.status == "finalized" and body.invoice_category == "stock":
@@ -5868,7 +5900,8 @@ async def create_invoice(body: InvoiceIn, request: Request, ctx=Depends(require_
             asyncio.create_task(_zoho_push(ctx["org_id"], doc["id"], ctx["user"]))
             pushed_to = "zoho"
     await post_document("invoice", doc, ctx["org_id"])
-    return {**strip_id(doc), "auto_filing": filing, "mirrored_to": pushed_to}
+    return {**strip_id(doc), "auto_filing": filing, "mirrored_to": pushed_to,
+            "credit_warning": (credit if credit and not credit["ok"] else None)}
 
 
 @api.get("/invoices/{iid}")
@@ -7924,6 +7957,128 @@ async def rebuild_ledger(ctx=Depends(require_permission("settings.edit"))):
     return {"ok": True, "posted": made, "problems": problems,
             "balanced": tb["balanced"], "difference": tb["difference"],
             "total_entries": len(entries)}
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# RECEIVABLES, PAYABLES AND CREDIT CONTROL
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def _outstanding_docs(org_id: str, kind: str) -> tuple:
+    """Unsettled invoices or bills, with what is still owed on each."""
+    is_sale = kind == "receivable"
+    coll = db.invoices if is_sale else db.purchases
+    match = {"org_id": org_id,
+             "type": "sale" if is_sale else "purchase",
+             "status": {"$nin": ["cancelled", "void", "draft"]} if is_sale else {"$ne": "cancelled"}}
+    date_field = "invoice_date" if is_sale else "purchase_date"
+    ref_field = "invoice_no" if is_sale else "bill_no"
+    direction = "received" if is_sale else "paid"
+
+    docs = await coll.find(match, {"_id": 0}).to_list(20000)
+    if not docs:
+        return [], {}
+
+    # One pass over payments rather than one query per document.
+    paid_by_doc: Dict[str, float] = {}
+    async for p in db.payments.find(
+            {"org_id": org_id, "direction": direction}, {"_id": 0, "amount": 1,
+             "invoice_id": 1, "purchase_id": 1, "linked_id": 1}):
+        key = p.get("invoice_id") or p.get("purchase_id") or p.get("linked_id")
+        if key:
+            paid_by_doc[key] = paid_by_doc.get(key, 0) + (p.get("amount") or 0)
+
+    party_ids = {d.get("party_id") for d in docs if d.get("party_id")}
+    parties = {p["id"]: p async for p in db.parties.find(
+        {"org_id": org_id, "id": {"$in": list(party_ids)}}, {"_id": 0})}
+
+    out = []
+    for d in docs:
+        grand = (d.get("totals") or {}).get("grand_total", 0) or 0
+        if not is_sale:
+            grand = purchase_payable(d)
+        owed = round(grand - paid_by_doc.get(d["id"], 0), 2)
+        if owed <= 0.5:
+            continue
+        out.append({
+            "id": d["id"], "party_id": d.get("party_id", ""),
+            "party_name": (parties.get(d.get("party_id"), {}) or {}).get("name", "")
+                          or (d.get("party_snapshot") or {}).get("name", ""),
+            "ref": d.get(ref_field, ""),
+            "invoice_date": d.get(date_field, ""),
+            "due_date": d.get("due_date", ""),
+            "outstanding": owed,
+        })
+    return out, parties
+
+
+@api.get("/reports/ageing")
+async def ageing_report(kind: str = "receivable", ctx=Depends(require_permission("report.view"))):
+    """Who owes us (or whom we owe), bucketed by how late it is."""
+    if kind not in ("receivable", "payable"):
+        raise HTTPException(400, "kind must be receivable or payable")
+    docs, parties = await _outstanding_docs(ctx["org_id"], kind)
+    credit_days = {pid: (p.get("credit_days") or 0) for pid, p in parties.items()}
+    report = RECV.age_documents(docs, credit_days=credit_days,
+                                today=now_dt().date())
+    for row in report["rows"]:
+        party = parties.get(row["party_id"], {})
+        row["credit_limit"] = party.get("credit_limit", 0) or 0
+        row["credit_days"] = party.get("credit_days", 0) or 0
+        row["phone"] = party.get("phone", "")
+        row["email"] = party.get("email", "")
+        row["over_limit"] = bool(row["credit_limit"]) and row["total"] > row["credit_limit"]
+    report["kind"] = kind
+    return report
+
+
+@api.get("/parties/{pid}/credit-status")
+async def party_credit_status(pid: str, amount: float = 0,
+                              exclude_invoice: str = "", ctx=Depends(get_org_ctx)):
+    """Can we sell to this customer on credit, and should anyone hesitate?"""
+    party = await db.parties.find_one(org_filter(ctx, {"id": pid}), {"_id": 0})
+    if not party:
+        raise HTTPException(404, "Party not found")
+    docs, _ = await _outstanding_docs(ctx["org_id"], "receivable")
+    mine = [d for d in docs if d["party_id"] == pid and d["id"] != exclude_invoice]
+    outstanding = round(sum(d["outstanding"] for d in mine), 2)
+    oldest = 0
+    for d in mine:
+        oldest = max(oldest, RECV.days_overdue(d.get("due_date") or d.get("invoice_date"),
+                                               now_dt().date()))
+    status = RECV.credit_status(
+        outstanding=outstanding, credit_limit=party.get("credit_limit", 0) or 0,
+        oldest_overdue=oldest, credit_days=party.get("credit_days", 0) or 0,
+        new_amount=amount)
+    status["blocking"] = bool(party.get("block_over_limit")) and status["level"] == "over_limit"
+    status["party_name"] = party.get("name", "")
+    return status
+
+
+@api.get("/parties/{pid}/statement")
+async def party_statement(pid: str, ctx=Depends(get_org_ctx)):
+    """The account as the customer or supplier would want to see it."""
+    party = await db.parties.find_one(org_filter(ctx, {"id": pid}), {"_id": 0})
+    if not party:
+        raise HTTPException(404, "Party not found")
+    is_customer = party.get("type") == "customer"
+    coll = db.invoices if is_customer else db.purchases
+    ref_field = "invoice_no" if is_customer else "bill_no"
+    date_field = "invoice_date" if is_customer else "purchase_date"
+
+    documents = []
+    async for d in coll.find(
+            {"org_id": ctx["org_id"], "party_id": pid,
+             "status": {"$nin": ["cancelled", "void", "draft"]}}, {"_id": 0}):
+        documents.append({
+            "invoice_date": d.get(date_field, ""), "ref": d.get(ref_field, ""),
+            "doc_type": "Invoice" if is_customer else "Bill",
+            "amount": (d.get("totals") or {}).get("grand_total", 0) or 0,
+        })
+    payments = await db.payments.find(
+        {"org_id": ctx["org_id"], "party_id": pid}, {"_id": 0}).to_list(5000)
+    return RECV.statement(party, documents, payments,
+                          opening=party.get("opening_balance", 0) or 0)
 
 
 @api.get("/dashboard")

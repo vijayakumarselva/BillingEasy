@@ -300,6 +300,21 @@ export default function InvoiceCreate() {
 
   const party = parties.find(p => p.id === partyId);
 
+  // What this customer already owes, checked as soon as there is a customer
+  // and a total — a warning after the invoice is saved is a warning too late.
+  const [credit, setCredit] = useState(null);
+  useEffect(() => {
+    if (!partyId || type !== "sale") { setCredit(null); return; }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      api.get(`/parties/${partyId}/credit-status`,
+              { params: { amount: totals.grand || 0, exclude_invoice: editId || "" } })
+        .then((r) => { if (!cancelled) setCredit(r.data?.ok ? null : r.data); })
+        .catch(() => {});
+    }, 400);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [partyId, type, totals.grand, editId]);
+
   // Add a customer without leaving the invoice
   const openNewCustomer = () => {
     setShowPartyDD(false);
@@ -384,6 +399,28 @@ export default function InvoiceCreate() {
 
   const setItem = (i, patch) => setItems(prev => prev.map((it, idx) => idx === i ? { ...it, ...patch } : it));
 
+  const creditBanner = credit && (
+    <div className={`rounded-lg border px-4 py-3 flex items-start gap-3 ${
+      credit.blocking
+        ? "border-rose-500/50 bg-rose-50 dark:bg-rose-950/20"
+        : "border-amber-500/50 bg-amber-50 dark:bg-amber-950/20"}`}
+      data-testid="credit-warning">
+      <AlertTriangle className={`h-5 w-5 shrink-0 mt-0.5 ${
+        credit.blocking ? "text-rose-600" : "text-amber-600"}`} />
+      <div className="text-sm">
+        <p className={`font-semibold ${credit.blocking
+          ? "text-rose-800 dark:text-rose-300" : "text-amber-900 dark:text-amber-200"}`}>
+          {credit.blocking ? "This sale is blocked" : "Check this customer's credit"}
+        </p>
+        <p className={credit.blocking
+          ? "text-rose-700/80 dark:text-rose-300/80" : "text-amber-800/80 dark:text-amber-300/80"}>
+          {credit.message}
+          {credit.blocking && " Raise the limit on their record, or take payment first."}
+        </p>
+      </div>
+    </div>
+  );
+
   const save = async () => {
     if (!partyId) { toast.error("Select a customer"); return; }
     if (!items.length || items.some(it => !it.name)) { toast.error("Add at least one item with a name"); return; }
@@ -426,6 +463,9 @@ export default function InvoiceCreate() {
         ? await api.put(`/invoices/${editId}`, payload)
         : await api.post("/invoices", payload);
       toast.success(isEdit ? "Invoice updated" : "Invoice created");
+      if (data?.credit_warning?.message) {
+        toast.warning(data.credit_warning.message, { duration: 9000 });
+      }
       nav(`/sales/${data.id}`);
     } catch { toast.error(isEdit ? "Failed to update" : "Failed to create invoice"); }
     finally { setSaving(false); }
@@ -892,11 +932,13 @@ export default function InvoiceCreate() {
           </Section>
         )}
 
+        {creditBanner}
+
         {/* ── Bottom save bar ──────────────────────────────────────── */}
         <div className="flex justify-end gap-3">
           <Button variant="outline" onClick={() => nav(-1)}>Cancel</Button>
           <Button className="bg-blue-600 hover:bg-blue-700 text-white px-8" onClick={save} disabled={saving} data-testid="inv-save-button-bottom">
-            {saving ? "Saving…" : isEdit ? "Update Invoice" : "Save Invoice"}
+            {saving ? "Saving…" : credit?.blocking ? "Over credit limit" : isEdit ? "Update Invoice" : "Save Invoice"}
           </Button>
         </div>
 

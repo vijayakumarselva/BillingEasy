@@ -22,6 +22,7 @@ import Expenses from "@/pages/Expenses";
 import GST from "@/pages/GST";
 import Reports from "@/pages/Reports";
 import Accounting from "@/pages/Accounting";
+import Receivables from "@/pages/Receivables";
 import TDS from "@/pages/TDS";
 import Settings from "@/pages/Settings";
 import MockCheckout from "@/pages/MockCheckout";
@@ -232,6 +233,7 @@ export default function App() {
               <Route path="/gst" element={<GST />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/accounting" element={<Accounting />} />
+              <Route path="/receivables" element={<Receivables />} />
               <Route path="/tds" element={<TDS />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/billing" element={<Allowed perm="billing.view"><Billing /></Allowed>} />
