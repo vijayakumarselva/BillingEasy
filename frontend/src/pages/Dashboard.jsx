@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
+import StatTile, { compactInr } from "@/components/StatTile";
 import { inr, inrShort, fmtDate } from "@/lib/format";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +12,7 @@ import {
   TrendingUp, ShoppingCart, ArrowDownToLine, ArrowUpFromLine,
   Plus, FileText, Wallet, Receipt, Landmark, PiggyBank,
   Users, Package, ChevronRight, Scan, Banknote, Smartphone,
-  AlertTriangle, ShoppingBag,
+  AlertTriangle, ShoppingBag, TrendingDown, Minus,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
@@ -70,6 +71,27 @@ export default function Dashboard() {
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const today = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
 
+  // Six months of sales from the chart the server already returns, so the
+  // sparkline costs nothing extra.
+  const salesSeries = (data?.chart || []).map((c) => c.sales);
+  const prev = data?.previous || {};
+  const prevLabel = prev.label || "last month";
+
+  const tiles = [
+    { key: "sales_total",    label: "Sales",      period: "This month", upIsGood: true,
+      previous: prev.sales_total, series: salesSeries, to: "/sales" },
+    { key: "receivable",     label: "Receivable", period: "Outstanding", upIsGood: false,
+      to: "/parties" },
+    { key: "cash_bank",      label: "Cash & bank", period: "Today", upIsGood: true,
+      to: "/accounting" },
+    { key: "purchase_total", label: "Purchases",  period: "This month", upIsGood: false,
+      previous: prev.purchase_total, to: "/purchases" },
+    { key: "payable",        label: "Payable",    period: "Outstanding", upIsGood: false,
+      to: "/parties" },
+    { key: "gst_payable",    label: "GST payable", period: "This month", upIsGood: false,
+      previous: prev.gst_payable, to: "/gst" },
+  ];
+
   const metrics = [
     { key: "sales_total",    period: "This month", label: "Sales",      icon: TrendingUp,      color: "bg-emerald-500", light: "bg-emerald-50 dark:bg-emerald-950/40", text: "text-emerald-600 dark:text-emerald-400" },
     { key: "purchase_total", period: "This month", label: "Purchases",  icon: ShoppingCart,    color: "bg-blue-500",    light: "bg-blue-50 dark:bg-blue-950/40",       text: "text-blue-600 dark:text-blue-400" },
@@ -125,37 +147,33 @@ export default function Dashboard() {
           <p className="text-xs opacity-60 mt-1">{today}</p>
         </div>
 
-        {/* Metric cards 2x2 */}
-        <div className="grid grid-cols-2 gap-3">
-          {metrics.slice(0, 4).map(m => (
-            <div key={m.key} className={`rounded-2xl p-4 ${m.light}`}>
-              <div className={`w-9 h-9 rounded-xl ${m.color} flex items-center justify-center mb-3`}>
-                <m.icon className="h-4 w-4 text-white" />
-              </div>
-              {loading
-                ? <Skeleton className="h-6 w-20 mb-1" />
-                : <p className="text-lg font-bold text-gray-900 dark:text-white">{inrShort(data?.[m.key] || 0)}</p>
-              }
-              <p className={`text-xs font-medium ${m.text}`}>{m.label}</p>
-              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{m.period}</p>
-            </div>
-          ))}
-        </div>
+        {/* The one number the month turns on. Exactly one hero per view. */}
+        <HeroProfit data={data} loading={loading} prev={prev} prevLabel={prevLabel} />
 
-        {/* GST + Net Profit row */}
-        <div className="grid grid-cols-2 gap-3">
-          {metrics.slice(4).map(m => (
-            <div key={m.key} className={`rounded-2xl p-4 ${m.light}`}>
-              <div className={`w-9 h-9 rounded-xl ${m.color} flex items-center justify-center mb-3`}>
-                <m.icon className="h-4 w-4 text-white" />
-              </div>
-              {loading
-                ? <Skeleton className="h-6 w-20 mb-1" />
-                : <p className="text-lg font-bold text-gray-900 dark:text-white">{inrShort(data?.[m.key] || 0)}</p>
-              }
-              <p className={`text-xs font-medium ${m.text}`}>{m.label}</p>
-              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{m.period}</p>
+        {/* What needs doing today, ahead of the figures that merely report. */}
+        {!loading && data?.overdue > 0 && (
+          <button onClick={() => nav("/sales?status=unpaid")}
+            className="w-full flex items-center gap-3 rounded-xl border border-amber-500/40 bg-amber-50 dark:bg-amber-950/20 px-4 py-3 text-left"
+            data-testid="overdue-banner">
+            <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                {compactInr(data.overdue)} overdue
+              </p>
+              <p className="text-xs text-amber-800/70 dark:text-amber-300/70">
+                {data.overdue_count} invoice{data.overdue_count === 1 ? "" : "s"} past their due date
+              </p>
             </div>
+          </button>
+        )}
+
+        <div className="grid grid-cols-2 gap-2.5">
+          {tiles.map((t) => (
+            <StatTile key={t.key} label={t.label} period={t.period}
+                      value={data?.[t.key] || 0} previous={t.previous}
+                      prevLabel={prevLabel} upIsGood={t.upIsGood}
+                      series={t.series} loading={loading}
+                      onClick={() => nav(t.to)} />
           ))}
         </div>
 
@@ -297,19 +315,29 @@ export default function Dashboard() {
           ))}
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
-          {metrics.map(m => (
-            <div key={m.key} data-testid={`metric-${m.key}`} className="rounded border overflow-hidden" style={{ borderColor: "hsl(var(--border))" }}>
-              <div className={`px-2 py-1 text-white text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 ${m.color}`}>
-                <m.icon className="h-3 w-3" />{m.label}
-              </div>
-              <div className="px-2 py-2 bg-card">
-                {loading ? <Skeleton className="h-5 w-16" /> : <div className="font-mono text-sm font-bold">{inrShort(data?.[m.key] || 0)}</div>}
-                <div className="text-[10px] text-muted-foreground mt-0.5">{m.period}</div>
-              </div>
-            </div>
-          ))}
+        <div className="grid lg:grid-cols-3 gap-3">
+          <HeroProfit data={data} loading={loading} prev={prev} prevLabel={prevLabel} />
+          <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            {tiles.slice(0, 6).map((t) => (
+              <StatTile key={t.key} label={t.label} period={t.period}
+                        value={data?.[t.key] || 0} previous={t.previous}
+                        prevLabel={prevLabel} upIsGood={t.upIsGood}
+                        series={t.series} loading={loading}
+                        onClick={() => nav(t.to)} />
+            ))}
+          </div>
         </div>
+
+        {!loading && data?.overdue > 0 && (
+          <button onClick={() => nav("/sales")}
+            className="w-full flex items-center gap-3 rounded-lg border border-amber-500/40 bg-amber-50 dark:bg-amber-950/20 px-4 py-2.5 text-left">
+            <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+            <span className="text-sm text-amber-900 dark:text-amber-200">
+              <strong>{compactInr(data.overdue)}</strong> overdue across {data.overdue_count}{" "}
+              invoice{data.overdue_count === 1 ? "" : "s"} — chase these first.
+            </span>
+          </button>
+        )}
 
         <div className="grid lg:grid-cols-5 gap-3">
           <div className="lg:col-span-3 data-grid">
@@ -491,6 +519,71 @@ function POSDashboard({ data, loading, orgName, today, greeting, nav }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+/** The one figure a month turns on. Exactly one hero per view, >=48px. */
+function HeroProfit({ data, loading, prev, prevLabel }) {
+  const value = data?.net_profit || 0;
+  const previous = prev?.net_profit;
+  const hasPrev = Number.isFinite(previous) && previous !== 0;
+  const delta = hasPrev ? ((value - previous) / Math.abs(previous)) * 100 : null;
+  const up = delta !== null && delta > 0.5;
+  const down = delta !== null && delta < -0.5;
+
+  // What the profit is made of. The hero card stretches to the height of the
+  // tile grid beside it, and empty space in a card is wasted space — this is
+  // the arithmetic behind the number, which is what an owner asks next.
+  const parts = [
+    { label: "Sales", amount: data?.sales_total || 0, sign: "+" },
+    { label: "Purchases", amount: data?.purchase_total || 0, sign: "−" },
+    { label: "Expenses", amount: data?.expenses_total || 0, sign: "−" },
+  ];
+
+  return (
+    <div className="rounded-xl border bg-card px-5 py-4 flex flex-col" data-testid="hero-profit">
+      <p className="text-[13px] font-medium text-muted-foreground">Net profit · this month</p>
+      {loading ? (
+        <div className="h-12 w-40 mt-2 rounded bg-muted animate-pulse" />
+      ) : (
+        <p className={`mt-1 text-[48px] leading-[1.05] font-semibold tracking-tight ${
+          value < 0 ? "text-rose-600 dark:text-rose-400" : "text-foreground"}`}>
+          {compactInr(value)}
+        </p>
+      )}
+      <div className="mt-1.5 flex items-center gap-1.5 text-xs">
+        {delta !== null ? (
+          <>
+            {up ? <TrendingUp className="h-3.5 w-3.5 text-emerald-600" />
+                : down ? <TrendingDown className="h-3.5 w-3.5 text-rose-600" />
+                       : <Minus className="h-3.5 w-3.5 text-muted-foreground" />}
+            <span className={`font-semibold ${
+              up ? "text-emerald-600 dark:text-emerald-400"
+                 : down ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground"}`}>
+              {Math.abs(delta) >= 1000 ? ">999" : Math.abs(delta).toFixed(0)}%
+            </span>
+            <span className="text-muted-foreground">vs {prevLabel}</span>
+          </>
+        ) : (
+          <span className="text-muted-foreground">Sales less purchases and expenses</span>
+        )}
+      </div>
+
+      <div className="mt-auto pt-4 space-y-1.5">
+        {parts.map((p) => (
+          <div key={p.label} className="flex items-center justify-between text-[13px]">
+            <span className="text-muted-foreground">
+              <span className="inline-block w-3 text-muted-foreground/50">{p.sign}</span>
+              {p.label}
+            </span>
+            <span className="font-mono tabular-nums text-foreground/80">
+              {loading ? "—" : compactInr(p.amount)}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

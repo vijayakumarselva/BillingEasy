@@ -7,6 +7,11 @@
 /* ── Tally-inspired Design System ── */
 @layer base {
   :root {
+    /* Dashboard tiles — surfaces stay neutral so the figures carry the page.
+       --spark is a single accent hue: the sparkline shows shape, and the
+       arrow beside it carries direction, so colour never has to. */
+    --card-surface: #ffffff;
+    --spark: #2563eb;
     --tally-green:       158 64% 26%;
     --tally-green-dark:  158 70% 18%;
     --tally-green-light: 158 45% 94%;
@@ -41,6 +46,8 @@
   }
 
   .dark {
+    --card-surface: #18181b;
+    --spark: #60a5fa;
     --background:        0 0% 8%;
     --foreground:        0 0% 92%;
     --card:              0 0% 11%;

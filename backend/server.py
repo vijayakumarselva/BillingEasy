@@ -8016,11 +8016,76 @@ async def dashboard(ctx=Depends(get_org_ctx)):
 
     net_profit = sales_total - purchase_total - expenses_total
 
+    # Last month, for the comparison on each card. A number with nothing to
+    # compare it against tells an owner very little — "₹4.2L" means one thing
+    # in a good month and another in a bad one.
+    prev_end = today.replace(day=1) - timedelta(days=1)
+    prev_start_str = prev_end.replace(day=1).strftime("%Y-%m-%d")
+    prev_end_str = prev_end.strftime("%Y-%m-%d")
+    prev_range = {"$gte": prev_start_str, "$lte": prev_end_str}
+
+    prev_sales_agg = await db.invoices.aggregate([
+        {"$match": {"org_id": oid, "invoice_date": prev_range, "type": "sale"}},
+        {"$group": {"_id": None, "total": {"$sum": "$totals.grand_total"},
+                    "gst": {"$sum": {"$add": ["$totals.cgst", "$totals.sgst", "$totals.igst"]}}}},
+    ]).to_list(1)
+    prev_pur_agg = await db.purchases.aggregate([
+        {"$match": {"org_id": oid, "purchase_date": prev_range, "type": "purchase"}},
+        {"$group": {"_id": None, "total": {"$sum": "$totals.grand_total"},
+                    "gst": {"$sum": {"$add": ["$totals.cgst", "$totals.sgst", "$totals.igst"]}}}},
+    ]).to_list(1)
+    prev_exp_agg = await db.expenses.aggregate([
+        {"$match": {"org_id": oid, "date": prev_range}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
+    ]).to_list(1)
+    p_sales = prev_sales_agg[0]["total"] if prev_sales_agg else 0
+    p_out_gst = prev_sales_agg[0]["gst"] if prev_sales_agg else 0
+    p_pur = prev_pur_agg[0]["total"] if prev_pur_agg else 0
+    p_in_gst = prev_pur_agg[0]["gst"] if prev_pur_agg else 0
+    p_exp = prev_exp_agg[0]["total"] if prev_exp_agg else 0
+
+    # Overdue receivables — the figure an owner acts on today.
+    today_str = today.strftime("%Y-%m-%d")
+    overdue_total = 0.0
+    overdue_count = 0
+    async for r in db.invoices.find(
+            {"org_id": oid, "type": "sale", "due_date": {"$lt": today_str, "$ne": ""},
+             "status": {"$nin": ["cancelled", "void", "draft", "paid"]}},
+            {"_id": 0, "id": 1, "totals": 1}):
+        paid_amt = 0.0
+        async for pmt in db.payments.find({"invoice_id": r["id"], "org_id": oid}, {"_id": 0, "amount": 1}):
+            paid_amt += pmt.get("amount", 0) or 0
+        due_amt = (r.get("totals", {}).get("grand_total", 0) or 0) - paid_amt
+        if due_amt > 0.5:
+            overdue_total += due_amt
+            overdue_count += 1
+
+    # Cash and bank, from the ledger where there is one — the old figure was a
+    # bank account's opening balance and never moved.
+    cash_bank = 0.0
+    if await db.ledger_entries.count_documents({"org_id": oid}, limit=1):
+        bals = LEDGER.account_balances(await _entries_for(oid))
+        for code, b in bals.items():
+            if code == LEDGER.SYSTEM_CODES["cash"] or code.startswith("1010"):
+                cash_bank += LEDGER.to_rupees(b["balance"])
+    else:
+        async for b in db.bank_accounts.find({"org_id": oid}, {"_id": 0, "opening_balance": 1}):
+            cash_bank += b.get("opening_balance", 0) or 0
+
     return {
         "sales_total": round(sales_total, 2), "purchase_total": round(purchase_total, 2),
         "receivable": round(receivable, 2), "payable": round(payable, 2),
         "gst_payable": round(gst_payable, 2), "net_profit": round(net_profit, 2),
         "expenses_total": round(expenses_total, 2), "chart": chart,
+        "cash_bank": round(cash_bank, 2),
+        "overdue": round(overdue_total, 2), "overdue_count": overdue_count,
+        "previous": {
+            "sales_total": round(p_sales, 2), "purchase_total": round(p_pur, 2),
+            "gst_payable": round(max(0, p_out_gst - p_in_gst), 2),
+            "expenses_total": round(p_exp, 2),
+            "net_profit": round(p_sales - p_pur - p_exp, 2),
+            "label": prev_end.strftime("%b"),
+        },
         "recent_invoices": recent, "top_customers": tc_list, "top_products": tp_list,
     }
 
