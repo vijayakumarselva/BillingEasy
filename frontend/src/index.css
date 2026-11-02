@@ -12,31 +12,35 @@
        arrow beside it carries direction, so colour never has to. */
     --card-surface: #ffffff;
     --spark: #2563eb;
-    --tally-green:       158 64% 26%;
-    --tally-green-dark:  158 70% 18%;
-    --tally-green-light: 158 45% 94%;
-    --tally-accent:      158 55% 36%;
+    --tally-green:       160 62% 26%;
+    --tally-green-dark:  162 68% 17%;
+    --tally-green-light: 158 40% 95%;
+    --tally-accent:      160 52% 36%;
 
-    --background:        0 0% 97%;
-    --foreground:        0 0% 10%;
+    /* Neutrals carry a trace of blue rather than being flat grey — flat grey
+       on white is what makes an interface look unfinished. */
+    --background:        210 20% 98%;
+    --foreground:        222 25% 11%;
     --card:              0 0% 100%;
-    --card-foreground:   0 0% 10%;
+    --card-foreground:   222 25% 11%;
     --popover:           0 0% 100%;
-    --popover-foreground:0 0% 10%;
-    --primary:           158 64% 26%;
+    --popover-foreground:222 25% 11%;
+    --primary:           160 62% 26%;
     --primary-foreground:0 0% 100%;
-    --secondary:         0 0% 93%;
-    --secondary-foreground: 0 0% 10%;
-    --muted:             0 0% 93%;
-    --muted-foreground:  0 0% 44%;
-    --accent:            158 45% 94%;
-    --accent-foreground: 158 64% 20%;
+    --secondary:         210 20% 95%;
+    --secondary-foreground: 222 25% 11%;
+    --muted:             210 20% 95%;
+    --muted-foreground:  215 14% 46%;
+    --accent:            158 40% 95%;
+    --accent-foreground: 162 64% 20%;
     --destructive:       0 72% 50%;
     --destructive-foreground: 0 0% 100%;
-    --border:            0 0% 86%;
-    --input:             0 0% 86%;
-    --ring:              158 64% 26%;
-    --radius:            0.25rem;
+    /* Borders were 14% darker than the surface: heavy enough that every table
+       read as a grid of boxes. A hairline is enough to separate. */
+    --border:            214 20% 90%;
+    --input:             214 20% 88%;
+    --ring:              160 62% 26%;
+    --radius:            0.625rem;
 
     --sidebar-bg:        158 65% 14%;
     --sidebar-fg:        158 25% 90%;
@@ -48,25 +52,27 @@
   .dark {
     --card-surface: #18181b;
     --spark: #60a5fa;
-    --background:        0 0% 8%;
-    --foreground:        0 0% 92%;
-    --card:              0 0% 11%;
-    --card-foreground:   0 0% 92%;
-    --popover:           0 0% 11%;
-    --popover-foreground:0 0% 92%;
-    --primary:           158 50% 40%;
+    /* Dark mode is chosen, not an inversion: surfaces lift in steps so cards
+       sit above the page instead of dissolving into it. */
+    --background:        222 24% 8%;
+    --foreground:        210 18% 93%;
+    --card:              222 21% 12%;
+    --card-foreground:   210 18% 93%;
+    --popover:           222 21% 13%;
+    --popover-foreground:210 18% 93%;
+    --primary:           158 50% 42%;
     --primary-foreground:0 0% 100%;
-    --secondary:         0 0% 15%;
-    --secondary-foreground: 0 0% 92%;
-    --muted:             0 0% 15%;
-    --muted-foreground:  0 0% 54%;
-    --accent:            158 30% 17%;
-    --accent-foreground: 158 50% 68%;
-    --destructive:       0 60% 42%;
+    --secondary:         220 17% 17%;
+    --secondary-foreground: 210 18% 93%;
+    --muted:             220 17% 17%;
+    --muted-foreground:  215 15% 62%;
+    --accent:            160 30% 18%;
+    --accent-foreground: 158 50% 70%;
+    --destructive:       0 60% 45%;
     --destructive-foreground: 0 0% 100%;
-    --border:            0 0% 19%;
-    --input:             0 0% 19%;
-    --ring:              158 50% 40%;
+    --border:            220 15% 21%;
+    --input:             220 15% 23%;
+    --ring:              158 50% 42%;
 
     --sidebar-bg:        0 0% 6%;
     --sidebar-fg:        0 0% 78%;
@@ -81,13 +87,22 @@
   html, body {
     @apply bg-background text-foreground;
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    font-size: 13px;
-    line-height: 1.5;
+    /* 13px was set when the real face never loaded and everything rendered in
+       system-ui, which runs small. Inter at 14px is the comfortable size. */
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv11';   /* a single-storey 'a' reads cleaner small */
   }
   h1, h2, h3, h4, h5, h6 {
     font-family: 'Inter', system-ui, sans-serif;
     font-weight: 600;
+    /* Headings set tighter than body text — the larger the type, the less
+       space it needs between letters. */
+    letter-spacing: -0.015em;
   }
+  h1 { letter-spacing: -0.022em; }
   .font-mono-fin {
     font-family: 'JetBrains Mono', monospace;
     font-feature-settings: 'tnum';
