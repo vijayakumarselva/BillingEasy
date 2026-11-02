@@ -300,20 +300,6 @@ export default function InvoiceCreate() {
 
   const party = parties.find(p => p.id === partyId);
 
-  // What this customer already owes, checked as soon as there is a customer
-  // and a total — a warning after the invoice is saved is a warning too late.
-  const [credit, setCredit] = useState(null);
-  useEffect(() => {
-    if (!partyId || type !== "sale") { setCredit(null); return; }
-    let cancelled = false;
-    const t = setTimeout(() => {
-      api.get(`/parties/${partyId}/credit-status`,
-              { params: { amount: totals.grand || 0, exclude_invoice: editId || "" } })
-        .then((r) => { if (!cancelled) setCredit(r.data?.ok ? null : r.data); })
-        .catch(() => {});
-    }, 400);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [partyId, type, totals.grand, editId]);
 
   // Add a customer without leaving the invoice
   const openNewCustomer = () => {
@@ -396,6 +382,25 @@ export default function InvoiceCreate() {
     const tcsAmt = tdsMode === "tcs" ? Math.round(taxable * tdsRate / 100 * 100) / 100 : 0;
     return { subtotal, discount, taxable, cgst, sgst, igst, shipping, adj, roundOff, grand, tdsAmt, tcsAmt };
   }, [items, sameState, taxMode, shippingCharges, adjustment, tdsMode, tdsRate]);
+
+  // What this customer already owes, checked as soon as there is a customer
+  // and a total — a warning after the invoice is saved is a warning too late.
+  //
+  // This has to sit below the totals useMemo: reading `totals` above its own
+  // declaration throws on every render, which blanked the whole invoice form.
+  const [credit, setCredit] = useState(null);
+  const grandTotal = totals.grand || 0;
+  useEffect(() => {
+    if (!partyId || type !== "sale") { setCredit(null); return; }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      api.get(`/parties/${partyId}/credit-status`,
+              { params: { amount: grandTotal, exclude_invoice: editId || "" } })
+        .then((r) => { if (!cancelled) setCredit(r.data?.ok ? null : r.data); })
+        .catch(() => {});
+    }, 400);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [partyId, type, grandTotal, editId]);
 
   const setItem = (i, patch) => setItems(prev => prev.map((it, idx) => idx === i ? { ...it, ...patch } : it));
 
