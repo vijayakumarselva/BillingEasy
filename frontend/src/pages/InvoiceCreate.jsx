@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { Trash2, Plus, ArrowLeft, Search, Paperclip, ChevronRight, BarChart2, RefreshCw, Warehouse } from "lucide-react";
+import { Trash2, Plus, ArrowLeft, Search, Paperclip, ChevronRight, BarChart2, RefreshCw, Warehouse, AlertTriangle } from "lucide-react";
 import { inr, todayISO, addDaysISO } from "@/lib/format";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import GstinField from "@/components/GstinField";
