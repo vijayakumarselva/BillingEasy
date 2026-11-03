@@ -82,8 +82,9 @@
   },
   "scripts": {
     "start": "craco start",
-    "build": "craco build",
-    "test": "craco test"
+    "build": "node scripts/check-jsx-refs.mjs && craco build",
+    "test": "craco test",
+    "check:jsx": "node scripts/check-jsx-refs.mjs"
   },
   "browserslist": {
     "production": [

@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Textarea } from "@/components/ui/textarea";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Ban, Pencil, Trash2, FileDown, ScanLine, Upload, Loader2, Smartphone, Copy, CheckCircle2, Bell, AlertTriangle, Info, Warehouse, PackageCheck, Paperclip, Eye, X, CreditCard } from "lucide-react";
+import { Plus, Ban, Pencil, Trash2, FileDown, ScanLine, Upload, Loader2, Smartphone, Copy, CheckCircle2, Bell, AlertTriangle, Info, Warehouse, PackageCheck, Paperclip, Eye, X, CreditCard, Search } from "lucide-react";
 import { PaymentDialog } from "@/pages/Payments";
 import { downloadFile } from "@/lib/mobile";
 import DropZone from "@/components/DropZone";
@@ -126,6 +126,14 @@ export default function Purchases() {
   const [showUploadLink, setShowUploadLink] = useState(false);
   const [uploadToken, setUploadToken] = useState("");
   const [copied, setCopied] = useState(false);
+  // Filters. The bills list grows fast — by the time a business has a few
+  // hundred, "which bills from EID Parry are still unpaid" is the only
+  // question anyone asks of this page.
+  const [search, setSearch] = useState("");
+  const [supplierFilter, setSupplierFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [whFilter, setWhFilter] = useState("all");
   const nav = useNavigate();
 
   const load = async () => {
@@ -134,6 +142,46 @@ export default function Purchases() {
     setList(data);
     setLoading(false);
   };
+
+  // Options come from the bills themselves, so the lists only ever offer
+  // suppliers and warehouses that actually appear here.
+  const supplierOptions = useMemo(
+    () => [...new Set(list.map((p) => p.party_name).filter(Boolean))].sort(),
+    [list]);
+  const warehouseOptions = useMemo(
+    () => [...new Set(list.map((p) => p.warehouse_name).filter(Boolean))].sort(),
+    [list]);
+
+  const statusOf = (p) => {
+    const st = p.payment_status || p.status;
+    if (st === "cancelled") return "cancelled";
+    if (st === "paid") return "paid";
+    if (st === "partial") return "partial";
+    return "unpaid";
+  };
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return list.filter((p) => {
+      if (supplierFilter !== "all" && p.party_name !== supplierFilter) return false;
+      if (whFilter !== "all" && p.warehouse_name !== whFilter) return false;
+      if (typeFilter !== "all" && (p.type || "purchase") !== typeFilter) return false;
+      if (statusFilter !== "all" && statusOf(p) !== statusFilter) return false;
+      if (!q) return true;
+      return [p.bill_no, p.po_no, p.party_name]
+        .some((v) => String(v || "").toLowerCase().includes(q));
+    });
+  }, [list, search, supplierFilter, statusFilter, typeFilter, whFilter]);
+
+  const filtersOn = search.trim() !== "" || supplierFilter !== "all" ||
+                    statusFilter !== "all" || typeFilter !== "all" || whFilter !== "all";
+  const clearFilters = () => {
+    setSearch(""); setSupplierFilter("all"); setStatusFilter("all");
+    setTypeFilter("all"); setWhFilter("all");
+  };
+  const filteredTotal = filtered.reduce((s2, p) => s2 + (p.totals?.grand_total || 0), 0);
+  const filteredDue = filtered.reduce(
+    (s2, p) => s2 + (statusOf(p) === "cancelled" ? 0 : (p.due ?? p.payable ?? 0)), 0);
 
   const loadPendingUploads = async () => {
     try {
@@ -318,14 +366,83 @@ export default function Purchases() {
         </div>
       )}
 
+      {/* ── Filters ── */}
+      <div className="flex flex-wrap gap-2 items-center">
+        <div className="relative flex-1 min-w-[220px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)}
+                 placeholder="Search bill #, PO # or supplier..."
+                 className="pl-9" data-testid="purchase-search" />
+        </div>
+        <Select value={supplierFilter} onValueChange={setSupplierFilter}>
+          <SelectTrigger className="w-[190px]" data-testid="purchase-supplier-filter">
+            <SelectValue placeholder="All suppliers" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All suppliers</SelectItem>
+            {supplierOptions.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="w-[140px]" data-testid="purchase-status-filter">
+            <SelectValue placeholder="All status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All status</SelectItem>
+            <SelectItem value="unpaid">Unpaid</SelectItem>
+            <SelectItem value="partial">Part paid</SelectItem>
+            <SelectItem value="paid">Paid</SelectItem>
+            <SelectItem value="cancelled">Cancelled</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <SelectTrigger className="w-[150px]" data-testid="purchase-type-filter">
+            <SelectValue placeholder="All types" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All types</SelectItem>
+            <SelectItem value="purchase">Purchase</SelectItem>
+            <SelectItem value="purchase_order">Purchase order</SelectItem>
+            <SelectItem value="debit_note">Debit note</SelectItem>
+          </SelectContent>
+        </Select>
+        {warehouseOptions.length > 0 && (
+          <Select value={whFilter} onValueChange={setWhFilter}>
+            <SelectTrigger className="w-[170px]" data-testid="purchase-warehouse-filter">
+              <SelectValue placeholder="All warehouses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All warehouses</SelectItem>
+              {warehouseOptions.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
+        {filtersOn && (
+          <Button variant="ghost" size="sm" onClick={clearFilters} data-testid="purchase-clear-filters">
+            Clear
+          </Button>
+        )}
+      </div>
+
+      {/* What the filtered set is worth — the reason anyone filters. */}
+      {!loading && filtersOn && (
+        <p className="text-sm text-muted-foreground -mt-2">
+          {filtered.length} of {list.length} bills ·{" "}
+          <strong className="text-foreground">{inr(filteredTotal)}</strong> total
+          {filteredDue > 0 && <> · <strong className="text-rose-600">{inr(filteredDue)}</strong> still payable</>}
+        </p>
+      )}
+
       <Card>
         <div className="overflow-x-auto">
           <table className="app-table">
             <thead><tr><th>PO # / Bill #</th><th>Supplier</th><th>Date</th><th>Warehouse</th><th>Type</th><th className="text-right">Taxable</th><th className="text-right">GST</th><th className="text-right">Total</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {loading ? [1,2,3].map(i => <tr key={i}><td colSpan={10}><Skeleton className="h-8 w-full" /></td></tr>) :
-                list.length === 0 ? <tr><td colSpan={10} className="text-center text-muted-foreground py-8">No purchases yet.</td></tr> :
-                list.map(p => (
+                filtered.length === 0 ? <tr><td colSpan={10} className="text-center text-muted-foreground py-8">
+                  {list.length ? "No bills match these filters." : "No purchases yet."}
+                </td></tr> :
+                filtered.map(p => (
                   <tr key={p.id} data-testid={`purchase-row-${p.bill_no}`}
                     className={rowDragId === p.id ? "outline outline-2 outline-dashed outline-indigo-400 bg-indigo-50/60" : ""}
                     onDragOver={(e) => { if (p.status === "cancelled" || !e.dataTransfer.types.includes("Files")) return; e.preventDefault(); setRowDragId(p.id); }}
