@@ -274,7 +274,7 @@ export default function InvoiceDetail() {
         </div>
 
         <div className="mt-6 overflow-x-auto">
-          <table className="app-table">
+          <table className="app-table table-plain">
             <thead><tr><th>#</th><th>Item</th><th>HSN</th><th>Qty</th><th>Rate</th><th>Disc</th><th>Taxable</th><th>GST%</th>
               {inv.same_state ? <><th>CGST</th><th>SGST</th></> : <th>IGST</th>}<th className="text-right">Total</th></tr></thead>
             <tbody>

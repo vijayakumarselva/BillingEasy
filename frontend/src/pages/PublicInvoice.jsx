@@ -82,7 +82,7 @@ export default function PublicInvoice() {
           </div>
 
           <div className="overflow-x-auto mb-4">
-            <table className="app-table">
+            <table className="app-table table-plain">
               <thead><tr><th>#</th><th>Item</th><th>HSN</th><th>Qty</th><th>Rate</th><th>Taxable</th>
                 {same ? <><th>CGST</th><th>SGST</th></> : <th>IGST</th>}<th className="text-right">Total</th></tr></thead>
               <tbody>

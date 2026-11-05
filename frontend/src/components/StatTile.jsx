@@ -9,7 +9,9 @@
 // comparison against a named period, and an optional sparkline. Surfaces stay
 // neutral so the eye goes to the numbers; colour is reserved for direction
 // and status, where it means something.
+import { useEffect, useRef, useState } from "react";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { useReducedMotion } from "framer-motion";
 
 /** Compact Indian-format money: ₹12.9L, ₹4.2Cr — full precision on hover. */
 export function compactInr(n) {
@@ -55,6 +57,51 @@ function Sparkline({ points = [] }) {
   );
 }
 
+/** Counts from the figure already on screen to the new one.
+ *
+ *  Not decoration: a tile that changes when you switch the month or the
+ *  entity should show that it changed, and a number that jumps is easy to
+ *  miss. Eased, short, and skipped entirely for reduced motion — and the
+ *  first paint is never animated, so the page does not open on a row of
+ *  zeros spinning up. */
+function useCountUp(value, { enabled = true } = {}) {
+  const target = Number.isFinite(value) ? value : 0;
+  const reduce = useReducedMotion();
+  const [shown, setShown] = useState(target);
+  const from = useRef(target);
+  const first = useRef(true);
+
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      from.current = target;
+      setShown(target);
+      return;
+    }
+    if (reduce || !enabled || from.current === target) {
+      from.current = target;
+      setShown(target);
+      return;
+    }
+    const start = performance.now();
+    const begin = from.current;
+    const span = target - begin;
+    const ms = 500;
+    let raf;
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / ms);
+      const eased = 1 - Math.pow(1 - t, 3);   // ease-out cubic
+      setShown(begin + span * eased);
+      if (t < 1) raf = requestAnimationFrame(tick);
+      else from.current = target;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, reduce, enabled]);
+
+  return shown;
+}
+
 /**
  * @param label      what the figure is — sentence case, no colon
  * @param value      the number itself
@@ -69,6 +116,7 @@ export default function StatTile({
   label, value, period, previous, prevLabel = "last month",
   upIsGood = true, series, tone = "default", icon: Icon, onClick, loading,
 }) {
+  const shown = useCountUp(value, { enabled: !loading });
   const hasPrev = Number.isFinite(previous) && previous !== 0;
   const delta = hasPrev ? ((value - previous) / Math.abs(previous)) * 100 : null;
   const rose = delta !== null && delta > 0.5;
@@ -89,7 +137,8 @@ export default function StatTile({
       disabled={!onClick}
       title={Number.isFinite(value) ? fullInr(value) : undefined}
       className={`group text-left w-full rounded-xl border ${toneRing} bg-card
-                  px-4 py-3.5 transition-shadow hover:shadow-md
+                  px-4 py-3.5 transition-all duration-150
+                  enabled:hover:-translate-y-0.5 enabled:hover:shadow-md enabled:active:translate-y-0
                   disabled:cursor-default focus-visible:outline-none
                   focus-visible:ring-2 focus-visible:ring-blue-500/40`}
       style={{ "--tile-surface": "var(--card-surface, #fff)" }}
@@ -106,7 +155,7 @@ export default function StatTile({
         <div className="mt-1.5 flex items-end justify-between gap-3">
           {/* Proportional figures: a big number with tabular-nums reads loose. */}
           <span className="text-[26px] leading-none font-semibold tracking-tight text-foreground">
-            {compactInr(value)}
+            {compactInr(shown)}
           </span>
           {series?.length > 1 && <Sparkline points={series} />}
         </div>

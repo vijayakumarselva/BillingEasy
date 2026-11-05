@@ -1,5 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation, Link } from "react-router-dom";
 import { useEffect, useState } from "react";
+import { motion, useReducedMotion } from "framer-motion";
+import useTableCards from "@/hooks/useTableCards";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { Button } from "@/components/ui/button";
@@ -68,6 +70,10 @@ export default function AppLayout() {
   const { theme, toggle } = useTheme();
   const nav = useNavigate();
   const loc = useLocation();
+  const reduceMotion = useReducedMotion();
+  // Labels every table cell with its column heading, so the lists can restack
+  // into cards on a phone (see hooks/useTableCards.js).
+  useTableCards();
   const [showCreateOrg, setShowCreateOrg] = useState(false);
   const [wallet, setWallet] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -576,7 +582,18 @@ export default function AppLayout() {
         {/* Main content */}
         <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto p-3 md:p-4 mobile-main-pad">
-            <Outlet />
+            {/* A short rise on route change, so a new screen reads as having
+                arrived rather than having been swapped underneath you. Keyed
+                on the path: no exit animation, because waiting for one to
+                finish before the next page mounts makes navigation feel slow. */}
+            <motion.div
+              key={loc.pathname}
+              initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.18, ease: [0.22, 0.61, 0.36, 1] }}
+            >
+              <Outlet />
+            </motion.div>
           </div>
           {/* F-key bar (desktop only) */}
           <div className="fkey-bar shrink-0 hidden md:flex">
