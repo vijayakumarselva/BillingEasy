@@ -628,6 +628,14 @@ function Loans({ accounts, onChange }) {
   const [data, setData] = useState(null);
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState(null);
+  // Simple by default: a name, what leaves the account each month, and how
+  // many of those are left. Everything else is derived. The interest split
+  // is there for anyone who wants it, folded away.
+  const [simple, setSimple] = useState({
+    name: "", loan_type: "home", lender: "", emi: "", months_left: "",
+    next_due: todayISO(),
+  });
+  const [advanced, setAdvanced] = useState(false);
   const [form, setForm] = useState({
     name: "", loan_type: "home", lender: "", principal: "", interest_rate: "",
     tenure_months: "", first_due_date: todayISO(), installments_paid: 0, account_id: "",
@@ -654,12 +662,43 @@ function Loans({ accounts, onChange }) {
     try {
       await api.post("/personal/loans", {
         ...form,
+        name: form.name || simple.name,
+        loan_type: form.loan_type || simple.loan_type,
         principal: parseFloat(form.principal) || 0,
         interest_rate: parseFloat(form.interest_rate) || 0,
         tenure_months: parseInt(form.tenure_months, 10) || 0,
         installments_paid: parseInt(form.installments_paid, 10) || 0,
       });
       toast.success("Loan added"); setOpen(false); load(); onChange?.();
+    } catch (e) { toast.error(e?.response?.data?.detail || "Could not save"); }
+  };
+
+  /** Two numbers in, a full loan out.
+   *
+   *  An EMI repeated N times is a loan of EMI x N at no interest, so the
+   *  existing schedule, outstanding balance and due dates all work without a
+   *  special case. Someone who wants the interest split can open Advanced
+   *  and give the rate; someone who just knows "thirty thousand a month,
+   *  six to go" never has to. */
+  const saveSimple = async () => {
+    const emi = parseFloat(simple.emi) || 0;
+    const left = parseInt(simple.months_left, 10) || 0;
+    if (!emi || !left) return;
+    const first = new Date(simple.next_due || todayISO());
+    try {
+      await api.post("/personal/loans", {
+        name: simple.name, loan_type: simple.loan_type, lender: simple.lender,
+        principal: Math.round(emi * left * 100) / 100,
+        interest_rate: 0,
+        tenure_months: left,
+        emi,
+        first_due_date: first.toISOString().slice(0, 10),
+        installments_paid: 0,
+      });
+      toast.success("Loan added");
+      setSimple({ name: "", loan_type: "home", lender: "", emi: "", months_left: "",
+                  next_due: todayISO() });
+      setOpen(false); load(); onChange?.();
     } catch (e) { toast.error(e?.response?.data?.detail || "Could not save"); }
   };
 
@@ -731,12 +770,41 @@ function Loans({ accounts, onChange }) {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader><DialogTitle>Add a loan</DialogTitle>
-            <DialogDescription>The EMI, repayment schedule and outstanding balance are worked out from these.</DialogDescription></DialogHeader>
+            <DialogDescription>
+              What leaves your account each month, and how many are left. That is enough.
+            </DialogDescription>
+          </DialogHeader>
+
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Name" v={form.name} on={(v) => setForm({ ...form, name: v })} />
+            <div className="col-span-2 space-y-1.5">
+              <Label>What is it?</Label>
+              <Input value={simple.name} autoFocus placeholder="Car loan, home loan, gold loan…"
+                     onChange={(e) => setSimple({ ...simple, name: e.target.value })}
+                     data-testid="pf-loan-name" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>EMI every month (₹)</Label>
+              <Input type="number" inputMode="decimal" value={simple.emi}
+                     placeholder="30377"
+                     onChange={(e) => setSimple({ ...simple, emi: e.target.value })}
+                     data-testid="pf-loan-emi" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Months still to pay</Label>
+              <Input type="number" inputMode="numeric" value={simple.months_left}
+                     placeholder="6"
+                     onChange={(e) => setSimple({ ...simple, months_left: e.target.value })}
+                     data-testid="pf-loan-months" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Next EMI date</Label>
+              <Input type="date" value={simple.next_due}
+                     onChange={(e) => setSimple({ ...simple, next_due: e.target.value })} />
+            </div>
             <div className="space-y-1.5">
               <Label>Type</Label>
-              <Select value={form.loan_type} onValueChange={(v) => setForm({ ...form, loan_type: v })}>
+              <Select value={simple.loan_type}
+                      onValueChange={(v) => setSimple({ ...simple, loan_type: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {["home","personal","vehicle","gold","business","other"].map((t) => (
@@ -745,22 +813,62 @@ function Loans({ accounts, onChange }) {
                 </SelectContent>
               </Select>
             </div>
-            <Field label="Lender" v={form.lender} on={(v) => setForm({ ...form, lender: v })} />
-            <Field label="Amount (₹)" type="number" v={form.principal} on={(v) => setForm({ ...form, principal: v })} />
-            <Field label="Interest rate (% p.a.)" type="number" v={form.interest_rate} on={(v) => setForm({ ...form, interest_rate: v })} />
-            <Field label="Tenure (months)" type="number" v={form.tenure_months} on={(v) => setForm({ ...form, tenure_months: v })} />
-            <Field label="First EMI date" type="date" v={form.first_due_date} on={(v) => setForm({ ...form, first_due_date: v })} />
-            <Field label="Instalments already paid" type="number" v={form.installments_paid} on={(v) => setForm({ ...form, installments_paid: v })} />
           </div>
-          {preview > 0 && (
+
+          {(parseFloat(simple.emi) > 0 && parseInt(simple.months_left, 10) > 0) && (
             <div className="rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-200 px-4 py-2.5 text-sm">
-              Monthly EMI will be{" "}
-              <strong className="font-mono">{inr(Math.round(preview * 100) / 100)}</strong>
+              {inr(parseFloat(simple.emi))} a month for {simple.months_left} months —{" "}
+              <strong className="font-mono">
+                {inr(parseFloat(simple.emi) * parseInt(simple.months_left, 10))}
+              </strong>{" "}
+              still to pay.
             </div>
           )}
+
+          <button type="button" onClick={() => setAdvanced((a) => !a)}
+                  className="text-xs text-muted-foreground hover:text-foreground text-left"
+                  data-testid="pf-loan-advanced">
+            {advanced ? "− Hide" : "+ "}Interest details{advanced ? "" : " (optional)"}
+          </button>
+
+          {advanced && (
+            <div className="grid grid-cols-2 gap-3 border-t pt-3">
+              <p className="col-span-2 text-xs text-muted-foreground">
+                Give the original amount and rate and the schedule splits each instalment
+                into interest and principal. Leave it alone and the EMI is simply counted down.
+              </p>
+              <Field label="Lender" v={form.lender} on={(v) => setForm({ ...form, lender: v })} />
+              <Field label="Amount borrowed (₹)" type="number" v={form.principal}
+                     on={(v) => setForm({ ...form, principal: v })} />
+              <Field label="Interest rate (% p.a.)" type="number" v={form.interest_rate}
+                     on={(v) => setForm({ ...form, interest_rate: v })} />
+              <Field label="Total months" type="number" v={form.tenure_months}
+                     on={(v) => setForm({ ...form, tenure_months: v })} />
+              <Field label="First EMI date" type="date" v={form.first_due_date}
+                     on={(v) => setForm({ ...form, first_due_date: v })} />
+              <Field label="Instalments already paid" type="number" v={form.installments_paid}
+                     on={(v) => setForm({ ...form, installments_paid: v })} />
+              {preview > 0 && (
+                <div className="col-span-2 text-xs text-muted-foreground">
+                  That works out to {inr(Math.round(preview * 100) / 100)} a month.
+                </div>
+              )}
+            </div>
+          )}
+
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={save} disabled={!form.name || !form.principal || !form.tenure_months}>Add loan</Button>
+            {advanced && form.principal && form.tenure_months ? (
+              <Button onClick={() => save({ ...form, name: form.name || simple.name })}>
+                Add with interest
+              </Button>
+            ) : (
+              <Button onClick={saveSimple}
+                      disabled={!simple.name || !simple.emi || !simple.months_left}
+                      data-testid="pf-loan-save">
+                Add loan
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
