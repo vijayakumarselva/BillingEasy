@@ -4,7 +4,7 @@ import { downloadFile } from "@/lib/mobile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogDescription, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Truck, FileDown, CheckCircle2, AlertTriangle } from "lucide-react";
 
@@ -69,6 +69,7 @@ export default function EwayBillDialog({ invoiceId, invoiceNo, open, onOpenChang
           <DialogTitle className="flex items-center gap-2">
             <Truck className="h-4 w-4 text-green-600" /> E-Way Bill{invoiceNo ? ` — ${invoiceNo}` : ""}
           </DialogTitle>
+            <DialogDescription>Generates the NIC payload for upload to ewaybillgst.gov.in or your GSP.</DialogDescription>
         </DialogHeader>
 
         {!result ? (

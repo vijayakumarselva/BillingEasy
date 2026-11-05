@@ -10,7 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { inr, fmtDate } from "@/lib/format";
 import { openExternalUrl } from "@/lib/mobile";
 import {
@@ -206,6 +206,7 @@ export default function Receivables() {
         <DialogContent className="max-w-2xl" data-testid="party-bills">
           <DialogHeader>
             <DialogTitle>{open?.party_name}</DialogTitle>
+            <DialogDescription>The individual bills making up this balance, oldest first.</DialogDescription>
           </DialogHeader>
           <div className="flex gap-4 text-xs text-muted-foreground">
             <span>Outstanding <strong className="font-mono text-foreground">{inr(open?.total || 0)}</strong></span>

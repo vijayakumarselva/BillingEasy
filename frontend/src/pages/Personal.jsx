@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogDescription, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { inr, fmtDate } from "@/lib/format";
 import StatTile, { compactInr } from "@/components/StatTile";
@@ -410,6 +410,7 @@ function TxnDialog({ kind, onClose, accounts, cats, onSaved, existing }) {
             {existing ? "Edit" : isTransfer ? "Move money"
               : form.kind === "income" ? "Add income" : "Add expense"}
           </DialogTitle>
+            <DialogDescription>Record money in, money out, or a move between your own accounts.</DialogDescription>
         </DialogHeader>
 
         <div className="flex gap-1 rounded-lg bg-muted p-1">
@@ -710,7 +711,8 @@ function Loans({ accounts, onChange }) {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>Add a loan</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Add a loan</DialogTitle>
+            <DialogDescription>The EMI, repayment schedule and outstanding balance are worked out from these.</DialogDescription></DialogHeader>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Name" v={form.name} on={(v) => setForm({ ...form, name: v })} />
             <div className="space-y-1.5">
@@ -746,7 +748,8 @@ function Loans({ accounts, onChange }) {
 
       <Dialog open={!!detail} onOpenChange={(o) => !o && setDetail(null)}>
         <DialogContent className="max-w-3xl">
-          <DialogHeader><DialogTitle>{detail?.name} · repayment schedule</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{detail?.name} · repayment schedule</DialogTitle>
+            <DialogDescription>Every instalment, split into interest and principal.</DialogDescription></DialogHeader>
           <div className="flex gap-5 text-xs text-muted-foreground">
             <span>Interest paid <strong className="font-mono text-foreground">{inr(detail?.interest_paid || 0)}</strong></span>
             <span>Interest left <strong className="font-mono text-foreground">{inr(detail?.interest_remaining || 0)}</strong></span>
@@ -887,7 +890,8 @@ function Recurring({ accounts, cats, onChange }) {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>Add a recurring payment</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Add a recurring payment</DialogTitle>
+            <DialogDescription>Rent, EMIs, insurance and subscriptions that repeat on a schedule.</DialogDescription></DialogHeader>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Name" v={form.name} on={(v) => setForm({ ...form, name: v })} />
             <Field label="Amount (₹)" type="number" v={form.amount} on={(v) => setForm({ ...form, amount: v })} />
@@ -1099,7 +1103,8 @@ function Goals({ onChange }) {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>Add a savings goal</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Add a savings goal</DialogTitle>
+            <DialogDescription>Set a target and a monthly contribution to see whether it arrives on time.</DialogDescription></DialogHeader>
           <div className="flex flex-wrap gap-1.5">
             {PRESETS.map((p) => (
               <button key={p} onClick={() => setForm({ ...form, name: p })}
@@ -1186,7 +1191,8 @@ function Accounts({ accounts, onChange }) {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Add an account</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Add an account</DialogTitle>
+            <DialogDescription>A bank account, cash in hand, a wallet or a credit card.</DialogDescription></DialogHeader>
           <Field label="Name" v={form.name} on={(v) => setForm({ ...form, name: v })} />
           <div className="space-y-1.5">
             <Label>Type</Label>

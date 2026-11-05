@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogDescription, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { inr, fmtDate } from "@/lib/format";
 import {
   Scale, BookOpen, Landmark, TrendingUp, RefreshCw, Plus, Trash2,
@@ -440,7 +440,8 @@ function JournalDialog({ open, onOpenChange, accounts, onSaved }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl" data-testid="journal-dialog">
-        <DialogHeader><DialogTitle>New Journal Entry</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>New Journal Entry</DialogTitle>
+            <DialogDescription>A manual entry — depreciation, capital, or a contra between cash and bank. Debits must equal credits.</DialogDescription></DialogHeader>
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <Label>Date</Label>
