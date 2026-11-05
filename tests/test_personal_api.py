@@ -217,6 +217,27 @@ def test_the_report_adds_up():
     check("and the transactions behind it are included", len(rep["transactions"]) > 0)
 
 
+def test_importing_bank_messages():
+    print("\nreading pasted bank messages")
+    blob = ("Rs.1,250.00 debited from A/c XX4521 on 03-11-2026 to SWIGGY. Ref 998877665544\n\n"
+            "123456 is your OTP for a txn of Rs.5,000. Do not share with anyone.")
+    run(mdb.pf_accounts.update_one({"id": SAV}, {"$set": {"account_no": "000123454521"}}))
+    res = run(server.pf_parse_messages(server.PFMessagesIn(text=blob), ALICE))
+    check("the payment is read", res["counts"]["read"] == 1, str(res["counts"]))
+    check("the OTP is not", res["counts"]["skipped"] == 1)
+    row = res["parsed"][0]
+    check("and matched to the right account", row["account_id"] == SAV, str(row["account_id"]))
+
+    rows = [server.PFImportRow(**{k: v for k, v in row.items()
+                                  if k in server.PFImportRow.model_fields})]
+    first = run(server.pf_import_messages(server.PFImportIn(rows=rows), ALICE))
+    check("importing saves it", first["imported"] == 1, str(first))
+
+    again = run(server.pf_import_messages(server.PFImportIn(rows=rows), ALICE))
+    check("pasting the same block again imports nothing",
+          again["imported"] == 0 and again["skipped_duplicates"] == 1, str(again))
+
+
 def main():
     for t in (test_accounts_and_balances, test_the_three_traps_end_to_end,
               test_a_transfer_to_itself_is_refused, test_a_loan_and_its_emi,
@@ -224,7 +245,8 @@ def main():
               test_a_recurring_payment_is_not_paid_twice,
               test_budgets_and_goals, test_one_persons_money_is_their_own,
               test_nothing_leaks_into_the_business_books,
-              test_an_account_in_use_cannot_vanish, test_the_report_adds_up):
+              test_an_account_in_use_cannot_vanish, test_the_report_adds_up,
+              test_importing_bank_messages):
         t()
     failed = [n for n, ok in OK if not ok]
     print(f"\n{len(OK) - len(failed)}/{len(OK)} checks passed")

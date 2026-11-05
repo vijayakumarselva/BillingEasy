@@ -73,6 +73,7 @@ import reconcile as RECON
 import ledger as LEDGER
 import receivables as RECV
 import personal as PF
+import sms_parse as SMS
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
@@ -8467,6 +8468,83 @@ async def pf_update_goal(gid: str, body: PFGoalIn, user=Depends(get_current_user
 async def pf_delete_goal(gid: str, user=Depends(get_current_user)):
     await db.pf_goals.delete_one(_pf(user, {"id": gid}))
     return {"ok": True}
+
+
+
+class PFMessagesIn(BaseModel):
+    text: str
+
+
+@api.post("/personal/parse-messages")
+async def pf_parse_messages(body: PFMessagesIn, user=Depends(get_current_user)):
+    """Read a pasted block of bank SMS into draft transactions.
+
+    Nothing is saved here. The person sees what was understood, what was
+    skipped and why, and fixes anything wrong before importing.
+    """
+    accounts = await _pf_all(user, db.pf_accounts)
+    loans = await _pf_all(user, db.pf_loans)
+    return SMS.parse_blob(body.text or "", accounts=accounts, loans=loans,
+                          today=now_dt().date())
+
+
+class PFImportRow(BaseModel):
+    kind: str
+    amount: float
+    date: str
+    account_id: str = ""
+    to_account_id: str = ""
+    category: str = ""
+    notes: str = ""
+    loan_id: str = ""
+    reference: str = ""
+
+
+class PFImportIn(BaseModel):
+    rows: List[PFImportRow]
+
+
+@api.post("/personal/import-messages")
+async def pf_import_messages(body: PFImportIn, user=Depends(get_current_user)):
+    """Save the rows the person approved.
+
+    A message already imported is not imported twice: the bank's own
+    reference, where it has one, is what identifies it. Pasting an
+    overlapping block a second time is the obvious way to double your
+    spending, and people do paste the whole month again.
+    """
+    saved, skipped, errors = [], 0, []
+    for row in body.rows:
+        doc = {**row.model_dump(), "id": str(uuid.uuid4()),
+               "user_id": _me(user), "source": "sms", "created_at": now_iso()}
+        try:
+            PF.validate_txn(doc)
+        except PF.PersonalFinanceError as exc:
+            errors.append(f"{row.date} {row.amount}: {exc}")
+            continue
+        if doc.get("reference"):
+            dup = await db.pf_transactions.find_one(
+                _pf(user, {"reference": doc["reference"]}), {"_id": 0, "id": 1})
+            if dup:
+                skipped += 1
+                continue
+        else:
+            # No reference to go on — same day, same amount, same account is
+            # near enough to call it the same payment.
+            dup = await db.pf_transactions.find_one(
+                _pf(user, {"date": doc["date"], "amount": doc["amount"],
+                           "account_id": doc.get("account_id", ""), "source": "sms"}),
+                {"_id": 0, "id": 1})
+            if dup:
+                skipped += 1
+                continue
+        await db.pf_transactions.insert_one(doc)
+        if doc.get("loan_id"):
+            await db.pf_loans.update_one(_pf(user, {"id": doc["loan_id"]}),
+                                         {"$inc": {"installments_paid": 1}})
+        saved.append(doc["id"])
+    return {"ok": True, "imported": len(saved), "skipped_duplicates": skipped,
+            "errors": errors}
 
 
 # ── the dashboard, and reports ──

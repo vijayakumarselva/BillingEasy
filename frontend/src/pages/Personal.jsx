@@ -18,7 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { inr, fmtDate } from "@/lib/format";
 import StatTile, { compactInr } from "@/components/StatTile";
 import {
-  Wallet, TrendingUp, TrendingDown, Plus, Target, Landmark, CalendarClock,
+  Wallet, TrendingUp, TrendingDown, Plus, Target, Landmark, CalendarClock, MessageSquare,
   AlertTriangle, PiggyBank, Trash2, CreditCard, ArrowLeftRight, Repeat, Check,
 } from "lucide-react";
 import {
@@ -48,6 +48,8 @@ export default function Personal() {
   const [cats, setCats] = useState({ income: [], expense: [] });
   const [accounts, setAccounts] = useState([]);
   const [quick, setQuick] = useState(null);       // "income" | "expense" | "transfer"
+  const [importOpen, setImportOpen] = useState(false);
+  const [loans, setLoans] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -58,6 +60,7 @@ export default function Personal() {
         api.get("/personal/categories"),
       ]);
       setData(d.data); setAccounts(a.data || []); setCats(c.data || {});
+      api.get("/personal/loans").then((l) => setLoans(l.data?.loans || [])).catch(() => {});
     } catch (e) {
       setError(e?.response?.data?.detail || "Could not load your personal finances.");
       setData(null);
@@ -95,6 +98,11 @@ export default function Personal() {
                   className="h-11 sm:h-10 bg-blue-600 hover:bg-blue-700"
                   data-testid="pf-add-expense">
             <Plus className="h-4 w-4 mr-1.5" /> Expense
+          </Button>
+          <Button onClick={() => setImportOpen(true)} variant="outline"
+                  className="col-span-2 sm:col-auto h-11 sm:h-10"
+                  data-testid="pf-import-messages">
+            <MessageSquare className="h-4 w-4 mr-1.5" /> Read bank SMS
           </Button>
         </div>
       </div>
@@ -168,6 +176,9 @@ export default function Personal() {
 
       <TxnDialog kind={quick} onClose={() => setQuick(null)}
                  accounts={accounts} cats={cats} onSaved={load} />
+
+      <MessageImport open={importOpen} onClose={() => setImportOpen(false)}
+                     accounts={accounts} cats={cats} loans={loans} onImported={load} />
     </div>
   );
 }
@@ -1225,5 +1236,198 @@ function Accounts({ accounts, onChange, openOnMount }) {
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/* ─────────────────────── reading bank messages ─────────────────────── */
+
+/** Paste the SMS your bank already sends you, and keep what it got right.
+ *
+ *  Nothing is saved until Import. Anything the parser could not read is
+ *  shown rather than dropped, because a silent skip is how a month's
+ *  spending goes missing without anyone noticing. */
+function MessageImport({ open, onClose, accounts, cats, loans, onImported }) {
+  const [text, setText] = useState("");
+  const [result, setResult] = useState(null);
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const read = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post("/personal/parse-messages", { text });
+      setResult(data);
+      setRows((data.parsed || []).map((r) => ({ ...r, include: true })));
+      if (!data.parsed?.length) toast.error("Nothing in that looked like a transaction");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not read those messages");
+    } finally { setBusy(false); }
+  };
+
+  const set = (i, patch) => setRows((p) => p.map((r, idx) => idx === i ? { ...r, ...patch } : r));
+
+  const chosen = rows.filter((r) => r.include && r.account_id);
+  const missingAccount = rows.filter((r) => r.include && !r.account_id).length;
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post("/personal/import-messages", {
+        rows: chosen.map((r) => ({
+          kind: r.kind, amount: r.amount, date: r.date, account_id: r.account_id,
+          category: r.category, notes: r.notes, loan_id: r.loan_id || "",
+          reference: r.reference || "",
+        })),
+      });
+      toast.success(
+        `${data.imported} imported` +
+        (data.skipped_duplicates ? ` · ${data.skipped_duplicates} already there` : ""));
+      setText(""); setResult(null); setRows([]);
+      onImported?.(); onClose();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not import");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-3xl" data-testid="pf-import-dialog">
+        <DialogHeader>
+          <DialogTitle>Read bank messages</DialogTitle>
+          <DialogDescription>
+            Paste the SMS alerts from your bank. Nothing is saved until you press Import,
+            and anything already recorded is skipped.
+          </DialogDescription>
+        </DialogHeader>
+
+        {!result ? (
+          <>
+            <Textarea rows={9} value={text} onChange={(e) => setText(e.target.value)}
+                      data-testid="pf-message-text"
+                      placeholder={"Rs.1,250.00 debited from A/c XX4521 on 03-11-26 to SWIGGY. UPI Ref 412398765432.\n\nYour A/c XX4521 is credited with INR 85,000.00 on 01-Nov-26 by SALARY NOV.\n\nRs 10497.30 debited from A/c XX4521 towards EMI for Loan A/c 60123456 on 05-11-26."}
+                      className="font-mono text-xs" />
+            <p className="text-xs text-muted-foreground">
+              One message per paragraph. OTPs and balance alerts are ignored.
+            </p>
+            <DialogFooter>
+              <Button variant="outline" onClick={onClose}>Cancel</Button>
+              <Button onClick={read} disabled={!text.trim() || busy} data-testid="pf-read-messages">
+                {busy ? "Reading…" : "Read messages"}
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-4 text-sm">
+              <span className="text-muted-foreground">Read{" "}
+                <strong className="text-foreground">{result.counts.read}</strong></span>
+              <span className="text-muted-foreground">In{" "}
+                <strong className="text-emerald-600 font-mono">{inr(result.total_in)}</strong></span>
+              <span className="text-muted-foreground">Out{" "}
+                <strong className="font-mono">{inr(result.total_out)}</strong></span>
+              {result.counts.skipped > 0 && (
+                <span className="text-muted-foreground">Skipped{" "}
+                  <strong className="text-foreground">{result.counts.skipped}</strong></span>
+              )}
+            </div>
+
+            {missingAccount > 0 && (
+              <div className="rounded-lg border border-amber-500/40 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+                {missingAccount} message{missingAccount === 1 ? "" : "s"} could not be matched to
+                an account — choose one, or untick the row.
+              </div>
+            )}
+
+            <div className="max-h-[45vh] overflow-auto border rounded-lg">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40 text-xs uppercase sticky top-0">
+                  <tr>
+                    <th className="px-2 py-2"></th>
+                    <th className="text-left px-2 py-2">Date</th>
+                    <th className="text-left px-2 py-2">Details</th>
+                    <th className="text-left px-2 py-2">Account</th>
+                    <th className="text-left px-2 py-2">Category</th>
+                    <th className="text-right px-2 py-2">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => (
+                    <tr key={i} className={`border-t ${r.include ? "" : "opacity-40"}`}>
+                      <td className="px-2 py-1.5">
+                        <input type="checkbox" checked={r.include}
+                               onChange={(e) => set(i, { include: e.target.checked })} />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <Input type="date" value={r.date} className="h-8 w-[135px] text-xs"
+                               onChange={(e) => set(i, { date: e.target.value })} />
+                      </td>
+                      <td className="px-2 py-1.5 max-w-[220px]">
+                        <p className="truncate font-medium">{r.merchant || "—"}</p>
+                        <p className="truncate text-[11px] text-muted-foreground">{r.notes}</p>
+                        {r.loan_id && (
+                          <span className="text-[10px] font-semibold text-violet-600">
+                            matched to a loan — the instalment will be marked paid
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <Select value={r.account_id} onValueChange={(v) => set(i, { account_id: v })}>
+                          <SelectTrigger className={`h-8 w-[150px] text-xs ${
+                            r.account_id ? "" : "border-amber-500"}`}>
+                            <SelectValue placeholder="Choose" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {accounts.map((a) => (
+                              <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <Select value={r.category} onValueChange={(v) => set(i, { category: v })}>
+                          <SelectTrigger className="h-8 w-[150px] text-xs">
+                            <SelectValue placeholder="Choose" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(r.kind === "income" ? cats.income : cats.expense || []).map((c) => (
+                              <SelectItem key={c} value={c}>{c}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </td>
+                      <td className={`px-2 py-1.5 text-right font-mono tabular-nums ${
+                        r.kind === "income" ? "text-emerald-600" : ""}`}>
+                        {r.kind === "income" ? "+" : "−"}{inr(r.amount)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {result.unparsed?.length > 0 && (
+              <details className="text-xs">
+                <summary className="cursor-pointer text-muted-foreground">
+                  {result.unparsed.length} line{result.unparsed.length === 1 ? "" : "s"} were not
+                  transactions — show them
+                </summary>
+                <ul className="mt-2 space-y-1 text-muted-foreground font-mono">
+                  {result.unparsed.map((u, i) => <li key={i} className="truncate">{u}</li>)}
+                </ul>
+              </details>
+            )}
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setResult(null); setRows([]); }}>
+                Back
+              </Button>
+              <Button onClick={save} disabled={!chosen.length || busy} data-testid="pf-import-rows">
+                {busy ? "Importing…" : `Import ${chosen.length}`}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
