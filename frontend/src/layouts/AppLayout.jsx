@@ -47,6 +47,7 @@ const ALL_NAV = [
   { to: "/receivables",    label: "Ageing",           icon: Clock,       tid: "nav-ageing", badge: "New", group: "Accounting", modes: ["b2b","b2c","restaurant","stay"] , perm: "report.view" },
   { to: "/accounting",     label: "Books of Account", icon: Scale,       tid: "nav-ledger", badge: "New", group: "Accounting", modes: ["b2b","b2c","restaurant","stay"] , perm: "report.view" },
   { to: "/reports",        label: "Reports & Books", icon: BookOpen,        tid: "nav-accounting", shortcut: "Alt+R", group: "Accounting", modes: ["b2b","b2c","restaurant","stay"] , perm: "report.view" },
+  { to: "/personal",       label: "Personal Finance", icon: Wallet,      tid: "nav-personal", badge: "New", group: "Personal", modes: ["b2b","b2c","restaurant","pos","stay"] },
   { to: "/ask-ai", label: "Ask AI",    icon: Bot,    tid: "nav-ai",    badge: "AI",   group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos","stay"] },
   { to: "/tools",  label: "Tax Toolkit", icon: Wrench, tid: "nav-tools", badge: "Free", group: "Tools & AI", modes: ["b2b","b2c","restaurant","pos","stay"] },
   { to: "/billing",  label: "Plan & Billing",   icon: Coins,    tid: "nav-billing", group: "Account", modes: ["b2b","b2c","restaurant","pos","stay"] , perm: "billing.view" },

@@ -72,6 +72,7 @@ import gst_auto as GSTAUTO
 import reconcile as RECON
 import ledger as LEDGER
 import receivables as RECV
+import personal as PF
 from gstin import validate as validate_gstin
 from hsn_data import search_hsn as search_hsn_db, get_by_code as get_hsn_by_code, HSN as HSN_LIST
 from einvoice import build_einvoice_json, precheck_eligibility as einvoice_precheck
@@ -8079,6 +8080,483 @@ async def party_statement(pid: str, ctx=Depends(get_org_ctx)):
         {"org_id": ctx["org_id"], "party_id": pid}, {"_id": 0}).to_list(5000)
     return RECV.statement(party, documents, payments,
                           opening=party.get("opening_balance", 0) or 0)
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PERSONAL FINANCE
+#
+# A person's own money, deliberately kept apart from the business. Every
+# record here is scoped by user_id, never org_id, and nothing in this section
+# reads or writes an invoice, bill, payment or ledger entry. Two people in the
+# same company cannot see each other's personal accounts, and switching
+# company does not change what is shown.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _me(user) -> str:
+    return user["id"]
+
+
+def _pf(user, extra: Optional[dict] = None) -> dict:
+    q = {"user_id": _me(user)}
+    if extra:
+        q.update(extra)
+    return q
+
+
+class PFAccountIn(BaseModel):
+    name: str
+    account_type: str = "savings"
+    opening_balance: float = 0
+    bank_name: str = ""
+    note: str = ""
+    archived: bool = False
+
+
+class PFTxnIn(BaseModel):
+    kind: str                       # income | expense | transfer
+    amount: float
+    date: str
+    account_id: str = ""
+    to_account_id: str = ""         # transfers only
+    category: str = ""
+    payment_mode: str = ""
+    notes: str = ""
+    receipt_url: str = ""
+    loan_id: str = ""               # when this payment is an EMI
+    recurring_id: str = ""
+
+
+class PFLoanIn(BaseModel):
+    name: str
+    loan_type: str = "other"
+    lender: str = ""
+    principal: float
+    interest_rate: float = 0
+    tenure_months: int = 0
+    emi: float = 0
+    first_due_date: str = ""
+    installments_paid: int = 0
+    account_id: str = ""
+    closed: bool = False
+
+
+class PFRecurringIn(BaseModel):
+    name: str
+    amount: float
+    frequency: str = "monthly"
+    category: str = ""
+    kind: str = "expense"
+    start_date: str = ""
+    next_due: str = ""
+    account_id: str = ""
+    active: bool = True
+    remind_days_before: int = 2
+
+
+class PFBudgetIn(BaseModel):
+    category: str
+    amount: float
+    month: str = ""                 # blank means it applies every month
+
+
+class PFGoalIn(BaseModel):
+    name: str
+    target_amount: float
+    saved_amount: float = 0
+    monthly_contribution: float = 0
+    target_date: str = ""
+    note: str = ""
+
+
+async def _pf_all(user, coll, extra=None) -> List[dict]:
+    return await coll.find(_pf(user, extra), {"_id": 0}).to_list(20000)
+
+
+# ── accounts ──
+
+@api.get("/personal/accounts")
+async def pf_accounts(user=Depends(get_current_user)):
+    accounts = await _pf_all(user, db.pf_accounts)
+    txns = await _pf_all(user, db.pf_transactions)
+    balances = PF.account_balances(accounts, txns)
+    return [{**a, **balances.get(a["id"], {})} for a in accounts]
+
+
+@api.post("/personal/accounts")
+async def pf_create_account(body: PFAccountIn, user=Depends(get_current_user)):
+    if body.account_type not in PF.ACCOUNT_TYPES:
+        raise HTTPException(400, f"Unknown account type {body.account_type!r}")
+    doc = {**body.model_dump(), "id": str(uuid.uuid4()),
+           "user_id": _me(user), "created_at": now_iso()}
+    await db.pf_accounts.insert_one(doc)
+    return strip_id(doc)
+
+
+@api.put("/personal/accounts/{aid}")
+async def pf_update_account(aid: str, body: PFAccountIn, user=Depends(get_current_user)):
+    res = await db.pf_accounts.update_one(_pf(user, {"id": aid}), {"$set": body.model_dump()})
+    if not res.matched_count:
+        raise HTTPException(404, "Account not found")
+    return {"ok": True}
+
+
+@api.delete("/personal/accounts/{aid}")
+async def pf_delete_account(aid: str, user=Depends(get_current_user)):
+    used = await db.pf_transactions.count_documents(
+        _pf(user, {"$or": [{"account_id": aid}, {"to_account_id": aid}]}))
+    if used:
+        # Deleting it would orphan its transactions and silently change every
+        # balance that depends on them.
+        raise HTTPException(409, f"{used} transaction(s) use this account. "
+                                 "Archive it instead to keep the history.")
+    await db.pf_accounts.delete_one(_pf(user, {"id": aid}))
+    return {"ok": True}
+
+
+# ── transactions ──
+
+@api.get("/personal/transactions")
+async def pf_transactions(kind: str = "", category: str = "", account_id: str = "",
+                          since: str = "", upto: str = "", q: str = "",
+                          limit: int = 500, user=Depends(get_current_user)):
+    query: Dict[str, Any] = _pf(user)
+    if kind:
+        query["kind"] = kind
+    if category:
+        query["category"] = category
+    if account_id:
+        query["$or"] = [{"account_id": account_id}, {"to_account_id": account_id}]
+    if since or upto:
+        query["date"] = {}
+        if since: query["date"]["$gte"] = since
+        if upto:  query["date"]["$lte"] = upto
+    rows = await db.pf_transactions.find(query, {"_id": 0}).to_list(20000)
+    if q:
+        needle = q.lower()
+        rows = [r for r in rows if needle in (r.get("notes", "") + " " +
+                r.get("category", "") + " " + r.get("payment_mode", "")).lower()]
+    rows.sort(key=lambda r: (r.get("date", ""), r.get("created_at", "")), reverse=True)
+    return {"rows": rows[:limit], "count": len(rows)}
+
+
+@api.post("/personal/transactions")
+async def pf_create_txn(body: PFTxnIn, user=Depends(get_current_user)):
+    doc = {**body.model_dump(), "id": str(uuid.uuid4()),
+           "user_id": _me(user), "created_at": now_iso()}
+    try:
+        PF.validate_txn(doc)
+    except PF.PersonalFinanceError as exc:
+        raise HTTPException(400, str(exc))
+    for field in ("account_id", "to_account_id"):
+        if doc.get(field) and not await db.pf_accounts.find_one(_pf(user, {"id": doc[field]})):
+            raise HTTPException(400, "That account does not exist")
+    await db.pf_transactions.insert_one(doc)
+
+    # An EMI payment advances the loan, so the schedule stays true without
+    # anyone updating two things by hand.
+    if doc.get("loan_id"):
+        await db.pf_loans.update_one(_pf(user, {"id": doc["loan_id"]}),
+                                     {"$inc": {"installments_paid": 1}})
+    return strip_id(doc)
+
+
+@api.put("/personal/transactions/{tid}")
+async def pf_update_txn(tid: str, body: PFTxnIn, user=Depends(get_current_user)):
+    patch = body.model_dump()
+    try:
+        PF.validate_txn({**patch, "id": tid})
+    except PF.PersonalFinanceError as exc:
+        raise HTTPException(400, str(exc))
+    res = await db.pf_transactions.update_one(_pf(user, {"id": tid}), {"$set": patch})
+    if not res.matched_count:
+        raise HTTPException(404, "Transaction not found")
+    return {"ok": True}
+
+
+@api.delete("/personal/transactions/{tid}")
+async def pf_delete_txn(tid: str, user=Depends(get_current_user)):
+    existing = await db.pf_transactions.find_one(_pf(user, {"id": tid}), {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Transaction not found")
+    await db.pf_transactions.delete_one(_pf(user, {"id": tid}))
+    if existing.get("loan_id"):
+        await db.pf_loans.update_one(_pf(user, {"id": existing["loan_id"]}),
+                                     {"$inc": {"installments_paid": -1}})
+    return {"ok": True}
+
+
+# ── loans ──
+
+@api.get("/personal/loans")
+async def pf_loans(user=Depends(get_current_user)):
+    loans = await _pf_all(user, db.pf_loans)
+    out = [PF.loan_position(l, now_dt().date()) for l in loans]
+    return {"loans": [{k: v for k, v in l.items() if k != "schedule"} for l in out],
+            "total_outstanding": round(sum(l["outstanding"] for l in out), 2),
+            "monthly_emi": round(sum(l["emi"] for l in out if not l["closed"]), 2)}
+
+
+@api.get("/personal/loans/{lid}")
+async def pf_loan(lid: str, user=Depends(get_current_user)):
+    loan = await db.pf_loans.find_one(_pf(user, {"id": lid}), {"_id": 0})
+    if not loan:
+        raise HTTPException(404, "Loan not found")
+    return PF.loan_position(loan, now_dt().date())
+
+
+@api.post("/personal/loans")
+async def pf_create_loan(body: PFLoanIn, user=Depends(get_current_user)):
+    if body.loan_type not in PF.LOAN_TYPES:
+        raise HTTPException(400, f"Unknown loan type {body.loan_type!r}")
+    doc = {**body.model_dump(), "id": str(uuid.uuid4()),
+           "user_id": _me(user), "created_at": now_iso()}
+    if not doc.get("emi"):
+        doc["emi"] = PF.to_rupees(PF.emi_amount(
+            PF.to_paise(doc["principal"]), doc["interest_rate"], doc["tenure_months"]))
+    await db.pf_loans.insert_one(doc)
+    return PF.loan_position(doc, now_dt().date())
+
+
+@api.put("/personal/loans/{lid}")
+async def pf_update_loan(lid: str, body: PFLoanIn, user=Depends(get_current_user)):
+    res = await db.pf_loans.update_one(_pf(user, {"id": lid}), {"$set": body.model_dump()})
+    if not res.matched_count:
+        raise HTTPException(404, "Loan not found")
+    return {"ok": True}
+
+
+@api.delete("/personal/loans/{lid}")
+async def pf_delete_loan(lid: str, user=Depends(get_current_user)):
+    await db.pf_loans.delete_one(_pf(user, {"id": lid}))
+    return {"ok": True}
+
+
+# ── recurring payments ──
+
+@api.get("/personal/recurring")
+async def pf_recurring(user=Depends(get_current_user)):
+    rows = await _pf_all(user, db.pf_recurring)
+    today = now_dt().date()
+    for r in rows:
+        try:
+            nxt = PF.next_occurrence(r.get("next_due") or r.get("start_date"),
+                                     r.get("frequency", "monthly"), today - timedelta(days=1))
+            r["next_due_computed"] = str(nxt) if nxt else ""
+        except PF.PersonalFinanceError:
+            r["next_due_computed"] = ""
+    rows.sort(key=lambda r: r.get("next_due_computed") or "9999")
+    return rows
+
+
+@api.post("/personal/recurring")
+async def pf_create_recurring(body: PFRecurringIn, user=Depends(get_current_user)):
+    if body.frequency not in PF.FREQUENCIES:
+        raise HTTPException(400, f"{body.frequency!r} is not a recurrence we support")
+    doc = {**body.model_dump(), "id": str(uuid.uuid4()),
+           "user_id": _me(user), "created_at": now_iso()}
+    doc["next_due"] = doc.get("next_due") or doc.get("start_date") or now_dt().strftime("%Y-%m-%d")
+    await db.pf_recurring.insert_one(doc)
+    return strip_id(doc)
+
+
+@api.put("/personal/recurring/{rid}")
+async def pf_update_recurring(rid: str, body: PFRecurringIn, user=Depends(get_current_user)):
+    res = await db.pf_recurring.update_one(_pf(user, {"id": rid}), {"$set": body.model_dump()})
+    if not res.matched_count:
+        raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+@api.delete("/personal/recurring/{rid}")
+async def pf_delete_recurring(rid: str, user=Depends(get_current_user)):
+    await db.pf_recurring.delete_one(_pf(user, {"id": rid}))
+    return {"ok": True}
+
+
+@api.post("/personal/recurring/{rid}/pay")
+async def pf_pay_recurring(rid: str, user=Depends(get_current_user)):
+    """Record this instalment and move the schedule on.
+
+    Idempotent for the current due date: paying twice on the same date does
+    not create two transactions, which is the usual way a recurring payment
+    ends up counted twice.
+    """
+    r = await db.pf_recurring.find_one(_pf(user, {"id": rid}), {"_id": 0})
+    if not r:
+        raise HTTPException(404, "Not found")
+    due = r.get("next_due") or now_dt().strftime("%Y-%m-%d")
+    already = await db.pf_transactions.find_one(
+        _pf(user, {"recurring_id": rid, "date": due}), {"_id": 0})
+    if already:
+        return {"ok": True, "already": True, "transaction_id": already["id"]}
+
+    txn = {"id": str(uuid.uuid4()), "user_id": _me(user), "kind": r.get("kind", "expense"),
+           "amount": r.get("amount", 0), "date": due, "account_id": r.get("account_id", ""),
+           "category": r.get("category", ""), "notes": f"{r.get('name', '')} (recurring)",
+           "recurring_id": rid, "created_at": now_iso()}
+    try:
+        PF.validate_txn(txn)
+    except PF.PersonalFinanceError as exc:
+        raise HTTPException(400, str(exc))
+    await db.pf_transactions.insert_one(txn)
+    nxt = PF.next_occurrence(due, r.get("frequency", "monthly"), PF._as_date(due))
+    await db.pf_recurring.update_one(_pf(user, {"id": rid}),
+                                     {"$set": {"next_due": str(nxt) if nxt else due,
+                                               "last_paid": due}})
+    return {"ok": True, "transaction_id": txn["id"], "next_due": str(nxt) if nxt else due}
+
+
+# ── budgets and goals ──
+
+@api.get("/personal/budgets")
+async def pf_budgets(month: str = "", user=Depends(get_current_user)):
+    month = month or now_dt().strftime("%Y-%m")
+    budgets = await _pf_all(user, db.pf_budgets)
+    budgets = [b for b in budgets if not b.get("month") or b["month"] == month]
+    txns = await _pf_all(user, db.pf_transactions)
+    rows = PF.budget_status(budgets, txns, month)
+    return {"month": month, "rows": rows,
+            "total_budget": round(sum(r["budget"] for r in rows), 2),
+            "total_spent": round(sum(r["spent"] for r in rows), 2),
+            "over_count": sum(1 for r in rows if r["state"] == "over")}
+
+
+@api.post("/personal/budgets")
+async def pf_create_budget(body: PFBudgetIn, user=Depends(get_current_user)):
+    doc = {**body.model_dump(), "id": str(uuid.uuid4()),
+           "user_id": _me(user), "created_at": now_iso()}
+    await db.pf_budgets.update_one(
+        _pf(user, {"category": doc["category"], "month": doc.get("month", "")}),
+        {"$set": doc}, upsert=True)
+    return strip_id(doc)
+
+
+@api.delete("/personal/budgets/{bid}")
+async def pf_delete_budget(bid: str, user=Depends(get_current_user)):
+    await db.pf_budgets.delete_one(_pf(user, {"id": bid}))
+    return {"ok": True}
+
+
+@api.get("/personal/goals")
+async def pf_goals(user=Depends(get_current_user)):
+    goals = await _pf_all(user, db.pf_goals)
+    rows = [PF.goal_progress(g, now_dt().date()) for g in goals]
+    return {"goals": rows,
+            "total_target": round(sum(g["target_amount"] for g in rows), 2),
+            "total_saved": round(sum(g["saved_amount"] for g in rows), 2)}
+
+
+@api.post("/personal/goals")
+async def pf_create_goal(body: PFGoalIn, user=Depends(get_current_user)):
+    doc = {**body.model_dump(), "id": str(uuid.uuid4()),
+           "user_id": _me(user), "created_at": now_iso()}
+    await db.pf_goals.insert_one(doc)
+    return PF.goal_progress(doc, now_dt().date())
+
+
+@api.put("/personal/goals/{gid}")
+async def pf_update_goal(gid: str, body: PFGoalIn, user=Depends(get_current_user)):
+    res = await db.pf_goals.update_one(_pf(user, {"id": gid}), {"$set": body.model_dump()})
+    if not res.matched_count:
+        raise HTTPException(404, "Goal not found")
+    return {"ok": True}
+
+
+@api.delete("/personal/goals/{gid}")
+async def pf_delete_goal(gid: str, user=Depends(get_current_user)):
+    await db.pf_goals.delete_one(_pf(user, {"id": gid}))
+    return {"ok": True}
+
+
+# ── the dashboard, and reports ──
+
+@api.get("/personal/dashboard")
+async def pf_dashboard(month: str = "", user=Depends(get_current_user)):
+    month = month or now_dt().strftime("%Y-%m")
+    since, upto = PF.month_bounds(month)
+    today = now_dt().date()
+
+    accounts = await _pf_all(user, db.pf_accounts)
+    txns = await _pf_all(user, db.pf_transactions)
+    loans = await _pf_all(user, db.pf_loans)
+    recurrings = await _pf_all(user, db.pf_recurring)
+    budgets = [b for b in await _pf_all(user, db.pf_budgets)
+               if not b.get("month") or b["month"] == month]
+
+    balances = PF.account_balances(accounts, txns)
+    this_month = PF.summarise(txns, since=since, upto=upto)
+    prev_month_key = PF.add_months(PF._as_date(since), -1).strftime("%Y-%m")
+    p_since, p_upto = PF.month_bounds(prev_month_key)
+    last_month = PF.summarise(txns, since=p_since, upto=p_upto)
+
+    due = PF.upcoming(recurrings, loans, days=30, today=today)
+    worth = PF.net_worth(balances, loans, today)
+    recent = sorted(txns, key=lambda t: (t.get("date", ""), t.get("created_at", "")),
+                    reverse=True)[:10]
+
+    available = sum(b["balance"] for b in balances.values() if not b["is_liability"])
+    return {
+        "month": month,
+        "income": this_month["income"],
+        "expenses": this_month["expenses"],
+        "savings": this_month["savings"],
+        "savings_rate": this_month["savings_rate"],
+        "available_balance": round(available, 2),
+        "loan_outstanding": worth["loan_outstanding"],
+        "monthly_emi": round(sum(PF.loan_position(l, today)["emi"]
+                                 for l in loans if not PF.loan_position(l, today)["closed"]), 2),
+        "upcoming": due,
+        "net_worth": worth,
+        "by_category": this_month["by_category"],
+        "series": PF.monthly_series(txns, 6, today),
+        "accounts": list(balances.values()),
+        "budgets": PF.budget_status(budgets, txns, month),
+        "recent": recent,
+        "previous": {"income": last_month["income"], "expenses": last_month["expenses"],
+                     "savings": last_month["savings"], "label": prev_month_key},
+    }
+
+
+@api.get("/personal/report")
+async def pf_report(since: str = "", upto: str = "", user=Depends(get_current_user)):
+    """The figures behind every export: income, expenses, savings, net worth."""
+    today = now_dt().date()
+    if not since:
+        since = PF.month_bounds(today.strftime("%Y-%m"))[0]
+    if not upto:
+        upto = today.strftime("%Y-%m-%d")
+    accounts = await _pf_all(user, db.pf_accounts)
+    txns = await _pf_all(user, db.pf_transactions)
+    loans = await _pf_all(user, db.pf_loans)
+    balances = PF.account_balances(accounts, txns)
+    summary = PF.summarise(txns, since=since, upto=upto)
+    return {
+        **summary,
+        "accounts": list(balances.values()),
+        "loans": [PF.loan_position(l, today) for l in loans],
+        "net_worth": PF.net_worth(balances, loans, today),
+        "series": PF.monthly_series(txns, 12, today),
+        "transactions": sorted([t for t in txns
+                                if since <= str(t.get("date", ""))[:10] <= upto],
+                               key=lambda t: t.get("date", "")),
+    }
+
+
+@api.get("/personal/categories")
+async def pf_categories(user=Depends(get_current_user)):
+    """The standard lists, plus whatever this person has typed themselves."""
+    txns = await _pf_all(user, db.pf_transactions)
+    custom_exp = sorted({t.get("category", "") for t in txns
+                         if t.get("kind") == "expense" and t.get("category")
+                         and t["category"] not in PF.EXPENSE_CATEGORIES})
+    custom_inc = sorted({t.get("category", "") for t in txns
+                         if t.get("kind") == "income" and t.get("category")
+                         and t["category"] not in PF.INCOME_CATEGORIES})
+    return {"income": PF.INCOME_CATEGORIES + custom_inc,
+            "expense": PF.EXPENSE_CATEGORIES + custom_exp,
+            "account_types": PF.ACCOUNT_TYPES, "loan_types": PF.LOAN_TYPES,
+            "frequencies": PF.FREQUENCIES, "goal_presets": PF.GOAL_PRESETS}
 
 
 @api.get("/dashboard")
