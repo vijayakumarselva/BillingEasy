@@ -286,6 +286,10 @@
   border-top: 1px solid hsl(var(--sidebar-border));
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
+@media (min-width: 768px) {
+  .fkey-bar { display: flex; }
+}
+
 @media (max-width: 767px) {
   .mobile-bottom-nav { display: flex; }
   /* Add bottom padding to main content so it doesn't go behind the nav bar */
@@ -389,8 +393,12 @@ body {
 }
 
 /* ── Bottom function-key bar (like Tally's F-key strip) ── */
+/* Desktop only, and enforced here rather than with Tailwind's `hidden`:
+   both are single-class selectors, this file loads after the utilities, so
+   `display:flex` won every tie and the strip showed on phones — clipped at
+   the right edge, above the bottom nav, advertising keys a phone has not got. */
 .fkey-bar {
-  display: flex;
+  display: none;
   align-items: center;
   gap: 0.25rem;
   flex-wrap: wrap;
@@ -481,3 +489,32 @@ body.is-native .table-actions button {
   min-height: 38px;
   min-width: 38px;
 }
+
+
+/* ── Motion ──────────────────────────────────────────────────────────────
+   Anyone who has asked their device to reduce motion gets no transitions,
+   no transforms and no animation — not a faster version of them. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* The support bubble is fixed to the bottom-right, which on a phone is
+   exactly where the bottom navigation's last item sits. It now floats above
+   the bar instead of on top of it. */
+@media (max-width: 767px) {
+  .support-fab {
+    bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px)) !important;
+    right: 1rem !important;
+  }
+}
+
+
+/* A tab strip that scrolls sideways on a phone should not show a scrollbar
+   over the tabs themselves. */
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }

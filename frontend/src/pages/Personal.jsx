@@ -80,15 +80,19 @@ export default function Personal() {
             Your own money. Kept entirely separate from the business books.
           </p>
         </div>
-        <div className="flex items-end gap-2 flex-wrap">
+        {/* On a phone these wrapped one-per-row and looked accidental. The
+            month spans the width, the two actions sit side by side under it,
+            and on a wider screen they return to a single row. */}
+        <div className="w-full sm:w-auto grid grid-cols-2 sm:flex sm:items-end gap-2">
           <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
-                 className="w-[150px]" data-testid="pf-month" />
+                 className="col-span-2 sm:w-[150px]" data-testid="pf-month" />
           <Button onClick={() => setQuick("income")} variant="outline"
-                  className="border-emerald-500/50 text-emerald-700 hover:bg-emerald-50"
+                  className="h-11 sm:h-10 border-emerald-500/50 text-emerald-700 hover:bg-emerald-50"
                   data-testid="pf-add-income">
             <TrendingUp className="h-4 w-4 mr-1.5" /> Income
           </Button>
-          <Button onClick={() => setQuick("expense")} className="bg-blue-600 hover:bg-blue-700"
+          <Button onClick={() => setQuick("expense")}
+                  className="h-11 sm:h-10 bg-blue-600 hover:bg-blue-700"
                   data-testid="pf-add-expense">
             <Plus className="h-4 w-4 mr-1.5" /> Expense
           </Button>
@@ -114,7 +118,7 @@ export default function Personal() {
           empty state, so the "Add an account" button switched to a tab that
           was not on screen — leaving no way to add the first account at all. */}
       <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="flex-wrap h-auto">
+          <TabsList className="w-full justify-start overflow-x-auto no-scrollbar sm:w-auto">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="transactions">Transactions</TabsTrigger>
             <TabsTrigger value="loans">Loans &amp; EMI</TabsTrigger>
