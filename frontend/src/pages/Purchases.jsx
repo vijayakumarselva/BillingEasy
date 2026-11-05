@@ -12,7 +12,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Textarea } from "@/components/ui/textarea";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Ban, Pencil, Trash2, FileDown, ScanLine, Upload, Loader2, Smartphone, Copy, CheckCircle2, Bell, AlertTriangle, Info, Warehouse, PackageCheck, Paperclip, Eye, X, CreditCard, Search } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Plus, Ban, Pencil, Trash2, FileDown, ScanLine, Upload, Loader2, Smartphone, Copy, CheckCircle2, Bell, AlertTriangle, Info, Warehouse, PackageCheck, Paperclip, Eye, X, CreditCard, Search, MoreHorizontal } from "lucide-react";
 import { PaymentDialog } from "@/pages/Payments";
 import { downloadFile } from "@/lib/mobile";
 import DropZone from "@/components/DropZone";
@@ -221,7 +222,8 @@ export default function Purchases() {
 
   useEffect(() => { load(); loadPendingUploads(); }, []);
   const [editPurchase, setEditPurchase] = useState(null); // purchase doc to edit
-  const [payTarget, setPayTarget] = useState(null); // purchase to record payment against
+  const [payTarget, setPayTarget] = useState(null);
+  const [cancelTarget, setCancelTarget] = useState(null);  // bill awaiting a cancel confirmation // purchase to record payment against
   const [attachTarget, setAttachTarget] = useState(null); // {id, name} of purchase to attach vendor invoice
   const [viewAttachment, setViewAttachment] = useState(null); // {b64, name} to view
   const [attachDrag, setAttachDrag] = useState(false);
@@ -487,59 +489,66 @@ export default function Purchases() {
                       )}
                     </td>
                     <td className="text-right whitespace-nowrap">
-                      <Button size="icon" variant="ghost" onClick={() => downloadPdf(p)} title="Download PDF">
-                        <FileDown className="h-4 w-4" />
-                      </Button>
-                      {/* Vendor invoice attachment */}
-                      {p.vendor_invoice_b64 ? (
-                        <span className="inline-flex items-center gap-0.5">
+                      {/* Same treatment as the sales register: the action you
+                          came for stays out, the rest is a named menu, and the
+                          column is quiet until the row is hovered. */}
+                      <div className="row-actions inline-flex items-center justify-end gap-0.5">
+                        {p.status !== "cancelled" && p.status !== "paid" && (
+                          <Button size="icon" variant="ghost" title="Record payment"
+                            onClick={() => setPayTarget(p)}
+                            className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40">
+                            <CreditCard className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        {p.vendor_invoice_b64 && (
                           <Button size="icon" variant="ghost" title="View vendor invoice"
-                            onClick={() => setViewAttachment({ b64: p.vendor_invoice_b64, name: p.vendor_invoice_name || "invoice" })}>
-                            <Eye className="h-4 w-4 text-indigo-500" />
+                            onClick={() => setViewAttachment({ b64: p.vendor_invoice_b64, name: p.vendor_invoice_name || "invoice" })}
+                            className="h-7 w-7 text-muted-foreground hover:text-foreground">
+                            <Eye className="h-3.5 w-3.5" />
                           </Button>
-                          <Button size="icon" variant="ghost" title="Remove attachment" onClick={() => removeAttachment(p.id)}>
-                            <X className="h-3 w-3 text-muted-foreground" />
-                          </Button>
-                        </span>
-                      ) : (
-                        <Button size="icon" variant="ghost" title="Upload vendor invoice (drag & drop or browse)"
-                          onClick={() => setAttachTarget({ id: p.id, name: p.party_name, bill_no: p.bill_no })}>
-                          <Upload className="h-4 w-4 text-indigo-500" />
-                        </Button>
-                      )}
-                      {p.status !== "cancelled" && (
-                        <Button size="icon" variant="ghost" onClick={() => openEdit(p)} title="Edit"><Pencil className="h-4 w-4 text-blue-500" /></Button>
-                      )}
-                      {p.status !== "cancelled" && p.status !== "paid" && (
-                        <Button size="icon" variant="ghost" title="Record Payment"
-                          onClick={() => setPayTarget(p)}
-                          className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50">
-                          <CreditCard className="h-4 w-4" />
-                        </Button>
-                      )}
-                      {p.type === "purchase" && p.purchase_category !== "service" && p.status !== "cancelled" && (
-                        <Button size="icon" variant="ghost" title="Create GRN from this bill"
-                          onClick={() => nav("/grn", { state: { fromPurchase: p } })}>
-                          <PackageCheck className="h-4 w-4 text-emerald-600" />
-                        </Button>
-                      )}
-                      {p.status !== "cancelled" && (
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button size="icon" variant="ghost" title="Cancel bill"><Ban className="h-4 w-4 text-rose-500" /></Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>Cancel {p.bill_no}?</AlertDialogTitle>
-                              <AlertDialogDescription>The bill will be marked as cancelled. It will remain in your records but stock and GST changes will not be reversed automatically.</AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>Keep it</AlertDialogCancel>
-                              <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={() => cancelPurchase(p.id)}>Yes, Cancel Bill</AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
-                      )}
+                        )}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button size="icon" variant="ghost" title="More actions"
+                              className="h-7 w-7 text-muted-foreground hover:text-foreground">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="min-w-[210px] text-sm">
+                            {p.status !== "cancelled" && (
+                              <DropdownMenuItem onClick={() => openEdit(p)}>
+                                <Pencil className="mr-2 h-3.5 w-3.5" /> Edit
+                              </DropdownMenuItem>
+                            )}
+                            <DropdownMenuItem onClick={() => downloadPdf(p)}>
+                              <FileDown className="mr-2 h-3.5 w-3.5" /> Download PDF
+                            </DropdownMenuItem>
+                            {p.vendor_invoice_b64 ? (
+                              <DropdownMenuItem onClick={() => removeAttachment(p.id)}>
+                                <X className="mr-2 h-3.5 w-3.5" /> Remove vendor invoice
+                              </DropdownMenuItem>
+                            ) : (
+                              <DropdownMenuItem onClick={() => setAttachTarget({ id: p.id, name: p.party_name, bill_no: p.bill_no })}>
+                                <Upload className="mr-2 h-3.5 w-3.5" /> Attach vendor invoice
+                              </DropdownMenuItem>
+                            )}
+                            {p.type === "purchase" && p.purchase_category !== "service" && p.status !== "cancelled" && (
+                              <DropdownMenuItem onClick={() => nav("/grn", { state: { fromPurchase: p } })}>
+                                <PackageCheck className="mr-2 h-3.5 w-3.5" /> Create GRN from this bill
+                              </DropdownMenuItem>
+                            )}
+                            {p.status !== "cancelled" && (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem className="text-rose-600 focus:text-rose-600"
+                                  onClick={() => setCancelTarget(p)}>
+                                  <Ban className="mr-2 h-3.5 w-3.5" /> Cancel bill
+                                </DropdownMenuItem>
+                              </>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -547,6 +556,25 @@ export default function Purchases() {
           </table>
         </div>
       </Card>
+
+      <AlertDialog open={!!cancelTarget} onOpenChange={(o) => { if (!o) setCancelTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel {cancelTarget?.bill_no}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The bill will be marked as cancelled. It stays in your records, but stock and GST
+              changes are not reversed automatically.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep it</AlertDialogCancel>
+            <AlertDialogAction className="bg-rose-600 hover:bg-rose-700"
+              onClick={() => { const t = cancelTarget; setCancelTarget(null); cancelPurchase(t.id); }}>
+              Yes, cancel bill
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <PurchaseDialog
         open={open}

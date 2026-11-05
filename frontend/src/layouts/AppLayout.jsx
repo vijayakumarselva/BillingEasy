@@ -226,27 +226,29 @@ export default function AppLayout() {
   return (
     <div className="flex min-h-screen flex-col">
 
-      {/* ══════════ DESKTOP: Tally-style green top bar ══════════ */}
-      <header className="hidden md:flex items-center justify-between px-3 py-0 h-9 shrink-0"
-        style={{ background: "hsl(var(--tally-green-dark))", color: "white" }}>
+      {/* ══════════ DESKTOP: top bar ══════════
+           Was a dark-green slab with white text — the single loudest element
+           on every screen, and the thing that dated the product. It is a
+           surface with a hairline under it now; the work is what you see. */}
+      <header className="hidden md:flex items-center justify-between px-4 py-0 h-12 shrink-0
+                         bg-card border-b border-border text-foreground">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5">
-            <Building2 className="h-3.5 w-3.5 opacity-70" />
-            <span className="text-xs font-bold tracking-wide uppercase opacity-90">
-              Billings<span style={{ color: "hsl(158 80% 70%)" }}>Easy</span>
+            <span className="text-[13px] font-semibold tracking-tight">
+              Billings<span className="text-[hsl(var(--brand))]">Easy</span>
             </span>
           </div>
-          <div className="flex items-center gap-1 text-[11px] opacity-75">
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
             <ChevronRight className="h-3 w-3" />
-            <span>{currentOrg?.name || "—"}</span>
+            <span className="font-medium text-foreground/80">{currentOrg?.name || "—"}</span>
           </div>
         </div>
-        <div className="text-xs font-semibold tracking-widest uppercase opacity-60">{currentPageLabel}</div>
+        <div className="text-xs font-medium text-muted-foreground">{currentPageLabel}</div>
         <div className="flex items-center gap-2">
           {wallet && (
             <button onClick={() => nav("/billing?tab=credits")}
-              className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded"
-              style={{ background: "hsl(158 50% 20%)", color: "hsl(158 70% 80%)" }}>
+              className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-border
+                         text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
               <Coins className="h-3 w-3" />
               <span className="font-mono font-semibold">{wallet.balance}</span>
               <span className="opacity-70">cr</span>
@@ -254,8 +256,8 @@ export default function AppLayout() {
           )}
           <div className="relative">
             <button onClick={() => setOrgOpen(v => !v)}
-              className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded opacity-80 hover:opacity-100"
-              style={{ background: "hsl(158 50% 20%)" }}
+              className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-border
+                         text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
               data-testid="org-switcher">
               <span className="max-w-[100px] truncate">{currentOrg?.name || "Switch Org"}</span>
               <ChevronDown className="h-3 w-3" />
@@ -279,10 +281,10 @@ export default function AppLayout() {
               </div>
             )}
           </div>
-          <button onClick={toggle} className="p-1 opacity-70 hover:opacity-100" aria-label="Toggle theme">
+          <button onClick={toggle} className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors" aria-label="Toggle theme">
             {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
           </button>
-          <button onClick={handleLogout} className="flex items-center gap-1 text-[11px] opacity-70 hover:opacity-100 px-1.5 py-0.5"
+          <button onClick={handleLogout} className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             data-testid="logout-button">
             <LogOut className="h-3.5 w-3.5" />
             <span>Logout</span>
@@ -340,7 +342,7 @@ export default function AppLayout() {
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
         {/* ── Desktop sidebar ── */}
-        <aside className="sidebar-shell shrink-0 hidden md:flex flex-col overflow-y-auto overflow-x-hidden w-48" data-testid="app-sidebar">
+        <aside className="sidebar-shell shrink-0 hidden md:flex flex-col overflow-y-auto overflow-x-hidden w-56" data-testid="app-sidebar">
           <div className="px-3 py-2 border-b shrink-0" style={{ borderColor: "hsl(var(--sidebar-border))" }}>
             <div className="text-[11px] font-bold truncate" style={{ color: "hsl(var(--sidebar-fg))" }}>
               {user?.name}
