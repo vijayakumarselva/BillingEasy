@@ -110,20 +110,10 @@ export default function Personal() {
         </Card>
       )}
 
-      {noData ? (
-        <Card className="p-8 text-center">
-          <PiggyBank className="h-10 w-10 text-muted-foreground/40 mx-auto mb-3" />
-          <h3 className="font-semibold">Start with an account</h3>
-          <p className="text-sm text-muted-foreground mt-1 max-w-md mx-auto">
-            Add your salary account, cash in hand, or a credit card. Everything else —
-            income, spending, EMIs, budgets — hangs off that.
-          </p>
-          <Button className="mt-4" onClick={() => setTab("accounts")}>
-            <Plus className="h-4 w-4 mr-1.5" /> Add an account
-          </Button>
-        </Card>
-      ) : (
-        <Tabs value={tab} onValueChange={setTab}>
+      {/* The tabs are always rendered. They used to be swapped out for the
+          empty state, so the "Add an account" button switched to a tab that
+          was not on screen — leaving no way to add the first account at all. */}
+      <Tabs value={tab} onValueChange={setTab}>
           <TabsList className="flex-wrap h-auto">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="transactions">Transactions</TabsTrigger>
@@ -135,7 +125,22 @@ export default function Personal() {
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4 mt-4">
-            <Overview data={data} loading={loading} prev={prev} />
+            {noData ? (
+              <Card className="p-8 text-center">
+                <PiggyBank className="h-10 w-10 text-muted-foreground/40 mx-auto mb-3" />
+                <h3 className="font-semibold">Start with an account</h3>
+                <p className="text-sm text-muted-foreground mt-1 max-w-md mx-auto">
+                  Add your salary account, cash in hand, or a credit card. Everything else —
+                  income, spending, EMIs, budgets — hangs off that.
+                </p>
+                <Button className="mt-4" onClick={() => setTab("accounts")}
+                        data-testid="pf-empty-add-account">
+                  <Plus className="h-4 w-4 mr-1.5" /> Add an account
+                </Button>
+              </Card>
+            ) : (
+              <Overview data={data} loading={loading} prev={prev} />
+            )}
           </TabsContent>
           <TabsContent value="transactions" className="mt-4">
             <Transactions accounts={accounts} cats={cats} onChange={load} />
@@ -153,10 +158,9 @@ export default function Personal() {
             <Goals onChange={load} />
           </TabsContent>
           <TabsContent value="accounts" className="mt-4">
-            <Accounts accounts={accounts} onChange={load} />
+            <Accounts accounts={accounts} onChange={load} openOnMount={noData} />
           </TabsContent>
-        </Tabs>
-      )}
+      </Tabs>
 
       <TxnDialog kind={quick} onClose={() => setQuick(null)}
                  accounts={accounts} cats={cats} onSaved={load} />
@@ -1133,8 +1137,10 @@ function Goals({ onChange }) {
 
 /* ───────────────────────────── accounts ───────────────────────────── */
 
-function Accounts({ accounts, onChange }) {
-  const [open, setOpen] = useState(false);
+function Accounts({ accounts, onChange, openOnMount }) {
+  // Arriving here from the empty state means the person has already said
+  // they want to add one — so the form is open when they land.
+  const [open, setOpen] = useState(!!openOnMount);
   const [form, setForm] = useState({ name: "", account_type: "savings", opening_balance: "", bank_name: "" });
 
   const save = async () => {
